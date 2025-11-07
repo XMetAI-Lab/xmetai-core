@@ -1,0 +1,251 @@
+import logging
+from functools import partial
+import numpy as np
+import torch.nn as nn
+import torch.nn.functional as F
+from einops import rearrange
+
+from xmetai.layers import (
+    CubeEmbed,
+    TimestepEmbed,
+    MCDropout,
+    LayerNorm,
+)
+try:
+    from xmetai.layers import MambaVisionLayer
+except Exception:
+    MambaVisionLayer = None
+from .pred_head import PLSFHead
+from .transformer import SwinBlock, precompute_freqs_cis
+
+__all__ = ["SwinLayer", "UTransformer"]
+
+
+class SwinLayer(nn.Module):
+    def __init__(
+        self,
+        in_chans,
+        embed_dim,
+        input_size,
+        window_size,
+        depth=4,
+        num_heads=8,
+        mlp_ratio=4.0,
+        drop_path=0.0,
+        attn_type="v1",
+        mask_type="hw",
+        norm_type="ln",
+        ffn_type="gegluffn"
+    ):
+        super().__init__()
+
+        self.depth = depth
+        self.input_size = input_size
+        self.blocks = nn.ModuleList()
+
+        for i in range(depth):
+            blk = SwinBlock(
+                dim=embed_dim,
+                input_size=input_size,
+                num_heads=num_heads,
+                window_size=window_size,
+                shift_size=0 if (i % 2 == 0) else window_size // 2,
+                mlp_ratio=mlp_ratio,
+                attn_type=attn_type,
+                mask_type=mask_type,
+                norm_type=norm_type,
+                drop_path=drop_path,
+                ffn_type=ffn_type,
+            )
+            self.blocks.append(blk)
+
+        self.in_chans = in_chans
+        self.embed_dim = embed_dim
+
+    def forward(self, h, t=None, freqs_cos=None, freqs_sin=None):
+        for blk in self.blocks:
+            h = blk(h, t, freqs_cos, freqs_sin)
+        return h
+
+
+class UTransformer(nn.Module):
+    def __init__(
+        self,
+        in_chans,
+        out_chans,
+        in_frames,
+        embed_dim,
+        image_size,
+        const_chans=0,
+        window_size=8,
+        patch_size=4,
+        stride_size=-1,
+        down_times=0,
+        depths=[6, 6, 6, 6],
+        num_heads=8,
+        drop_mcmc=0,
+        mlp_ratio=4,
+        attn_type="v1",
+        mask_type="hw",
+        head_type="none",
+        norm_type="adaln",
+        ffn_type="gegluffn",
+        patch_norm=True,
+        use_mamba=False,
+    ):
+        super().__init__()
+        self.logger = logging.getLogger(__name__)
+        if norm_type == "adaln":
+            norm_layer = partial(LayerNorm, eps=1e-6)
+        else:
+            norm_layer = partial(nn.LayerNorm, eps=1e-6)
+
+        self.in_chans = in_chans
+        self.in_frames = in_frames
+        self.out_chans = out_chans
+        self.const_chans = const_chans
+        self.embed_dim = embed_dim
+        self.image_size = tuple(image_size)
+        self.patch_size = patch_size
+        self.window_size = window_size
+        self.feat_size = [sz // patch_size for sz in image_size]
+
+        self.num_layers = len(depths)
+        self.down_times = down_times
+        self.norm_type = norm_type
+        self.attn_type = attn_type
+        self.drop_mcmc = drop_mcmc
+
+        self.patch_embed = CubeEmbed(
+            in_chans=in_chans,
+            out_chans=embed_dim,
+            const_chans=const_chans,
+            in_frames=in_frames,
+            patch_size=patch_size,
+            stride_size=stride_size,
+            norm_layer=norm_layer if patch_norm else None,
+            flatten=True,
+        )
+
+        if self.norm_type == "adaln":
+            self.step_embed = TimestepEmbed(embed_dim)
+            self.hour_embed = TimestepEmbed(embed_dim)
+            self.doy_embed = TimestepEmbed(embed_dim)
+        else:
+            # for only step embedding.
+            self.time_embed = nn.Sequential(
+                nn.Linear(12, embed_dim),
+                nn.SiLU(),
+                nn.Linear(embed_dim, embed_dim),
+            )
+
+        if stride_size < 1:
+            input_size = [sz // (patch_size * (2**down_times)) for sz in image_size]
+        else:
+            input_size = [sz // (stride_size * (2**down_times)) for sz in image_size]
+        self.logger.info(
+            f"Input size for {self.__class__.__name__}: {input_size}, patch size: {patch_size}, stride size: {stride_size}, down times: {down_times}")
+
+        if "rotary" in attn_type:
+            freqs_cos, freqs_sin = precompute_freqs_cis(embed_dim // num_heads, np.prod(input_size))
+            self.register_buffer("freqs_cos", freqs_cos, persistent=False)
+            self.register_buffer("freqs_sin", freqs_sin, persistent=False)
+
+        layers = []
+        for i in range(self.num_layers):
+            if use_mamba and MambaVisionLayer is not None:
+                self.logger.info("Using Mamba style transformer blocks.")
+                layer = MambaVisionLayer(dim=embed_dim,
+                                         depth=depths[i],
+                                         num_heads=num_heads,
+                                         mlp_ratio=mlp_ratio,
+                                         qkv_bias=True,
+                                         qk_scale=True,
+                                         conv=False,
+                                         drop=drop_mcmc,
+                                         transformer_blocks=list(range(depths[i]//2+1, depths[i])) if depths[i] % 2 != 0 else list(range(depths[i]//2, depths[i])),
+                                         )
+            else:
+                self.logger.info("Using Swin style transformer blocks.")
+                layer = SwinLayer(
+                    embed_dim,
+                    embed_dim,
+                    input_size,
+                    window_size,
+                    depth=depths[i],
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    attn_type=attn_type,
+                    mask_type=mask_type,
+                    norm_type=norm_type,
+                    ffn_type=ffn_type,
+                )
+            layers.append(layer)
+            if self.norm_type != "adaln":
+                self.add_module(f"norm{i}", norm_layer(embed_dim))
+            self.add_module(f"drop{i}", MCDropout())
+
+        self.layers = nn.ModuleList(layers)
+
+        if norm_type == "adaln":
+            self.fpn = None
+        else:
+            self.fpn = nn.Sequential(
+                nn.Linear(embed_dim * self.num_layers, embed_dim),
+                nn.GELU(),
+            )
+
+        if head_type == "1fc":
+            self.logger.info(f"Using 1fc head with embed_dim: {embed_dim}, out_chans: {out_chans}, patch_size: {patch_size}")
+            self.head = nn.Linear(embed_dim, out_chans * patch_size * patch_size)
+        elif head_type == "2fc":
+            self.logger.info(f"Using 2fc head with embed_dim: {embed_dim}, out_chans: {out_chans}, patch_size: {patch_size}")
+            self.head = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, out_chans * patch_size * patch_size)
+            )
+        elif head_type == "plsf":
+            pl_chans = 65
+            self.logger.info(f"Using PLSF head with embed_dim: {embed_dim}, pl_chans: {pl_chans}, patch_size: {patch_size}")
+            self.head = PLSFHead(embed_dim, pl_chans=pl_chans, sfc_chans=in_chans-pl_chans, patch_size=(patch_size, patch_size), feat_size=self.feat_size)
+        else:
+            self.logger.error(f"Unknown head type: {head_type}.")
+            self.head = None
+
+    def resize_input(self, input):
+        x = rearrange(input, "n t c h w -> (n t) c h w")
+
+        if x.shape[-2:] != self.image_size:
+            x = F.interpolate(
+                x.float(), size=self.image_size, mode="bilinear", align_corners=False
+            ).to(input)
+
+        return x
+
+    def resize_output(self, output, input):
+        output = rearrange(
+            output,
+            "n (h w) (p1 p2 c) -> n c (h p1) (w p2)",
+            h=self.feat_size[0],
+            p1=self.patch_size,
+            p2=self.patch_size,
+        )
+
+        if output.shape[-2:] != input.shape[-2:]:
+            output = F.interpolate(
+                output.float(), size=input.shape[-2:], mode="bilinear", align_corners=False,
+            ).to(input)
+
+        return output
+
+    def get_embed(self, timestamp):
+        embed = self.step_embed(timestamp['step'])
+        if 'hour' in timestamp:
+            embed += self.hour_embed(timestamp['hour'])
+        if 'doy' in timestamp:
+            embed += self.doy_embed(timestamp['doy'])
+        return embed
+
+    def forward(self, input):
+        return NotImplemented

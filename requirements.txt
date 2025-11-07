@@ -1,0 +1,40 @@
+# Requirements for project
+# Python 3.11 with PyTorch 2.7+
+
+torch>=2.7.0
+torchvision>=0.19.0
+numpy>=1.24.0
+einops>=0.7.0
+packaging>=21.0
+
+# Utilities
+PyYAML>=6.0
+tqdm>=4.65.0
+pandas>=1.5.0
+omegaconf>=2.3.0
+yacs>=0.1.8
+
+# PyTorch Lightning
+pytorch-lightning>=2.0.0
+
+# File I/O and path management
+iopath>=0.1.9
+
+# Mamba State Space Model (optional but recommended)
+mamba-ssm>=1.0.0
+
+# TIMM (for layers)
+timm>=0.9.0
+
+# Logging and monitoring
+tensorboard>=2.14.0
+
+# For data handling
+h5py>=3.8.0
+zarr>=2.15.0
+xarray>=2023.0.0
+
+# Optional dependencies for specific features
+onnx>=1.14.0
+onnxruntime>=1.15.0
+onnxruntime-extensions>=0.7.0
