@@ -319,7 +319,7 @@ class SimpleTrainer(TrainerBase):
         """
         If you want to do something with the losses, you can wrap the model.
         """
-        with torch.amp.autocast(device_type='cuda', dtype=self.model.dtype):
+        with torch.amp.autocast(device_type=self.model.device, dtype=self.model.dtype):
             loss_dict = self.model(data)
         if isinstance(loss_dict, torch.Tensor):
             losses = loss_dict
@@ -587,7 +587,7 @@ class ExpandTrainer(SimpleTrainer):
         """
         If you want to do something with the losses, you can wrap the model.
         """
-        with torch.amp.autocast(device_type='cuda', dtype=self.model.dtype):
+        with torch.amp.autocast(device_type=self.model.device, dtype=self.model.dtype):
             loss_dict = self.model(data)
         if isinstance(loss_dict, torch.Tensor):
             losses = loss_dict

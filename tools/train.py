@@ -32,10 +32,12 @@ try:
 except ImportError as e:
     print(f"ImportError: {e}. You can do this by running `pip install -e .` in the root directory.")
     sys.exit(1)
+
 try:
     from xmetai.layers import MambaVisionLayer
-except Exception:
+except Exception as e:
     MambaVisionLayer = None
+    print(f"Warning: MambaVisionLayer could not be imported: {e}")
 
 logger = logging.getLogger("xmetai")
 

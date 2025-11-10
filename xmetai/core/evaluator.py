@@ -224,7 +224,8 @@ def inference_on_dataset(
     )
 
     results = evaluator.evaluate()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     if is_main_process():
         for name, result in results.items():
             table = tabulate(

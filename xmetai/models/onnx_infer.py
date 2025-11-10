@@ -32,8 +32,8 @@ try:
         delta_bias = torch.from_numpy(delta_bias).to(device="cuda")
         return selective_scan_fn(u, delta, A, B, C, D, z, delta_bias,
                                  delta_softplus, return_last_state)
-except ImportError:
-    print("onnxruntime_extensions is not installed, please install it to use OnnxInferModel.")
+except ImportError as e:
+    print(f"import plugin error: {e}.")
     get_library_path = None
 
 __all__ = ["OnnxInferModel"]
