@@ -71,18 +71,15 @@ step_range = [max(test_frames)]
 
 in_chans = len(in_names)
 in_frames = 2
-out_chans = in_chans
+out_chans = len(out_names)
 freq = 24  # 24 hours for 1 day
 
-# model setting
 depth_list = os.environ.get("DEPTH_LIST", "6,6,12,12")  # default depth list
 depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
-loss_weight = [0.5, 1.0]
 
 ######################################################################
 # Data settings
 ######################################################################
-
 dataloader = OmegaConf.create()
 
 train_times = ("19500101", "20230228")

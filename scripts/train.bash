@@ -24,7 +24,7 @@ BATCH_PER_GPU=1                   # Batch size per GPU
 MASTER_ADDR=127.0.0.1             # Master address for distributed training
 NNODES=1                          # Total number of nodes
 additional_args=()                # Additional arguments to pass to Python script
-CONFIG_FILE="${ROOT_DIR}/configs/s2s_deterministic.py"
+CONFIG_FILE="${ROOT_DIR}/configs/s2s_vit.py"
 TRAIN_SCRIPT="${ROOT_DIR}/tools/train.py"
 
 # ---- Functions ----
@@ -65,12 +65,15 @@ function setup_environment() {
     export OUTPUT_DIR="${ROOT_DIR}/output/${temp_list}-${config_file_name}-${LR}/"
     
     # Set data directory and base config based on model type
-    data_linux="/workspace/data/s2s.1950-2024.c76/"
-    data_mac="/Users/douzsh/Desktop/workspace/data/s2s.1950-2024.c76/"
+    data_linux="/workspace/data/"
+    data_mac="/Users/douzsh/Desktop/workspace/data/"
     # check os mac or linux
     if [[ "$OSTYPE" == "darwin"* ]]; then
         echo "Running on macOS"
         data_dir="$data_mac"
+        additional_args+=("train.device_type='mps'")
+        additional_args+=("train.use_ddp=False")
+        additional_args+=("train.use_fsdp=False")
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         echo "Running on Linux"
         data_dir="$data_linux"
@@ -80,7 +83,7 @@ function setup_environment() {
     fi
 
     if [[ "$config_file_name" == *"s2s"* ]]; then # for s2s model tests
-        export DATA_DIR="$data_dir"
+        export DATA_DIR="${data_dir}/s2s.1950-2024.c76/"
         # check if string s2s_base exist in ${CONFIG_FILE_TMP}
         if grep -q "s2s_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/s2s_base.py"
@@ -89,14 +92,14 @@ function setup_environment() {
         fi
     elif [[ "$config_file_name" == *"land"* ]]; then # for s2s model with land
         # Data dir is a dataset array, separated by colon
-        export DATA_DIR="$data_dir:/workspace/data/land.1950-2024.c8/"
+        export DATA_DIR="${data_dir}/s2s.1950-2024.c76:${data_dir}/land.1950-2024.c8/"
         if grep -q "land_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/land_base.py"
         else
             export BASE_CONFIG="${CONFIG_FILE_TMP}"
         fi
     elif [[ "$config_file_name" == *"ens"* || "$config_file_name" == *"iwc"* ]]; then
-        export DATA_DIR="/workspace/data/ens/ens.1979-2022.c78/"
+        export DATA_DIR="${data_dir}/ens/ens.1979-2022.c78/"
         if grep -q "iwc_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/iwc_base.py"
         else

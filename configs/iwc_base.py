@@ -6,14 +6,11 @@ This configuration file is designed to be used for Weather/Seasonal Forecasting.
 """
 
 import os
-import logging
 import numpy as np
 from omegaconf import OmegaConf
-from xmetai import MODELS, METRICS, DATASETS, LazyConfig, build_test_loader, build_train_loader, get_data_info
 from xmetai.config import LazyCall as L
+from xmetai import MODELS, METRICS, DATASETS, LazyConfig, build_test_loader, build_train_loader, get_data_info
 
-# set logging to debug level if needed
-logging.basicConfig(level=logging.INFO)
 ######################################################################
 # Global settings
 ######################################################################
@@ -23,8 +20,7 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
 CONFIG_PATH = os.path.dirname(__file__)
 ROOT_PATH = os.path.join(CONFIG_PATH, "../")
 data_dir = os.environ["DATA_DIR"]
-output_dir = os.environ["OUTPUT_DIR"]
-load_from_pretrain = False
+output_dir = os.environ.get("OUTPUT_DIR", os.path.join(ROOT_PATH, "output/", os.path.basename(CONFIG_PATH)))
 
 #####################################################################
 # Training settings
@@ -34,13 +30,14 @@ total_batch_size = 1
 epochs = 30
 iters_per_epoch = 60000
 
-# optimizer settings for training
-optimizer = LazyConfig.load(os.path.join(ROOT_PATH, "common/optim.py")).AdamW
 # learning rate scheduler settings
 train = LazyConfig.load(os.path.join(ROOT_PATH, "common/train.py")).train
+# optimizer settings for training
+optimizer = LazyConfig.load(os.path.join(ROOT_PATH, "common/optim.py")).AdamW
 # Don't use common/schedule.py for now.
 scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).cosine_lr
 
+load_from_pretrain = False
 if os.path.exists(f'{output_dir}/model_final.pth'):
     train.init_checkpoint = f'{output_dir}/model_best.pth'
     train.teacher_forcing.teach_iters = 100
@@ -52,13 +49,13 @@ if os.path.exists(f'{output_dir}/model_final.pth'):
     scheduler.scheduler.end_value = 1e-2
     #scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).const_lr
 
-optimizer.lr = lr
 train.max_iter = epochs * iters_per_epoch//total_batch_size  # max_steps with 60000 iterations per epoch
 train.output_dir = output_dir
 train.activation_checkpointing = True
 train.use_fsdp = True
 train.use_ddp = False
 train.eval_period = iters_per_epoch//total_batch_size  # eval for each epoch
+optimizer.lr = lr
 ######################################################################
 # Model settings
 ######################################################################
@@ -70,31 +67,22 @@ accumid = data_info["accumid"]
 maskid = data_info["maskid"]
 buffers = data_info["buffers"]
 
-embed_dim, num_heads, norm_type = 1536, 24, "adaln"
-in_chans = len(in_names)
-out_chans = len(out_names)
-const_chans = 6
-members = 8
-
-# sequence setting
-freq = 6
-degree = 0.25
-in_frames = 2
-out_frames = 1
-
+test_names = ["z500", "msl", "t2m", "sst", "ttr", "tp"]
+#test_names = ["z500", "t2m", "tp"]
+test_chans = [out_names.index(n) for n in test_names]
 test_frames = np.arange(1, 13).tolist()  # predict 1-3 days ahead with 6-hour frequency
 test_frames = np.arange(1, 61).tolist()  # predict 1-15 days ahead with 6-hour frequency
 # test_frames = np.concatenate([test_frames, np.arange(64, 120, 4)]) # predict 28 days ahead
 step_range = [max(test_frames)]
-test_names = ["z500", "msl", "t2m", "sst", "ttr", "tp"]
-#test_names = ["z500", "t2m", "tp"]
-test_chans = [out_names.index(n) for n in test_names]
 
-# model setting
-image_size = (721, 1440)
-patch_size = 8
-window_size = 18
-down_times = 0
+in_chans = len(in_names)
+in_frames = 2
+out_chans = len(out_names)
+freq = 6
+const_chans = 6
+degree = 0.25
+out_frames = 1
+
 depth_list = os.environ.get("DEPTH_LIST", "6,6,12,12")  # default depth list
 depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 
