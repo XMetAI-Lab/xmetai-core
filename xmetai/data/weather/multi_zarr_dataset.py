@@ -69,11 +69,10 @@ class MultiZarrDataset(Dataset):
         self.total_frames = self.hist_frames + (self.fcst_frames if self.training else max(self.fcst_frames))
 
         # 用第一个 ds 来生成索引
-        dummy_ds = xr.Dataset(data_vars={"data": (("time",), common_times)}, coords={"time": common_times})
         if interval < 0:
-            self.inds = make_seq_inference(dummy_ds, self.total_frames, freq=freq)
+            self.inds = make_seq_inference(common_times, self.total_frames, freq=freq)
         else:
-            self.inds = make_seq(dummy_ds, self.total_frames, freq=freq, interval=interval)
+            self.inds = make_seq(common_times, self.total_frames, freq=freq, interval=interval)
 
         self.id_to_time = {
             i: common_times[i + self.hist_frames - 1] for i in self.inds
@@ -125,7 +124,7 @@ class MultiZarrDataset(Dataset):
 
         inds = np.concatenate([lft_inds, rht_inds])
         imgs = torch.from_numpy(self.ds.isel(time=inds).values)
-        imgs = torch.nan_to_num(imgs)
+        imgs = torch.nan_to_num(imgs, nan=0.0, posinf=0.0, neginf=0.0)
         if self.select_vars is not None:
             imgs = imgs[:, self.select_vars, ...]
         inputs = imgs[: self.hist_frames]

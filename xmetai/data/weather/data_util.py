@@ -1,17 +1,24 @@
+'''
+Author: DouZesheng && douzsh@gmail.com
+Date: 2025-08-18 20:06:02
+Description: Data utility functions for weather datasets.
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
+'''
 import pandas as pd
 import numpy as np
 import os
+import re
+import glob
 import torch
 import xarray as xr
 from xmetai.config import instantiate
 
-__all__ = ["make_seq", "make_seq_inference", "make_onnx", "get_data_info"]
+__all__ = ["make_seq", "make_seq_inference", "make_onnx", "get_data_info", "get_cra_data_info"]
 
 
-def make_seq(ds, total_frames, freq=1, interval=1):
+def make_seq(times, total_frames, freq=1, interval=1):
     i = 0
     inds = []
-    times = ds.time.values
 
     while i < len(times) - total_frames:
 
@@ -28,7 +35,7 @@ def make_seq(ds, total_frames, freq=1, interval=1):
     return np.array(inds, dtype=np.int32)
 
 
-def make_seq_inference(ds, total_frames, freq=24):
+def make_seq_inference(times, total_frames, freq=24):
     """
     Generate sequence indices starting with specific dates in the year.
 
@@ -56,7 +63,6 @@ def make_seq_inference(ds, total_frames, freq=24):
     ]
 
     inds = []
-    times = ds.time.values
 
     # Iterate through all time values in the dataset
     for i in range(len(times) - total_frames):
@@ -161,11 +167,7 @@ def make_onnx(
     torch.backends.mkldnn.bench = True
 
 
-def get_data_info(data_dirs, ignore_names=[]):
-    ori_in_names = sum([xr.open_zarr(d).level.values.tolist() for d in data_dirs], [])
-    print(f"in_names: {ori_in_names}")
-    in_names = [n for n in ori_in_names if n not in ignore_names]
-    print(f"in_names after ignore: {in_names}")
+def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
     LEVELS_13 = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
     LEVELS_37 = [1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175, 200, 225, 250, 300, 350,
                  400, 450, 500, 550, 600, 650, 700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000]
@@ -227,16 +229,52 @@ def get_data_info(data_dirs, ignore_names=[]):
             buffers[k] = v
 
     # update mean/std for ignored variables.
-    for k in ['mean', 'std']:
-        if k in buffers:
-            buffers[k] = buffers[k][~np.isin(ori_in_names, ignore_names)]
+    if len(ignore_names) > 0:
+        for k in ['mean', 'std']:
+            if k in buffers:
+                buffers[k] = buffers[k][~np.isin(ori_in_names, ignore_names)]
 
     return {
         "in_names": in_names,
+        "out_names": out_names,
         "logid": logid,
         "accumid": accumid,
         "maskid": maskid,
         "landid": landid,
-        "out_names": out_names,
         "buffers": buffers,
     }
+
+
+def get_data_info(data_dirs, ignore_names=[]):
+    coord = "level"
+    if coord not in xr.open_zarr(data_dirs[0]).coords:
+        coord = "channel"
+    ori_in_names = sum([xr.open_zarr(d).coords[coord].values.tolist() for d in data_dirs], [])
+    in_names = [n for n in ori_in_names if n not in ignore_names]
+    return get_ids_and_buffer(data_dirs, in_names, ori_in_names=ori_in_names, ignore_names=ignore_names)
+
+
+def get_cra_data_info(data_dir, in_names=["tp"]):
+    # get all grib2 files and sort by datetime(*yyyymmddhh.grib2)
+    pattern = re.compile(r'(\d{10})\.grib2$')
+    file_list = glob.glob(os.path.join(data_dir, "**", "*.grib2"), recursive=True)
+    file_map = {}
+    for file_path in file_list:
+        match = pattern.search(file_path)
+        if match:
+            datetime_str = match.group(1)
+            file_map[datetime_str] = file_path
+    sorted_datetimes = sorted(file_map.keys())
+    sorted_files = [file_map[dt] for dt in sorted_datetimes]
+    start_time = sorted_datetimes[0]
+    end_time = sorted_datetimes[-1]
+    print(f"Total files found: {len(sorted_files)}, starting from {start_time} to {end_time}")
+
+    # check if file count matches expected count
+    start_pd = pd.to_datetime(start_time, format="%Y%m%d%H")
+    end_pd = pd.to_datetime(end_time, format="%Y%m%d%H")
+    expected_frames = int(((end_pd - start_pd).total_seconds() // 3600) / 6) + 1
+    if len(sorted_files) != expected_frames:
+        print(f"Warning: Expected {expected_frames} files based on time range, but found {len(sorted_files)} files.")
+
+    return get_ids_and_buffer([data_dir], in_names)

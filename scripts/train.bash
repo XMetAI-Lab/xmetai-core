@@ -83,7 +83,13 @@ function setup_environment() {
     fi
 
     if [[ "$config_file_name" == *"s2s"* ]]; then # for s2s model tests
-        export DATA_DIR="${data_dir}/s2s.1950-2024.c76/"
+        if [[ "$config_file_name" == *"cra"* ]]; then
+            export DATA_DIR="${data_dir}/cra.2000_2024.c87.p25.h24/"
+        elif [[ "$config_file_name" == *"p25"* ]]; then
+            export DATA_DIR="${data_dir}/era5.1959_2023.c87.p25.h24/"
+        else
+            export DATA_DIR="${data_dir}/s2s.1950-2024.c76/"
+        fi
         # check if string s2s_base exist in ${CONFIG_FILE_TMP}
         if grep -q "s2s_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/s2s_base.py"
@@ -99,7 +105,11 @@ function setup_environment() {
             export BASE_CONFIG="${CONFIG_FILE_TMP}"
         fi
     elif [[ "$config_file_name" == *"ens"* || "$config_file_name" == *"iwc"* ]]; then
-        export DATA_DIR="${data_dir}/ens/ens.1979-2022.c78/"
+        if [[ "$config_file_name" == *"cra"* ]]; then
+            export DATA_DIR="${data_dir}/cra.1979-2025.c71.p25.h6/"
+        else
+            export DATA_DIR="${data_dir}/era5.1979-2024.c78.p25.h6/"
+        fi
         if grep -q "iwc_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/iwc_base.py"
         else

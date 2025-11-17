@@ -2,7 +2,7 @@
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-11-07 21:09:40
 Description: subseasonal to seasonal deterministic model with ViT backbone.
-Copyright (c) 2025 by CMA/douzesheng, All Rights Reserved. 
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
 '''
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-

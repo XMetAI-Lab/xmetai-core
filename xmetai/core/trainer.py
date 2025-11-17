@@ -14,7 +14,7 @@ from xmetai.utils.comm import get_rank, gather, is_main_process
 from xmetai.utils.events import EventStorage, get_event_storage
 from xmetai.models import EMA
 
-__all__ = ["HookBase", "TrainerBase", "SimpleTrainer", "AMPTrainer", "ExpandTrainer"]
+__all__ = ["HookBase", "TrainerBase", "SimpleTrainer", "ExpandTrainer"]
 
 
 class HookBase:
@@ -284,7 +284,7 @@ class SimpleTrainer(TrainerBase):
         # create a thread pool that can execute non critical logic in run_step asynchronically
         # use only 1 worker so tasks will be executred in order of submitting.
         self.concurrent_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        
+
         self.use_ema = use_ema
         if self.use_ema:
             self.ema = EMA(model)
@@ -321,6 +321,8 @@ class SimpleTrainer(TrainerBase):
         """
         with torch.amp.autocast(device_type=self.model.device, dtype=self.model.dtype):
             loss_dict = self.model(data)
+        if loss_dict is None:
+            return
         if isinstance(loss_dict, torch.Tensor):
             losses = loss_dict
             loss_dict = {"total_loss": loss_dict}
@@ -448,102 +450,6 @@ class SimpleTrainer(TrainerBase):
         self.concurrent_executor.shutdown(wait=True)
 
 
-class AMPTrainer(SimpleTrainer):
-    """
-    Like :class:`SimpleTrainer`, but uses PyTorch's native automatic mixed precision
-    in the training loop.
-    """
-
-    def __init__(
-        self,
-        model,
-        data_loader,
-        optimizer,
-        gather_metric_period=1,
-        zero_grad_before_forward=False,
-        grad_scaler=None,
-        precision: torch.dtype = torch.float16,
-        log_grad_scaler: bool = False,
-        async_write_metrics=False,
-    ):
-        """
-        Args:
-            model, data_loader, optimizer, gather_metric_period, zero_grad_before_forward,
-                async_write_metrics: same as in :class:`SimpleTrainer`.
-            grad_scaler: torch GradScaler to automatically scale gradients.
-            precision: torch.dtype as the target precision to cast to in computations
-        """
-        unsupported = "AMPTrainer does not support single-process multi-device training!"
-        if isinstance(model, DistributedDataParallel):
-            assert not (model.device_ids and len(model.device_ids) > 1), unsupported
-        assert not isinstance(model, DataParallel), unsupported
-
-        super().__init__(
-            model, data_loader, optimizer, gather_metric_period, zero_grad_before_forward
-        )
-
-        if grad_scaler is None:
-            grad_scaler = torch.amp.GradScaler(device="cuda")
-        self.grad_scaler = grad_scaler
-        self.precision = precision
-        self.log_grad_scaler = log_grad_scaler
-
-    def run_step(self):
-        """
-        Implement the AMP training logic.
-        """
-        assert self.model.training, "[AMPTrainer] model was changed to eval mode!"
-        assert torch.cuda.is_available(), "[AMPTrainer] CUDA is required for AMP training!"
-
-        start = time.perf_counter()
-        data = next(self._data_loader_iter)
-        data_time = time.perf_counter() - start
-
-        if self.zero_grad_before_forward:
-            self.optimizer.zero_grad()
-        with torch.amp.autocast(device_type='cuda', dtype=self.precision):
-            loss_dict = self.model(data)
-            if isinstance(loss_dict, torch.Tensor):
-                losses = loss_dict
-                loss_dict = {"total_loss": loss_dict}
-            else:
-                losses = sum(loss_dict.values())
-
-        if not self.zero_grad_before_forward:
-            self.optimizer.zero_grad()
-
-        self.grad_scaler.scale(losses).backward()
-
-        if self.log_grad_scaler:
-            storage = get_event_storage()
-            storage.put_scalar("[metric]grad_scaler", self.grad_scaler.get_scale())
-
-        self.after_backward()
-
-        if self.use_ema:
-            self.ema(self.model)
-
-        if self.async_write_metrics:
-            # write metrics asynchronically
-            self.concurrent_executor.submit(
-                self._write_metrics, loss_dict, data_time, iter=self.iter
-            )
-        else:
-            self._write_metrics(loss_dict, data_time)
-
-        self.grad_scaler.step(self.optimizer)
-        self.grad_scaler.update()
-
-    def state_dict(self):
-        ret = super().state_dict()
-        ret["grad_scaler"] = self.grad_scaler.state_dict()
-        return ret
-
-    def load_state_dict(self, state_dict):
-        super().load_state_dict(state_dict)
-        self.grad_scaler.load_state_dict(state_dict["grad_scaler"])
-
-
 class ExpandTrainer(SimpleTrainer):
     def __init__(self, model, data_loader, optimizer, gather_metric_period=1, zero_grad_before_forward=False, async_write_metrics=False, use_ema=True, increment_iter=1000, ens_train=False):
         """
@@ -589,6 +495,8 @@ class ExpandTrainer(SimpleTrainer):
         """
         with torch.amp.autocast(device_type=self.model.device, dtype=self.model.dtype):
             loss_dict = self.model(data)
+        if loss_dict is None:
+            return
         if isinstance(loss_dict, torch.Tensor):
             losses = loss_dict
             loss_dict = {"total_loss": loss_dict}
@@ -629,6 +537,6 @@ class ExpandTrainer(SimpleTrainer):
         if self.future_step != future_step:
             self.logger.info(f"Expanding data to future step {future_step} from current step {self.future_step}")
             self.future_step = future_step
-            
+
         data["future_frames"] = future_step
         pass

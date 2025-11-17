@@ -49,12 +49,12 @@ class ERA5(Dataset):
         self.ds = ds.sel(time=hit_time)
         self.logger.info(f"Dataset loaded with {len(self.ds.time)} time steps.")
 
-        if interval < 0:
-            self.inds = make_seq_inference(self.ds, self.total_frames, freq=freq)
-        else:
-            self.inds = make_seq(self.ds, self.total_frames, freq=freq, interval=interval)
-        self.logger.debug(f"inds: {self.inds}")
         times = self.ds.time.values
+        if interval < 0:
+            self.inds = make_seq_inference(times, self.total_frames, freq=freq)
+        else:
+            self.inds = make_seq(times, self.total_frames, freq=freq, interval=interval)
+        self.logger.debug(f"inds: {self.inds}")
         self.id_to_time = {i: times[i + self.hist_frames - 1] for i in self.inds}  # id maps to the time of the last frame in the sequence
 
         self.start_time = self.id_to_time[self.inds[0]]
@@ -104,7 +104,7 @@ class ERA5(Dataset):
 
         inds = np.concatenate([lft_inds, rht_inds])
         imgs = torch.from_numpy(self.ds.isel(time=inds).data.values)
-        imgs = torch.nan_to_num(imgs)
+        imgs = torch.nan_to_num(imgs, nan=0.0, posinf=0.0, neginf=0.0)
         if self.select_vars is not None:
             imgs = imgs[:, self.select_vars, ...]
         inputs = imgs[: self.hist_frames]
