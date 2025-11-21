@@ -27,6 +27,7 @@ try:
         inference_on_dataset,
         create_ddp_model,
         create_fsdp_model,
+        create_fsdp2_model,
     )
     from xmetai.utils import comm
 except ImportError as e:
@@ -80,6 +81,9 @@ def build_model(cfg):
     elif cfg.train.use_fsdp:
         logger.info(f"fsdp for mods:{cfg.train.fsdp.mods}")
         model = create_fsdp_model(model, **cfg.train.fsdp)
+    elif cfg.train.use_fsdp2:
+        logger.info(f"fsdp2 for mods:{cfg.train.fsdp.mods}")
+        model = create_fsdp2_model(model, **cfg.train.fsdp)
     else:
         logger.warning("Neither DDP nor FSDP is enabled, using single GPU training.")
     model.device = cfg.train.device_type

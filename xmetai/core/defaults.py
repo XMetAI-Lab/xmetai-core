@@ -90,7 +90,7 @@ def create_fsdp_model(model, **kwargs):
         device_id=torch.cuda.current_device(),
         mixed_precision=mp,
         sharding_strategy=ShardingStrategy.FULL_SHARD,
-        #auto_wrap_policy=auto_wrap_policy,
+        auto_wrap_policy=auto_wrap_policy,
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
         sync_module_states=True,
         use_orig_params=True,

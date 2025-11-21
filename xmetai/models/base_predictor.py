@@ -150,7 +150,7 @@ class BasePredictor(Meta):
         # convert inputs to proper dtype and device
         inputs = data["inputs"]
         input = inputs[:, -self.in_frames:]
-        input = input.to(dtype=self.dtype, device=self.device)
+        input = input.to(dtype=self.dtype, device=self.device, non_blocking=True)
         # convert times to pandas datetime
         times = data["times"]
         times = pd.to_datetime(times.cpu().numpy())
@@ -164,7 +164,7 @@ class BasePredictor(Meta):
 
         if "targets" in data:
             targets = data["targets"]
-            targets = targets.to(device=self.device)
+            targets = targets.to(device=self.device, non_blocking=True)
             if self.training:
                 future_frames = data.get("future_frames", 1)
                 targets = targets[:, :future_frames]

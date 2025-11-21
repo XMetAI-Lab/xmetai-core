@@ -15,7 +15,7 @@ from xmetai import MODELS, METRICS, DATASETS, LazyConfig, build_test_loader, bui
 # Global settings
 ######################################################################
 # set the environment variable for PyTorch CUDA memory allocation
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32,expandable_segments:True'
 
 CONFIG_PATH = os.path.dirname(__file__)
 ROOT_PATH = os.path.join(CONFIG_PATH, "../")

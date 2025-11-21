@@ -37,6 +37,7 @@ train = dict(
     device_type="cuda",
     use_ddp=True,  # Use DDP or not, default is True (use DDP)
     use_fsdp=False,  # Use FSDP or not, default is False (use DDP)
+    use_fsdp2=False,  # Use FSDP2 or not, default is False (use DDP)
     activation_checkpointing=True,  # Use activation checkpointing or not, default is True
     use_ema=True,  # Use Exponential Moving Average (EMA) for model weights, default is True
     ens_train=False, # Use ensemble training or not, default is False

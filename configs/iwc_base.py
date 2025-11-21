@@ -15,7 +15,7 @@ from xmetai import MODELS, METRICS, DATASETS, LazyConfig, build_test_loader, bui
 # Global settings
 ######################################################################
 # set the environment variable for PyTorch CUDA memory allocation
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:128'
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32,expandable_segments:True'
 
 CONFIG_PATH = os.path.dirname(__file__)
 ROOT_PATH = os.path.join(CONFIG_PATH, "../")
@@ -54,7 +54,7 @@ train.output_dir = output_dir
 train.activation_checkpointing = True
 train.use_fsdp = True
 train.use_ddp = False
-train.eval_period = iters_per_epoch//total_batch_size  # eval for each epoch
+#train.eval_period = iters_per_epoch//total_batch_size  # eval for each epoch
 optimizer.lr = lr
 ######################################################################
 # Model settings
