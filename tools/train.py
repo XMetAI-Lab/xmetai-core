@@ -74,14 +74,15 @@ def build_model(cfg):
         for param in module.parameters():
             if not param.requires_grad and param.grad is not None:
                 param.grad = None
-    model.apply(clear_grad)
     # Wrap model with DDP or FSDP
     if cfg.train.use_ddp:
+        model.apply(clear_grad)
         model = create_ddp_model(model, **cfg.train.ddp)
     elif cfg.train.use_fsdp:
         logger.info(f"fsdp for mods:{cfg.train.fsdp.mods}")
         model = create_fsdp_model(model, **cfg.train.fsdp)
     elif cfg.train.use_fsdp2:
+        FSDPCheckpointer(model).load(cfg.train.init_checkpoint)  # TODO: Ugly hack to load before fsdp2 wrapping
         logger.info(f"fsdp2 for mods:{cfg.train.fsdp.mods}")
         model = create_fsdp2_model(model, **cfg.train.fsdp)
     else:
@@ -170,7 +171,8 @@ def do_train(args, cfg):
         ]
     )
 
-    checkpointer.resume_or_load(cfg.train.init_checkpoint, resume=args.resume)
+    if not cfg.train.use_fsdp2: # TODO: Ugly hack to avoid loading twice
+        checkpointer.resume_or_load(cfg.train.init_checkpoint, resume=args.resume)
 
     if cfg.train.use_ema:
         trainer.ema.update_params(model)

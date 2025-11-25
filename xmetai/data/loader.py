@@ -87,7 +87,7 @@ def build_test_loader(
     batch_size = total_batch_size // world_size
 
     if sampler is None:
-        sampler = InferenceSampler(len(dataset))
+        sampler = InferenceSampler(len(dataset), drop_last=True)
 
     return torchdata.DataLoader(
         dataset,

@@ -96,7 +96,7 @@ def create_fsdp_model(model, **kwargs):
         use_orig_params=True,
         cpu_offload=cpu_offload,
         limit_all_gathers=True,
-        ignored_states=[param for param in model.parameters() if not param.requires_grad],
+        #ignored_states=[param for param in model.parameters() if not param.requires_grad],
     )
     # 设置 dtype 供 autocast 使用
     fsdp.dtype = mp.param_dtype
@@ -134,7 +134,6 @@ def create_fsdp2_model(model, **kwargs):
         mesh=device_mesh,
         mp_policy=mp_policy,
         offload_policy=cpu_offload,
-        ignored_params=[param for param in model.parameters() if not param.requires_grad],
     )
     for module in model.modules():
         if isinstance(module, mods):

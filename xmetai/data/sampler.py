@@ -260,7 +260,7 @@ class InferenceSampler(Sampler):
     this sampler produces different number of samples on different workers.
     """
 
-    def __init__(self, size: int):
+    def __init__(self, size: int, drop_last: bool = False):
         """
         Args:
             size (int): the total number of data of the underlying dataset to sample from
@@ -270,12 +270,12 @@ class InferenceSampler(Sampler):
         self._rank = comm.get_rank()
         self._world_size = comm.get_world_size()
         self._local_indices = self._get_local_indices(
-            size, self._world_size, self._rank)
+            size, self._world_size, self._rank, drop_last=drop_last)
 
     @staticmethod
-    def _get_local_indices(total_size, world_size, rank):
+    def _get_local_indices(total_size, world_size, rank, drop_last):
         shard_size = total_size // world_size
-        left = total_size % world_size
+        left = 0 if drop_last else total_size % world_size
         shard_sizes = [shard_size + int(r < left) for r in range(world_size)]
         begin = sum(shard_sizes[:rank])
         end = min(sum(shard_sizes[: rank + 1]), total_size)
