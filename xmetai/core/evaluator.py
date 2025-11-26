@@ -157,7 +157,6 @@ def inference_on_dataset(
         #if hasattr(model, "sharded_state"):
         #    logger.info("Using sharded model state for inference with FSDP.")
         #    stack.enter_context(model.sharded_state())
-
         start_data_time = time.perf_counter()
         dict.get(callbacks or {}, "on_start", lambda: None)()
         for idx, inputs in enumerate(data_loader):
@@ -250,5 +249,12 @@ def inference_context(model):
     """
     training_mode = model.training
     model.eval()
-    yield
+    with torch.inference_mode():
+        yield
     model.train(training_mode)
+    # for FSDP2 models, reshard after inference.
+    if hasattr(model, "reshard") and callable(getattr(model, "reshard")):
+        model.reshard()
+    for module in model.modules():
+        if hasattr(module, "reshard") and callable(getattr(module, "reshard")):
+            module.reshard()
