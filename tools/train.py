@@ -68,7 +68,7 @@ def build_model(cfg):
             checkpoint_wrapper_fn=wrap_f1,
             check_fn=check_fn
         )
-
+    FSDPCheckpointer(model).load(cfg.train.init_checkpoint)  # TODO: Ugly hack to load before fsdp2 wrapping
     # clear freezed parameters grad
     def clear_grad(module):
         for param in module.parameters():
@@ -82,7 +82,6 @@ def build_model(cfg):
         logger.info(f"fsdp for mods:{cfg.train.fsdp.mods}")
         model = create_fsdp_model(model, **cfg.train.fsdp)
     elif cfg.train.use_fsdp2:
-        FSDPCheckpointer(model).load(cfg.train.init_checkpoint)  # TODO: Ugly hack to load before fsdp2 wrapping
         logger.info(f"fsdp2 for mods:{cfg.train.fsdp.mods}")
         model = create_fsdp2_model(model, **cfg.train.fsdp)
     else:
@@ -247,12 +246,10 @@ def main(args):
 
     if args.eval:
         model = build_model(cfg)
-        FSDPCheckpointer(model).load(cfg.train.init_checkpoint)
         do_test(cfg, model)
         torch.distributed.destroy_process_group()
     elif args.export:
         model = build_model(cfg)
-        FSDPCheckpointer(model).load(cfg.train.init_checkpoint)
         do_export(model, **cfg.train.export_kwargs)
     else:
         do_train(args, cfg)

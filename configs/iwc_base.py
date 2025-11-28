@@ -52,7 +52,8 @@ if os.path.exists(f'{output_dir}/model_final.pth'):
 train.max_iter = epochs * iters_per_epoch//total_batch_size  # max_steps with 60000 iterations per epoch
 train.output_dir = output_dir
 train.activation_checkpointing = True
-train.use_fsdp = True
+train.use_fsdp2 = True
+train.use_fsdp = False
 train.use_ddp = False
 #train.eval_period = iters_per_epoch//total_batch_size  # eval for each epoch
 optimizer.lr = lr

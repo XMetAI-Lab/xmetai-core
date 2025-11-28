@@ -98,7 +98,11 @@ class BasePredictor(Meta):
 
         logids = self.logid
         if len(test_chans) > 0:
-            x = input[:, :, test_chans].float()
+            # check if input is already only test_chans
+            if input.size(2) != len(test_chans):
+                x = input[:, :, test_chans].float()
+            else:
+                x = input.float()
             mean = self.mean[test_chans].to(x)
             std = self.std[test_chans].to(x)
             logids = []

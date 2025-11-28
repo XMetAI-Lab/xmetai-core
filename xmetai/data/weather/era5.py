@@ -43,7 +43,7 @@ class ERA5(Dataset):
         ds = ds.sel(time=slice(*years))
 
         self.fcst_frames += self.start_frames
-        self.total_frames = self.hist_frames + (self.fcst_frames if self.training else max(self.fcst_frames))
+        self.total_frames = self.hist_frames + (0 if inference_only else self.fcst_frames if self.training else self.fcst_frames.max())
 
         hit_time = [t for t in pd.to_datetime(ds.time) if t.hour % freq == 0]
         self.ds = ds.sel(time=hit_time)
@@ -99,6 +99,8 @@ class ERA5(Dataset):
 
         if self.training:
             rht_inds = rht_inds[self.start_frames:]
+        elif self.inference_only:
+            rht_inds = np.array([], dtype=int)
         else:
             rht_inds = rht_inds[self.fcst_frames - 1]
 
