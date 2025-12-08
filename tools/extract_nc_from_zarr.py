@@ -30,7 +30,7 @@ def parse_args():
         help="Path to input Zarr dataset"
     )
     parser.add_argument(
-        "--save_path", "-s", default="~/workspace/tmp/",
+        "--save_path", "-s", default="/workspace/tmp/",
         help="Path to save the output NetCDF file"
     )
     parser.add_argument(
