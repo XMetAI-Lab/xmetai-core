@@ -84,7 +84,7 @@ function setup_environment() {
 
     if [[ "$config_file_name" == *"s2s"* ]]; then # for s2s model tests
         if [[ "$config_file_name" == *"cra"* ]]; then
-            export DATA_DIR="${data_dir}/cra.2000_2024.c87.p25.h24/"
+            export DATA_DIR="${data_dir}/cra.1979_2024.c87.p25.h24/"
         elif [[ "$config_file_name" == *"p25"* ]]; then
             export DATA_DIR="${data_dir}/era5.1959_2023.c87.p25.h24/"
         else

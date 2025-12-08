@@ -89,6 +89,9 @@ def load_zarr_data(zarr_path, levels_list, stats):
 
     stats["mean"] = stats["mean"].assign_coords(**{coord_name: level_coords.values})
     stats["std"] = stats["std"].assign_coords(**{coord_name: level_coords.values})
+
+    if len(levels_list) == 0:
+        return ds
     # Find indices of the requested levels
     level_values = level_coords.values.tolist()
     level_indices = []
@@ -100,7 +103,7 @@ def load_zarr_data(zarr_path, levels_list, stats):
             level_indices.append(idx)
             existing_levels.append(lvl)
         except ValueError:
-            print(f"Warning: Level '{lvl}' not found in the dataset")
+            print(f"Warning: Level '{lvl}' from {levels_list} not found in the dataset")
 
     if not existing_levels:
         print("Error: None of the requested levels were found in the dataset.")
@@ -355,7 +358,10 @@ def main():
     args = parse_args()
 
     # Parse levels
-    levels_list = args.levels.split(',')
+    if len(args.levels.strip()) == 0:
+        levels_list = []
+    else:
+        levels_list = args.levels.split(',')
 
     print(f"Extracting data from: {args.zarr_path}")
     print(f"Start date: {args.start_date}, Time interval: {args.time_interval} days")
