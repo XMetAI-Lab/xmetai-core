@@ -255,25 +255,17 @@ echo "  HostName:         ${HOSTNAME}"
 case $STAGE in
     train|eval|ltrain|leval)
         echo "Starting ${STAGE}ing..."
-        if [[ "${NUM_GPUS}" -eq 1 ]]; then
-            python "${TRAIN_SCRIPT}" \
-                   --config-file "${CONFIG_FILE_TMP}" \
-                   --num-gpus "${NUM_GPUS}" \
-                   --num-machines 1 \
-                   "${additional_args[@]}"
-        else
-            torchrun --nproc_per_node "${NUM_GPUS}" \
-                     --node_rank "${NODE_RANK}" \
-                     --nnodes "${NNODES}" \
-                     --master_addr "${MASTER_ADDR}" \
-                     --local-addr "${LOCAL_ADDR}" \
-                     --master-port "${MASTER_PORT}" \
-                     ${TRAIN_SCRIPT} \
-                     --config-file "${CONFIG_FILE_TMP}" \
-                     --num-gpus "${NUM_GPUS}" \
-                     --num-machines "${NNODES}" \
-                     "${additional_args[@]}"
-        fi
+        torchrun --nproc_per_node "${NUM_GPUS}" \
+                 --node_rank "${NODE_RANK}" \
+                 --nnodes "${NNODES}" \
+                 --master_addr "${MASTER_ADDR}" \
+                 --local-addr "${LOCAL_ADDR}" \
+                 --master-port "${MASTER_PORT}" \
+                 ${TRAIN_SCRIPT} \
+                 --config-file "${CONFIG_FILE_TMP}" \
+                 --num-gpus "${NUM_GPUS}" \
+                 --num-machines "${NNODES}" \
+                 "${additional_args[@]}"
         ;;
     export)
         echo "Starting export..."

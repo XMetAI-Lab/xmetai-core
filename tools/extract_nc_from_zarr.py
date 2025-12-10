@@ -135,8 +135,10 @@ def load_stats(zarr_path):
             mean_ds = xr.open_dataarray(mean_path)
             std_ds = xr.open_dataarray(std_path)
             # update channel coords to level
-            mean_ds = mean_ds.rename({'channel': 'level'})
-            std_ds = std_ds.rename({'channel': 'level'})
+            if "channel" in mean_ds.coords:
+                mean_ds = mean_ds.rename({'channel': 'level'})
+            if "channel" in std_ds.coords:
+                std_ds = std_ds.rename({'channel': 'level'})
             stats = {
                 'mean': mean_ds,
                 'std': std_ds

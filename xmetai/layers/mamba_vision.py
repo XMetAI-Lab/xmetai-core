@@ -18,11 +18,19 @@ from timm.layers.mlp import Mlp
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, SelectiveScanFn
 from einops import rearrange, repeat
 
+try:
+    from flash_attn import flash_attn_func
+except:
+    print("flash_attn not installed.")
+    flash_attn_func = None
+
 __all__ = ["MambaVisionLayer"]
 
 # define symbolic function for SelectiveScanFn
+
+
 def symbolic_selective_scan_fn(g, u, delta, a, b, c, d=None, z=None, delta_bias=None, delta_softplus=False,
-                                return_last_state=False):  # pylint: disable=too-many-arguments, invalid-name
+                               return_last_state=False):  # pylint: disable=too-many-arguments, invalid-name
     """
     ONNX export symbolic for Mamba::SelectiveScanFn custom op; constructs the node with optional inputs and flags.
     """
@@ -34,6 +42,8 @@ def symbolic_selective_scan_fn(g, u, delta, a, b, c, d=None, z=None, delta_bias=
     # shape inference: output shape is same as input u
     node.setType(u.type())
     return node
+
+
 setattr(SelectiveScanFn, "symbolic", symbolic_selective_scan_fn)
 
 
@@ -186,13 +196,13 @@ class Attention(nn.Module):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q), self.k_norm(k)
+        q, k = self.q_norm(q).to(v), self.k_norm(k).to(v)
 
         if self.fused_attn:
-            x = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.attn_drop.p,
-            )
+            if flash_attn_func is None:
+                x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p)
+            else:
+                x = flash_attn_func(q, k, v, dropout_p=self.attn_drop.p)
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)

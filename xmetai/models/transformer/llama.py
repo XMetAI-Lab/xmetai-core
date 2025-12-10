@@ -9,26 +9,11 @@ from torch import nn
 __all__ = ["RotaryAttention", "precompute_freqs_cis", "precompute_freqs_cis_2d"]
 
 
-llama_configs = {
-    "7B": dict(n_layer=32, n_head=32, n_embd=4096),
-    "13B": dict(n_layer=40, n_head=40, n_embd=5120),
-    "30B": dict(n_layer=60, n_head=52, n_embd=6656),
-    "65B": dict(n_layer=80, n_head=64, n_embd=8192),
-}
-
-
-class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int, eps: float):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-
-    def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
-    def forward(self, x):
-        output = self._norm(x.float()).to(x)
-        return output * self.weight
+try:
+    from flash_attn import flash_attn_func
+except:
+    print("flash_attn not installed.")
+    flash_attn_func = None
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
@@ -60,6 +45,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
     return freqs_cis.view(shape)
 
+
 def apply_rotary_emb(
     xq: torch.Tensor,
     xk: torch.Tensor,
@@ -87,7 +73,6 @@ def apply_rotary_emb(
     return xq_out.to(xq), xk_out.to(xk)
 
 
-
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     """torch.repeat_interleave(x, dim=2, repeats=n_rep)"""
     bs, slen, n_kv_heads, head_dim = x.shape
@@ -100,34 +85,9 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
-
-# Efficient implementation equivalent to the following:
-def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None) -> torch.Tensor:
-    # Efficient implementation equivalent to the following:
-    L, S = query.size(-2), key.size(-2)
-    scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
-    attn_bias = torch.zeros(L, S, dtype=query.dtype)
-    if is_causal:
-        assert attn_mask is None
-        temp_mask = torch.ones(L, S, dtype=torch.bool).tril(diagonal=0)
-        attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
-        attn_bias.to(query.dtype)
-
-    if attn_mask is not None:
-        if attn_mask.dtype == torch.bool:
-            attn_mask.masked_fill_(attn_mask.logical_not(), float("-inf"))
-        else:
-            attn_bias += attn_mask
-    attn_weight = query @ key.transpose(-2, -1) * scale_factor
-    attn_weight += attn_bias
-    attn_weight = torch.softmax(attn_weight, dim=-1)
-    attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
-    return attn_weight @ value
-
-
 class RotaryAttention(nn.Module):
     def __init__(
-        self, 
+        self,
         dim: int,
         n_heads: int = 32,
         n_kv_heads: Optional[int] = None,
@@ -153,8 +113,7 @@ class RotaryAttention(nn.Module):
         self.dropout = dropout
         self.max_seq_len = max_seq_len
         self.is_causal = is_causal
-        self.flash = flash 
-    
+        self.flash = flash
 
     def forward(
         self,
@@ -166,10 +125,10 @@ class RotaryAttention(nn.Module):
         bsz, seq_len, _ = x.shape
         # QKV
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-    
+
         if self.max_seq_len is None:
             xq = xq.view(bsz, seq_len, self.n_local_heads, self.head_dim)
-            xk = xk.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)   
+            xk = xk.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
             xv = xv.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
         else:
             ns = self.max_seq_len // seq_len
@@ -183,7 +142,7 @@ class RotaryAttention(nn.Module):
         if self.max_seq_len is not None:
             xq = xq.view(bsz, seq_len, self.n_local_heads, self.head_dim)
             xk = xk.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
-        
+
         # grouped multiquery attention: expand out keys and values
         xk = repeat_kv(xk, self.n_rep)  # (bs, seq_len, n_local_heads, head_dim)
         xv = repeat_kv(xv, self.n_rep)  # (bs, seq_len, n_local_heads, head_dim)
@@ -194,19 +153,17 @@ class RotaryAttention(nn.Module):
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
         # print(f"xq: {xq.min():.3f} ~ {xq.max():.3f}")
-    
+
         if mask is not None:
             mask = mask.to(xq).unsqueeze(1).contiguous()
-            mask = mask.repeat([bsz // ns, 1, 1, 1])        
+            mask = mask.repeat([bsz // ns, 1, 1, 1])
 
         # flash implementation
         if self.flash:
-            output = torch.nn.functional.scaled_dot_product_attention(
-                xq, xk, xv, 
-                attn_mask=mask, 
-                dropout_p=self.dropout if self.training else 0.0, 
-                is_causal=self.is_causal
-            )
+            if flash_attn_func is None and mask is None:
+                output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0, is_causal=self.is_causal)
+            else:
+                output = flash_attn_func(xq, xk, xv, dropout_p=self.dropout if self.training else 0.0, causal=self.is_causal)
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / np.sqrt(self.head_dim)
@@ -214,7 +171,7 @@ class RotaryAttention(nn.Module):
                 scores = scores + mask
             scores = F.softmax(scores.float(), dim=-1).to(xq)
             scores = self.attn_dropout(scores)
-            output = torch.matmul(scores, xv)  
+            output = torch.matmul(scores, xv)
 
         # restore time as batch dimension and concat heads
         output = output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
@@ -223,6 +180,3 @@ class RotaryAttention(nn.Module):
         output = self.wo(output)
         output = self.resid_dropout(output)
         return output
-
-
-
