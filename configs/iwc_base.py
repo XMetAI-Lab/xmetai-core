@@ -70,6 +70,7 @@ buffers = data_info["buffers"]
 
 test_names = ["z500", "msl", "t2m", "sst", "ttr", "tp"]
 #test_names = ["z500", "t2m", "tp"]
+test_names = [ch for ch in test_names if ch in out_names]
 test_chans = [out_names.index(n) for n in test_names]
 test_frames = np.arange(1, 13).tolist()  # predict 1-3 days ahead with 6-hour frequency
 test_frames = np.arange(1, 61).tolist()  # predict 1-15 days ahead with 6-hour frequency
@@ -92,9 +93,8 @@ depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 ######################################################################
 dataloader = OmegaConf.create()
 
-train_times = ("19500101-00", "20230101-00")
-#test_times = ("20240101-18", "20250103-18") # 2024 data lead to huge loss.
-test_times = ("20230101-18", "20240103-18")
+train_times = ("19500101-00", "20231231-18")
+test_times = ("20240101-18", "20251231-18")
 #test_times = ("20200101-18", "20250502-18")
 dataloader.train = L(build_train_loader)(
     dataset=L(DATASETS.get("ERA5"))(
@@ -144,6 +144,7 @@ if export_onnx:
     from xmetai.data import make_onnx
     train.use_ddp = False
     train.use_fsdp = False
+    train.use_fsdp2 = False
     train.activation_checkpointing = False
     dataloader.test.total_batch_size = 1
     make_onnx(

@@ -1,4 +1,3 @@
-import math
 import numpy as np
 from typing import Optional, Tuple
 
@@ -7,13 +6,6 @@ import torch.nn.functional as F
 from torch import nn
 
 __all__ = ["RotaryAttention", "precompute_freqs_cis", "precompute_freqs_cis_2d"]
-
-
-try:
-    from flash_attn import flash_attn_func
-except:
-    print("flash_attn not installed.")
-    flash_attn_func = None
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
@@ -146,13 +138,11 @@ class RotaryAttention(nn.Module):
         # grouped multiquery attention: expand out keys and values
         xk = repeat_kv(xk, self.n_rep)  # (bs, seq_len, n_local_heads, head_dim)
         xv = repeat_kv(xv, self.n_rep)  # (bs, seq_len, n_local_heads, head_dim)
-        # return xv
 
         # make heads into a batch dimension
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seq_len, head_dim)
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
-        # print(f"xq: {xq.min():.3f} ~ {xq.max():.3f}")
 
         if mask is not None:
             mask = mask.to(xq).unsqueeze(1).contiguous()
@@ -160,10 +150,7 @@ class RotaryAttention(nn.Module):
 
         # flash implementation
         if self.flash:
-            if flash_attn_func is None and mask is None:
-                output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0, is_causal=self.is_causal)
-            else:
-                output = flash_attn_func(xq, xk, xv, dropout_p=self.dropout if self.training else 0.0, causal=self.is_causal)
+            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0, is_causal=self.is_causal)
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / np.sqrt(self.head_dim)

@@ -86,7 +86,7 @@ def load_dataset(input_path, var_name):
     return ds[var_name]
 
 
-def analyze_single_slice(data_slice, axis_val):
+def analyze_single_slice(data_slice, axis_values):
     """
     Analyze a single slice of data and return statistics.
 
@@ -105,7 +105,7 @@ def analyze_single_slice(data_slice, axis_val):
     )
 
     result = {
-        'axis_val': data_slice.level.values,
+        'axis_val': axis_values,
         'min': np.array(min_val.values),
         'max': np.array(max_val.values),
     }
@@ -117,10 +117,10 @@ def analyze_single_slice(data_slice, axis_val):
     result['inf_count'] = int(inf_count)
 
     if nan_count>0 or inf_count>0:
-        print(f"data {axis_val} has NaN/Inf values")
+        print(f"data {data_slice.time.values} has NaN/Inf values")
     
     if np.min(min_val) < -100.0 or np.max(max_val) > 100.0:
-        print(f"data {axis_val} has out-of-range values: min={np.min(min_val.values)}, max={np.max(max_val.values)}")
+        print(f"data {data_slice.time.values} has out-of-range values: min={np.min(min_val.values)}, max={np.max(max_val.values)}")
 
     return result
 
@@ -212,10 +212,10 @@ def analyze_data(data, axis, slice_arg=None, scheduler="processes", num_workers=
         # Create and execute tasks
         with executor_class(max_workers=max_workers) as executor:
             futures = []
-            for i, axis_val in enumerate(data[chunk_axis].values):
+            for i, _ in enumerate(data[chunk_axis].values):
                 selection = {chunk_axis: i}
                 slice_data = data.isel(**selection)
-                futures.append(executor.submit(analyze_single_slice, slice_data, axis_val))
+                futures.append(executor.submit(analyze_single_slice, slice_data, axis_values))
 
             # Get results as they complete
             for future in tqdm(concurrent.futures.as_completed(futures), desc=f"Processing {chunk_axis}", total=len(futures)):

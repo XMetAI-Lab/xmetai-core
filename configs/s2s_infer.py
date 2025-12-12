@@ -10,7 +10,7 @@ import logging
 import numpy as np
 from s2s_base import train, optimizer, scheduler, dataloader
 from s2s_base import output_dir, buffers
-from s2s_base import in_chans, out_chans, in_frames, test_chans, test_names
+from s2s_base import in_chans, out_chans, in_frames, test_chans, test_names, freq
 from s2s_base import logid, maskid, accumid
 from xmetai import LazyCall as L
 from xmetai import MODELS
@@ -22,6 +22,8 @@ logging.basicConfig(level=logging.INFO)
 # Training settings
 #####################################################################
 train.use_ddp = False  # Disable DDP for ONNX inference
+train.use_fsdp = False  # Disable FSDP for ONNX inference
+train.use_fsdp2 = False  # Disable FSDP2 for ONNX inference
 
 ######################################################################
 # Model settings
@@ -56,5 +58,5 @@ model.precision = "fp32"
 ######################################################################
 dataloader.test.dataset.interval = 100
 dataloader.test.dataset.fcst_frames = test_frames
-eval_times = [int(t * 24) for t in test_frames]
+eval_times = [int(t * freq) for t in test_frames]
 dataloader.evaluator[0].test_times = eval_times

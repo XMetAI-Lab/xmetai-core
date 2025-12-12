@@ -207,9 +207,9 @@ bash scripts/train.bash \
 # 导出为ONNX格式
 ./scripts/train.bash \
     --stage export \
-    --model configs/s2s_deterministic.py
+    --model configs/s2s_vit.py
 
-# 导出输出位置: ./output/6_6_12_12-s2s_deterministic-0.0005/model.onnx
+# 导出输出位置: ./output/6_6_12_12-s2s_vit-0.0005/model.onnx
 ```
 
 ### 参数说明
@@ -266,12 +266,6 @@ bash scripts/train.bash \
 
 ---
 
-## 许可证
-
-该项目受中国气象局管理。详见 `LICENSE` 文件。
-
----
-
 ## 贡献指南
 
 欢迎贡献！请遵循以下步骤：
@@ -291,15 +285,7 @@ bash scripts/train.bash \
 
 ---
 
-## 致谢
-
-感谢所有贡献者和雄安气象人工智能创新研究院的支持！
-
----
-
-## 附录
-
-### A. 快速命令参考
+## 快速命令参考
 
 ```bash
 # 训练
@@ -317,38 +303,6 @@ bash scripts/train.bash \
 # Lightning评估
 ./scripts/train.bash --stage leval --model configs/s2s_vit.py --members 8
 ```
-
-### B. 调试技巧
-
-```bash
-# 启用详细日志
-./scripts/train.bash --stage train --model config.py --verbose
-
-# 使用特定CUDA设备
-CUDA_VISIBLE_DEVICES=0 ./scripts/train.bash --stage train --model config.py
-
-# 启用PyTorch调试
-export TORCH_TRACEBACK=1
-
-# 启用NCCL调试信息
-export NCCL_DEBUG=INFO
-
-# 设置NCCL套接字接口(多节点训练时可能需要)
-export NCCL_SOCKET_IFNAME=eth0
-
-# 启用CUDA_LAUNCH_BLOCKING(单GPU调试时有用)
-export CUDA_LAUNCH_BLOCKING=1
-```
-
-### C. 性能优化建议
-
-1. **混合精度训练**：项目默认使用混合精度训练以提高训练速度和减少显存占用
-2. **梯度累积**：当单GPU显存不足时，可以通过增加批大小并使用梯度累积来模拟更大的批大小
-3. **数据预加载**：确保数据存储在高速存储设备上(如SSD)以减少I/O瓶颈
-4. **分布式训练调优**：
-   - 使用InfiniBand网络进行多节点训练
-   - 调整NCCL环境变量以优化通信性能
-   - 确保所有节点具有相同的硬件配置
 
 ---
 

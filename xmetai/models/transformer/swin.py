@@ -550,7 +550,7 @@ class SwinBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        t: torch.Tensor = None,
+        time_embedding: torch.Tensor = None,
         freqs_cos: torch.Tensor = None,
         freqs_sin: torch.Tensor = None,
     ):
@@ -561,7 +561,7 @@ class SwinBlock(nn.Module):
         shortcut = x
 
         if self.norm_type == "adaln":
-            gamma = self.adaln(t).unsqueeze(1)
+            gamma = self.adaln(time_embedding).unsqueeze(1)
             scale_msa, shift_msa, gate_msa, scale_mlp, shift_mlp, gate_mlp = gamma.chunk(6, dim=-1)
             x = self.norm1(x) * (1 + scale_msa) + shift_msa
         else:

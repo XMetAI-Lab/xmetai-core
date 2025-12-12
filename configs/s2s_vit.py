@@ -67,7 +67,7 @@ model = L(MODELS.get(model_name))(
     step_range=step_range,
     members=members,
     save_dir=output_dir+"/pred/",
-    use_mamba=True,  # Enable Mamba for better sequence modeling
+    layer_type="mamba",  # Enable Mamba for better sequence modeling
 )
 if load_from_pretrain:
     model.alpha = 1.1  # sequence loss exponential weight factor

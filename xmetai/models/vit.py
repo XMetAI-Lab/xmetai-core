@@ -32,7 +32,7 @@ class ViTModel(BasePredictor):
         image_size=(120, 240),  # resize from 121x240->120x240 with input data
         drop_rate=0.1,
         mlp_ratio=4,
-        use_mamba=True,
+        layer_type="mamba",
         freq=24,
         *args, **kwargs
     ):
@@ -64,7 +64,21 @@ class ViTModel(BasePredictor):
         # Transformer encoder with TransformerEncoderLayer
         blocks = []
         # 定义一个标准 TransformerEncoderLayer
-        if not use_mamba or MambaVisionLayer is None:   # original ViT style
+        if layer_type.lower() == "mamba":
+            self.logger.info("Using Mamba style transformer blocks.")
+            for _, depth in enumerate(depths):
+                block = MambaVisionLayer(dim=embed_dim,
+                                         depth=depth,
+                                         num_heads=num_heads,
+                                         mlp_ratio=mlp_ratio,
+                                         qkv_bias=True,
+                                         qk_scale=True,
+                                         conv=False,
+                                         drop=drop_rate,
+                                         transformer_blocks=list(range(depth//2+1, depth)) if depth % 2 != 0 else list(range(depth//2, depth)),
+                                         )
+                blocks.append(block)
+        else: # default use original ViT style transformer blocks
             self.logger.info("Using original ViT style transformer blocks.")
             encoder_layer = nn.TransformerEncoderLayer(
                 d_model=embed_dim,
@@ -79,20 +93,6 @@ class ViTModel(BasePredictor):
                     nn.TransformerEncoder(encoder_layer, num_layers=depth)
                 )
                 blocks.append(norm_layer(embed_dim))
-        else:   # Mamba style
-            self.logger.info("Using Mamba style transformer blocks.")
-            for _, depth in enumerate(depths):
-                block = MambaVisionLayer(dim=embed_dim,
-                                         depth=depth,
-                                         num_heads=num_heads,
-                                         mlp_ratio=mlp_ratio,
-                                         qkv_bias=True,
-                                         qk_scale=True,
-                                         conv=False,
-                                         drop=drop_rate,
-                                         transformer_blocks=list(range(depth//2+1, depth)) if depth % 2 != 0 else list(range(depth//2, depth)),
-                                         )
-                blocks.append(block)
         self.encoder = nn.Sequential(*blocks)
 
         self.logger.info(f"Using 2fc head with embed_dim: {embed_dim}, out_chans: {self.out_chans}, patch_size: {patch_size}")

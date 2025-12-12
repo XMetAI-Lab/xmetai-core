@@ -23,6 +23,7 @@ NUM_GPUS=1                        # Number of GPUs to use
 BATCH_PER_GPU=1                   # Batch size per GPU
 MASTER_ADDR=127.0.0.1             # Master address for distributed training
 NNODES=1                          # Total number of nodes
+SLEEP_TIME=0                     # Sleep time before starting (in seconds)
 additional_args=()                # Additional arguments to pass to Python script
 CONFIG_FILE="${ROOT_DIR}/configs/s2s_vit.py"
 TRAIN_SCRIPT="${ROOT_DIR}/tools/train.py"
@@ -43,6 +44,7 @@ Options:
   --batch, -b SIZE          Specify the batch size per GPU. Default: ${BATCH_PER_GPU}
   --master-addr, -a ADDR    Specify the master address for distributed training. Default: ${MASTER_ADDR}
   --nnodes, -n NUM          Specify the total number of nodes. Default: ${NNODES}
+  --sleep TIME              Sleep for TIME seconds before starting. Default: ${SLEEP_TIME}
   --verbose, -v             Enable verbose logging mode
   --help, -h                Show this help message and exit
 EOF
@@ -200,6 +202,10 @@ while [[ $# -gt 0 ]]; do
             NNODES="$2"
             shift 2
             ;;
+        --sleep)
+            SLEEP_TIME="$2"
+            shift 2
+            ;;
         --verbose|-v)
             VERBOSE_MODE=1
             shift
@@ -254,7 +260,12 @@ echo "  HostName:         ${HOSTNAME}"
 # ---- Run the specified stage ----
 case $STAGE in
     train|eval|ltrain|leval)
+        if [[ "${SLEEP_TIME}" -gt 0 ]]; then
+            echo "Sleeping for ${SLEEP_TIME} seconds before starting..."
+            sleep "${SLEEP_TIME}"
+        fi
         echo "Starting ${STAGE}ing..."
+        sed -i "s/^export_onnx.*/export_onnx = False/g" "${BASE_CONFIG}"
         torchrun --nproc_per_node "${NUM_GPUS}" \
                  --node_rank "${NODE_RANK}" \
                  --nnodes "${NNODES}" \

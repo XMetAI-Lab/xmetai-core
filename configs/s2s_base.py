@@ -142,7 +142,8 @@ if export_onnx:
         std=buffers.get("std", None),
         in_names=in_names,
         output_dir=output_dir,
-        embed_types=["step"],
+        #embed_types=["step"],
+        embed_types=["step", "hour", "doy"],
         model_name="s2s_pred.onnx",
         device=train.device_type
     )

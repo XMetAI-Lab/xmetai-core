@@ -114,7 +114,7 @@ class OnnxInferModel(BasePredictor):
         times=None,
     ):
         outputs = input.new_zeros(input.shape[0], num_step, *input.shape[-3:])
-        output = input.new_zeros(input.shape)
+        output = input.new_zeros(input.shape[0], 1, *input.shape[-3:])
         step_tensor = input.new_zeros([1])
         hour_tensor = input.new_zeros([1])
         doy_tensor = input.new_zeros([1])
@@ -148,7 +148,7 @@ class OnnxInferModel(BasePredictor):
                                    element_type=np.float32, shape=output.shape, buffer_ptr=output.data_ptr())
             model.run_with_iobinding(io_binding)
             outputs[:, k] = output[:, -1:]
-            input = output
+            input = torch.cat([input, output], dim=1)[:, -self.in_frames:]
             step += 1
         return outputs
 

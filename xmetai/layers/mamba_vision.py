@@ -18,12 +18,6 @@ from timm.layers.mlp import Mlp
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, SelectiveScanFn
 from einops import rearrange, repeat
 
-try:
-    from flash_attn import flash_attn_func
-except:
-    print("flash_attn not installed.")
-    flash_attn_func = None
-
 __all__ = ["MambaVisionLayer"]
 
 # define symbolic function for SelectiveScanFn
@@ -199,10 +193,7 @@ class Attention(nn.Module):
         q, k = self.q_norm(q).to(v), self.k_norm(k).to(v)
 
         if self.fused_attn:
-            if flash_attn_func is None:
-                x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p)
-            else:
-                x = flash_attn_func(q, k, v, dropout_p=self.attn_drop.p)
+            x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p)
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
@@ -260,7 +251,7 @@ class Block(nn.Module):
         self.gamma_1 = nn.Parameter(layer_scale * torch.ones(dim)) if use_layer_scale else 1
         self.gamma_2 = nn.Parameter(layer_scale * torch.ones(dim)) if use_layer_scale else 1
 
-    def forward(self, x, t=None, freqs_cos=None, freqs_sin=None):
+    def forward(self, x):
         x = x + self.drop_path(self.gamma_1 * self.mixer(self.norm1(x)))
         x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x
@@ -320,7 +311,7 @@ class MambaVisionLayer(nn.Module):
                                            layer_scale=layer_scale)
                                      for i in range(depth)])
 
-    def forward(self, x, t=None, freqs_cos=None, freqs_sin=None):
+    def forward(self, x, **kwargs):
         for _, blk in enumerate(self.blocks):
-            x = blk(x, t, freqs_cos, freqs_sin)
+            x = blk(x)
         return x

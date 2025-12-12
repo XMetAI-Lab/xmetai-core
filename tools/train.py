@@ -215,6 +215,7 @@ def do_export(
         export_params=True,
         verbose=True if logging.DEBUG == logger.getEffectiveLevel() else False,
         input_names=input_names,
+        dynamo=False,
         output_names=["pred"],
         opset_version=opset_version,
         do_constant_folding=False,
@@ -244,16 +245,20 @@ def main(args):
     cfg = LazyConfig.apply_overrides(cfg, args.opts)
     default_setup(cfg, args)
 
+    def _maybe_destroy_process_group():
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+
     if args.eval:
         model = build_model(cfg)
         do_test(cfg, model)
-        torch.distributed.destroy_process_group()
+        _maybe_destroy_process_group()
     elif args.export:
         model = build_model(cfg)
         do_export(model, **cfg.train.export_kwargs)
     else:
         do_train(args, cfg)
-        torch.distributed.destroy_process_group()
+        _maybe_destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -261,16 +266,16 @@ if __name__ == "__main__":
     if logging.getLogger().getEffectiveLevel() > logging.INFO:
         logging.getLogger().setLevel(logging.INFO)
 
-    args = default_argument_parser().parse_args()
+    cli_args = default_argument_parser().parse_args()
 
-    if args.export:
-        main(args)
+    if cli_args.export:
+        main(cli_args)
     else:
         launch(
             main,
-            args.num_gpus,
-            num_machines=args.num_machines,
-            machine_rank=args.machine_rank,
-            dist_url=args.dist_url,
-            args=(args,),
+            cli_args.num_gpus,
+            num_machines=cli_args.num_machines,
+            machine_rank=cli_args.machine_rank,
+            dist_url=cli_args.dist_url,
+            args=(cli_args,),
         )

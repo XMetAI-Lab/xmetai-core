@@ -38,11 +38,7 @@ class SwinLayer(nn.Module):
         ffn_type="gegluffn"
     ):
         super().__init__()
-
-        self.depth = depth
-        self.input_size = input_size
         self.blocks = nn.ModuleList()
-
         for i in range(depth):
             blk = SwinBlock(
                 dim=embed_dim,
@@ -59,12 +55,46 @@ class SwinLayer(nn.Module):
             )
             self.blocks.append(blk)
 
-        self.in_chans = in_chans
-        self.embed_dim = embed_dim
-
-    def forward(self, h, t=None, freqs_cos=None, freqs_sin=None):
+    def forward(self, h, time_embedding=None, freqs_cos=None, freqs_sin=None):
         for blk in self.blocks:
-            h = blk(h, t, freqs_cos, freqs_sin)
+            h = blk(h, time_embedding=time_embedding, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
+        return h
+
+
+class DeltaNetLayer(nn.Module):
+    def __init__(
+        self,
+        mode,
+        hidden_size,
+        num_heads,
+        depth,
+        expand_k,
+        expand_v,
+        use_gate=False,
+        use_short_conv=False,
+        conv_size=4,
+    ):
+        super().__init__()
+        self.blocks = nn.ModuleList()
+        from fla.layers import DeltaNet
+        for i in range(depth):
+            blk = DeltaNet(
+                mode=mode,
+                hidden_size=hidden_size,
+                expand_k=expand_k,
+                expand_v=expand_v,
+                num_heads=num_heads,
+                use_gate=use_gate,
+                use_short_conv=use_short_conv,
+                conv_size=conv_size,
+                layer_idx=i,
+            )
+            self.blocks.append(blk)
+
+    def forward(self, h, time_embedding=None, freqs_cos=None, freqs_sin=None):
+        past_key_values = None
+        for blk in self.blocks:
+            h, _, past_key_values = blk(h, past_key_values=past_key_values)
         return h
 
 
@@ -91,7 +121,7 @@ class UTransformer(nn.Module):
         norm_type="adaln",
         ffn_type="gegluffn",
         patch_norm=True,
-        use_mamba=False,
+        layer_type="swin",
     ):
         super().__init__()
         self.logger = logging.getLogger(__name__)
@@ -153,20 +183,33 @@ class UTransformer(nn.Module):
 
         layers = []
         for i in range(self.num_layers):
-            if use_mamba and MambaVisionLayer is not None:
+            if layer_type.lower() == "mamba":
                 self.logger.info("Using Mamba style transformer blocks.")
-                layer = MambaVisionLayer(dim=embed_dim,
-                                         depth=depths[i],
-                                         num_heads=num_heads,
-                                         mlp_ratio=mlp_ratio,
-                                         qkv_bias=True,
-                                         qk_scale=True,
-                                         conv=False,
-                                         drop=drop_mcmc,
-                                         transformer_blocks=list(range(depths[i]//2+1, depths[i])) if depths[i] % 2 != 0 else list(range(depths[i]//2, depths[i])),
-                                         )
+                layer = MambaVisionLayer(
+                    dim=embed_dim,
+                    depth=depths[i],
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    qkv_bias=True,
+                    qk_scale=True,
+                    conv=False,
+                    drop=drop_mcmc,
+                    transformer_blocks=list(range(depths[i]//2+1, depths[i])) if depths[i] % 2 != 0 else list(range(depths[i]//2, depths[i])),
+                )
+            elif layer_type.lower() == "deltanet":
+                self.logger.info("Using DeltaNet style transformer blocks.")
+                layer = DeltaNetLayer(
+                    mode="chunk",
+                    hidden_size=embed_dim,
+                    num_heads=num_heads,
+                    expand_k=mlp_ratio,
+                    expand_v=mlp_ratio,
+                    use_gate=True,
+                    use_short_conv=True,
+                    depth=depths[i],
+                )
             else:
-                self.logger.info("Using Swin style transformer blocks.")
+                self.logger.info("Using Swin style transformer blocks by default.")
                 layer = SwinLayer(
                     embed_dim,
                     embed_dim,
