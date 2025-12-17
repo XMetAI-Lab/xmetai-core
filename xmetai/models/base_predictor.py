@@ -174,7 +174,8 @@ class BasePredictor(Meta):
             x = input.float()
             mean = self.mean.to(x)
             std = self.std.to(x)
-            x = (x - mean) / std
+
+        x = (x - mean) / std
 
         if len(logids) > 0:
             # for tp should be log(1+tp).
