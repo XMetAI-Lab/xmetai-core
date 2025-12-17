@@ -226,6 +226,12 @@ if [[ "$STAGE" != "train" && "$STAGE" != "eval" && "$STAGE" != "export" && "$STA
     exit 1
 fi
 
+# ---- Run command after sleep ----
+if [[ "${SLEEP_TIME}" -gt 0 ]]; then
+    echo "Sleeping for ${SLEEP_TIME} seconds before starting..."
+    sleep "${SLEEP_TIME}"
+fi
+
 # if NNODES == 1, set NODE_RANK to 0
 if [[ "${NNODES}" -eq 1 ]]; then
     export NODE_RANK=0
@@ -260,10 +266,6 @@ echo "  HostName:         ${HOSTNAME}"
 # ---- Run the specified stage ----
 case $STAGE in
     train|eval|ltrain|leval)
-        if [[ "${SLEEP_TIME}" -gt 0 ]]; then
-            echo "Sleeping for ${SLEEP_TIME} seconds before starting..."
-            sleep "${SLEEP_TIME}"
-        fi
         echo "Starting ${STAGE}ing..."
         sed -i "s/^export_onnx.*/export_onnx = False/g" "${BASE_CONFIG}"
         torchrun --nproc_per_node "${NUM_GPUS}" \

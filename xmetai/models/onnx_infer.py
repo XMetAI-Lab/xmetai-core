@@ -113,7 +113,7 @@ class OnnxInferModel(BasePredictor):
         num_step,
         times=None,
     ):
-        outputs = input.new_zeros(input.shape[0], num_step, *input.shape[-3:])
+        outputs = input.new_zeros(input.shape[0], num_step, len(self.test_chans), *input.shape[-2:])
         output = input.new_zeros(input.shape[0], 1, *input.shape[-3:])
         step_tensor = input.new_zeros([1])
         hour_tensor = input.new_zeros([1])
@@ -147,7 +147,7 @@ class OnnxInferModel(BasePredictor):
             io_binding.bind_output(model.get_outputs()[0].name, device_type="cuda", device_id=self.device_id,
                                    element_type=np.float32, shape=output.shape, buffer_ptr=output.data_ptr())
             model.run_with_iobinding(io_binding)
-            outputs[:, k] = output[:, -1:]
+            outputs[:, k] = output[:, -1:, self.test_chans]
             input = torch.cat([input, output], dim=1)[:, -self.in_frames:]
             step += 1
         return outputs
@@ -165,10 +165,11 @@ class OnnxInferModel(BasePredictor):
         assert sum(self.step_range) <= total_step
 
         steps = np.array(self.test_frames) // self.out_frames
-        chw = list(input.shape[-3:])
-        outputs = input.new_zeros(input.shape[0], len(steps), *chw)  # batch_size, saved_steps, c,h,w
-        self.logger.debug(f"output shape is {outputs.shape}")
+        hw = list(input.shape[-2:])
+        outputs = input.new_zeros(input.shape[0], len(steps), len(self.test_chans), *hw)  # only save test channels
+        self.logger.debug(f"finale outputs shape is {outputs.shape}")
         step = self.start_frames
+        num_step = self.step_range[0]
 
         # for each member, we inference for step_range times. Each time we get num_step results.
         for member in range(self.members):
@@ -176,23 +177,18 @@ class OnnxInferModel(BasePredictor):
             curr_input = input.clone()
             curr_step = step
 
-            for num_step in self.step_range:
-                output = self.inference(
-                    curr_input,
-                    step=curr_step,
-                    num_step=num_step,
-                    times=times,
-                )
-                output = self.normalize(output)
-                curr_input = output[:, -self.in_frames:]
-                # n x 42 x 76 x 121 x 240
-                out_chans = output.shape[2]
-                # accumulate result with current step.
-                outputs[:, curr_step: curr_step + num_step, :out_chans] += output
+            output = self.inference(
+                curr_input,
+                step=curr_step,
+                num_step=num_step,
+                times=times,
+            )
+            curr_input = output[:, -self.in_frames:]
+            normed_output = self.normalize(output, self.test_chans)
+            # accumulate result with current step.
+            outputs[:, curr_step: curr_step + num_step] += normed_output
 
-                curr_step += num_step
-            self.logger.debug(
-                f"outputs: min/max/mean for channel: \n{outputs[:, :, self.test_chans].amin(axis=(0, 1, 3, 4))}\n{outputs[:, :, self.test_chans].amax(axis=(0, 1, 3, 4))}\n{outputs[:, :, self.test_chans].mean(axis=(0, 1, 3, 4))}")
+            self.logger.debug(f"outputs: min/max/mean : \n{outputs.amin(axis=(0, 1, 3, 4))}\n{outputs.amax(axis=(0, 1, 3, 4))}\n{outputs.mean(axis=(0, 1, 3, 4))}")
 
         outputs /= self.members  # ensemble prediction with mean
         return outputs

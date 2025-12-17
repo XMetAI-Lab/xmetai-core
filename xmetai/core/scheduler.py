@@ -1,9 +1,7 @@
-import bisect
 import math
-import numpy as np
-from bisect import bisect_right
+import bisect
 from typing import List, Optional, Sequence, Union
-
+import numpy as np
 import torch
 
 # pyre-ignore-all-errors[58]   # handle optional
@@ -18,6 +16,7 @@ __all__ = [
     "MultiStepParamScheduler",
     "ConstantParamScheduler",
     "WarmupTeachParamScheduler",
+    "CircularParamScheduler",
 ]
 
 
@@ -176,6 +175,33 @@ class ConstantParamScheduler(ParamScheduler):
             )
         return self._value
 
+class CircularParamScheduler(ParamScheduler):
+    """
+    Circular schedule parameterized by a start value, end value, and period.
+    The schedule is updated based on the fraction of training
+    progress.
+
+    Example:
+
+        .. code-block:: python
+            CircularParamScheduler(start_value=0.1, end_value=0.0001, period=0.1)
+
+    Corresponds to a circular schedule with cosine annealing between 0.1 and 0.0001 every 10% of training.
+    """
+
+    def __init__(
+        self,
+        start_value: float,
+        end_value: float,
+        period: float,
+    ) -> None:
+        self._start_value = start_value
+        self._end_value = end_value
+        self._period = period
+
+    def __call__(self, where: float) -> float:
+        period_start = math.floor(where / self._period) * self._period
+        return self._end_value + 0.5 * (self._start_value - self._end_value) * (1 + math.cos(math.pi * (where - period_start) / self._period) )
 
 class CosineParamScheduler(ParamScheduler):
     """

@@ -1,42 +1,75 @@
+'''
+Author: DouZesheng && douzsh@gmail.com
+Date: 2025-11-05 17:31:46
+Description: Base predictor class for weather/climate models.
+Copyright (c) 2025 by XMetAI/douzsheng, All Rights Reserved.
+'''
 import os
 import logging
 import numpy as np
 import torch
-import torch.nn as nn
 import xarray as xr
 import pandas as pd
-
-from xmetai.builder import MODELS
 from .meta import Meta
 
 __all__ = ["BasePredictor"]
 
 
-@MODELS.register()
 class BasePredictor(Meta):
+    """Utility mixin for XMetAI predictors.
+
+    Provides shared logic for normalization, masking, timestamp features, and
+    NetCDF exports so concrete predictor implementations only need to define
+    ``forward`` and ``test_cascade``.
+
+    Args:
+        in_chans: Number of input channels provided to the model.
+        out_chans: Number of channels reconstructed during decoding.
+        in_frames: Historical timesteps consumed by the model.
+        out_frames: Forecast timesteps produced by the model.
+        members: Ensemble size for rollouts and evaluation.
+        step_range: Valid forecast horizons (in hours) for cascading tests.
+        start_frames: Amount of historical data skipped before training.
+        test_frames: Forecast indices exported during testing.
+        test_chans: Channel ids evaluated or written to disk.
+        test_names: Human-readable names for ``test_chans`` (e.g., TP, T2M).
+        test_rect: Optional spatial crop ``[y1, y2, x1, x2]`` used at eval.
+        accumid: Channel ids treated as accumulated quantities.
+        logid: Channel ids stored in log space (e.g., precipitation).
+        maskid: Channel ids masked by the ocean mask buffer.
+        landid: Channel ids masked by the land mask buffer.
+        zero_accum: Zero accumulated channels before issuing a forecast.
+        add_noise: Whether to add stochastic perturbations to the inputs.
+        save_dir: Directory used to dump NetCDF predictions/observations when existing.
+        buffers: Optional mapping whose numpy arrays become registered buffers.
+
+    Notes:
+        Buffers such as ``mean``, ``std``, ``mask``, and ``weight`` are consumed
+        by helper methods like ``normalize`` and ``process_output``. Longitude
+        shifts are handled automatically inside ``process_data`` so masks and
+        constant fields stay aligned with each sample.
+    """
     def __init__(
         self,
-        in_chans,
-        out_chans,
-        in_frames,
-        out_frames,
-        members=1,
-        step_range=[20],
-        start_frames=0,
-        test_frames=[1],
-        test_chans=[-1],
-        test_names=['tp'],
-        test_rect=[],
-        accumid=[],
-        logid=[],
-        maskid=[],
-        landid=[],
-        loss_weight=[1, 0.1],
-        zero_accum=False,
-        add_noise=False,
-        save_dir="",
-        buffers={},
-        decoder=[],
+        in_chans: int,
+        out_chans: int,
+        in_frames: int,
+        out_frames: int,
+        members: int = 1,
+        step_range: list[int] = [20],
+        start_frames: int = 0,
+        test_frames: list[int] = [1],
+        test_chans: list[int] = [-1],
+        test_names: list[str] = ["tp","t2m"],
+        test_rect: list[int] = [],
+        accumid: list[int] = [],
+        logid: list[int] = [],
+        maskid: list[int] = [],
+        landid: list[int] = [],
+        zero_accum: bool = False,
+        add_noise: bool = False,
+        save_dir: str = "",
+        buffers: dict = {},
         *args,
         **kwargs,
     ):
@@ -54,7 +87,6 @@ class BasePredictor(Meta):
         self.test_names = test_names
         self.test_rect = test_rect
         self.save_dir = save_dir
-        self.loss_weight = loss_weight
 
         self.zero_accum = zero_accum
         self.accumid = accumid
@@ -62,7 +94,6 @@ class BasePredictor(Meta):
         self.maskid = maskid
         self.landid = landid
         self.add_noise = add_noise
-        self.decoder = nn.ModuleList(decoder)
 
         self.logger = logging.getLogger(__name__)
 
@@ -124,15 +155,31 @@ class BasePredictor(Meta):
         return x
 
     @torch.no_grad()
-    def normalize(self, input):
-        x = input.float()
-        mean = self.mean.to(x)
-        std = self.std.to(x)
-        x = (x - mean) / std
-        if len(self.logid) > 0:
+    def normalize(self, input, test_chans=[]):
+        assert input.ndim == 5
+        logids = self.logid
+        if len(test_chans) > 0:
+            # check if input is already only test_chans
+            if input.size(2) != len(test_chans):
+                x = input[:, :, test_chans].float()
+            else:
+                x = input.float()
+            mean = self.mean[test_chans].to(x)
+            std = self.std[test_chans].to(x)
+            logids = []
+            for id in self.logid:
+                if id in test_chans:
+                    logids.append(test_chans.index(id))
+        else:
+            x = input.float()
+            mean = self.mean.to(x)
+            std = self.std.to(x)
+            x = (x - mean) / std
+
+        if len(logids) > 0:
             # for tp should be log(1+tp).
-            tp = torch.clamp(x[:, :, self.logid], min=0, max=7)
-            x[:, :, self.logid] = torch.log1p(tp)
+            tp = torch.clamp(x[:, :, logids], min=0, max=7)
+            x[:, :, logids] = torch.log1p(tp)
         return x
 
     def reset_input(self, input):

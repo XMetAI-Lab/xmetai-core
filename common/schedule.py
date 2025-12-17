@@ -3,6 +3,7 @@ from xmetai.core import (
     CosineParamScheduler,
     WarmupParamScheduler,
     ConstantParamScheduler,
+    CircularParamScheduler
 )
 
 const_lr = L(ConstantParamScheduler)(value=1)
@@ -12,3 +13,5 @@ cosine_lr = L(WarmupParamScheduler)(
     warmup_length=0.02,
     warmup_factor=0.001,
 )
+
+circular_lr = L(CircularParamScheduler)(start_value=1, end_value=0, period=0.1)
