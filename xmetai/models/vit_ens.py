@@ -80,7 +80,7 @@ class ViTEnsModel(ViTModel):
 
     def forward(self, data):
         if not self.training:
-            return self.test(data, freq=self.freq)
+            return self.test(data)
 
         data = self.process_data(data)
         input = data["input"]
@@ -121,7 +121,7 @@ class ViTEnsModel(ViTModel):
     def forward_step(self, input, times=None, step=None, timestamp=None):
         # time embeddings.
         if timestamp is None:
-            timestamp = self.get_timestamp(input, times, step, freq=self.freq)
+            timestamp = self.get_timestamp(input, times, step)
         self.logger.debug(f"timestamp: {timestamp}")
         time_token = self.step_embed(timestamp['step']).unsqueeze(1)  # Bx1xC
         time_token = torch.concat([time_token, self.hour_embed(timestamp['hour']).unsqueeze(1)], dim=1)

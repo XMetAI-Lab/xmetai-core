@@ -62,6 +62,7 @@ class BasePredictor(Meta):
         test_chans: list[int] = [-1],
         test_names: list[str] = ["tp","t2m"],
         test_rect: list[int] = [],
+        freq: int = 24,
         accumid: list[int] = [],
         logid: list[int] = [],
         maskid: list[int] = [],
@@ -86,6 +87,7 @@ class BasePredictor(Meta):
         self.test_chans = test_chans.tolist() if isinstance(test_chans, np.ndarray) else list(test_chans)
         self.test_names = test_names
         self.test_rect = test_rect
+        self.freq = freq
         self.save_dir = save_dir
 
         self.zero_accum = zero_accum
@@ -112,8 +114,8 @@ class BasePredictor(Meta):
     def train(self, mode=True):
         super().train(mode=mode)
 
-    def get_timestamp(self, input, times, t, freq=6):
-        times = times + pd.Timedelta(hours=t * freq)
+    def get_timestamp(self, input, times, t):
+        times = times + pd.Timedelta(hours=t * self.freq)
         hour = [p.hour/24 for p in times]
         hour = np.array(hour, dtype=np.float32)
         hour = input.new_tensor(hour)
@@ -282,15 +284,15 @@ class BasePredictor(Meta):
         return NotImplemented
 
     @torch.no_grad()
-    def test(self, data, freq=24):
+    def test(self, data):
         data = self.process_data(data)
         times = data["times"]
         outputs = self.test_cascade(data)
         results = self.process_output(outputs, data.get("targets", None))
         if os.path.exists(self.save_dir):
             ymd_time = times[0].strftime("%Y%m%d")
-            # get pred times start from ymd_time + freq * i, in self.test_frames
-            pred_times = [times[-1] + pd.Timedelta(hours=freq * i) for i in self.test_frames]
+            # get pred times start from ymd_time + self.freq * i, in self.test_frames
+            pred_times = [times[-1] + pd.Timedelta(hours=self.freq * i) for i in self.test_frames]
             save_path = os.path.join(self.save_dir, f"pred_{ymd_time}.nc")
             self.logger.info(f"Saving results to {save_path}")
             # save results to netcdf

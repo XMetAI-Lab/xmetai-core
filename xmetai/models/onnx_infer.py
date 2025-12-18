@@ -44,12 +44,10 @@ class OnnxInferModel(BasePredictor):
     def __init__(
         self,
         onnx_path,
-        freq=24,
         *args, **kwargs
     ):
         super().__init__(*args, **kwargs)
         self.device_id = get_local_rank()
-        self.freq = freq
         self.logger.name = __name__
         self.load_model(onnx_path)
 
@@ -126,7 +124,7 @@ class OnnxInferModel(BasePredictor):
             self.logger.debug(f"inference step {step} with input shape:{input.shape}, dtype:{input.dtype}, min: {input.min():.3f}, max: {input.max():.3f}")
             io_binding.bind_input("input", device_type="cuda", device_id=self.device_id,
                                   element_type=np.float32, shape=input.shape, buffer_ptr=input.data_ptr())
-            timestamp = self.get_timestamp(input, times, step, freq=self.freq)
+            timestamp = self.get_timestamp(input, times, step)
             self.logger.debug(f"timestamp: {timestamp}")
             if "step" in input_names:
                 step_tensor.fill_(timestamp["step"].item())

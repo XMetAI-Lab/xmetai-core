@@ -1,3 +1,10 @@
+'''
+Author: DouZesheng && douzsh@gmail.com
+Date: 2025-09-04 17:13:31
+LastEditTime: 2025-12-18 09:10:38
+Description: 
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
+'''
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
@@ -8,7 +15,7 @@ import logging
 from xmetai import LazyCall as L
 from xmetai import MODELS
 from s2s_base import train, optimizer, scheduler, dataloader
-from s2s_base import output_dir, buffers
+from s2s_base import output_dir, buffers, freq
 from s2s_base import in_chans, out_chans, in_frames, test_chans, test_names, step_range, test_frames
 from s2s_base import logid, maskid
 
@@ -35,6 +42,7 @@ model = L(MODELS.get("DiffusionForecast"))(
     logid=logid,
     maskid=maskid,
     save_dir=output_dir+"/pred/",
+    freq=freq,
 # start Diffusion args.
     base_channels = 256,
     ch_mults = (1, 2, 4),

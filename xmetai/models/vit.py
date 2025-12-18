@@ -33,7 +33,6 @@ class ViTModel(BasePredictor):
         drop_rate=0.1,
         mlp_ratio=4,
         layer_type="mamba",
-        freq=24,
         *args, **kwargs
     ):
         super().__init__(*args, **kwargs)
@@ -41,7 +40,6 @@ class ViTModel(BasePredictor):
         self.patch_size = patch_size
         self.image_size = tuple(image_size)
         self.feat_size = [sz // patch_size for sz in image_size]
-        self.freq = freq
         self.logger.name = __name__
         # Patch embedding
         self.patch_embed = CubeEmbed(
@@ -112,7 +110,7 @@ class ViTModel(BasePredictor):
 
     def forward(self, data):
         if not self.training:
-            return self.test(data, freq=self.freq)
+            return self.test(data)
 
         data = self.process_data(data)
         input = data["input"]
@@ -142,7 +140,7 @@ class ViTModel(BasePredictor):
     def forward_step(self, input, times=None, step=None, timestamp=None):
         # time embeddings.
         if timestamp is None:
-            timestamp = self.get_timestamp(input, times, step, freq=self.freq)
+            timestamp = self.get_timestamp(input, times, step)
         self.logger.debug(f"timestamp: {timestamp}")
         time_token = self.step_embed(timestamp['step']).unsqueeze(1)  # Bx1xC
         time_token = torch.concat([time_token, self.hour_embed(timestamp['hour']).unsqueeze(1)], dim=1)

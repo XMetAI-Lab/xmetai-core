@@ -45,6 +45,7 @@ model = L(MODELS.get("OnnxInferModel"))(
     test_frames=test_frames,
     test_chans=test_chans,
     test_names=test_names,
+    freq=freq,
 )
 
 model.members = members

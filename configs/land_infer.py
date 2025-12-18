@@ -10,7 +10,7 @@ import logging
 import numpy as np
 from land_base import train, optimizer, scheduler, dataloader
 from land_base import output_dir, buffers
-from land_base import in_chans, out_chans, in_frames, test_chans, test_names
+from land_base import in_chans, out_chans, in_frames, test_chans, test_names, freq
 from land_base import logid, maskid, accumid
 from xmetai import LazyCall as L
 from xmetai import MODELS
@@ -37,6 +37,7 @@ model = L(MODELS.get("OnnxInferModel"))(
     out_chans=out_chans,
     in_frames=in_frames,
     out_frames=1,
+    freq=freq,
     accumid=accumid,
     logid=logid,
     maskid=maskid,

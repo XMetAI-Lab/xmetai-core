@@ -57,6 +57,7 @@ model = L(MODELS.get(model_name))(
     out_chans=out_chans,
     in_frames=in_frames,
     out_frames=1,
+    freq=freq,
     accumid=logid,
     logid=logid,
     maskid=maskid,
