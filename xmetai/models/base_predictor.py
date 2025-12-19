@@ -227,6 +227,7 @@ class BasePredictor(Meta):
         # check if shift exist in data, do rolling for const
         if "shift" in data:
             shift = data["shift"]
+            batch["shift"] = shift
             if const is not None:  # const is const_dimx721x1440
                 # expand const to batch size and do rolling
                 const = torch.repeat_interleave(const.unsqueeze(0), repeats=input.size(0), dim=0)
