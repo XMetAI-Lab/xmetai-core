@@ -191,10 +191,16 @@ class BasePredictor(Meta):
             input[:, :, self.accumid] *= 0
         if len(self.maskid) > 0:
             self.logger.debug(f"Applying mask to channels: {self.maskid}")
-            input[:, :, self.maskid] *= self.mask_shift
+            if hasattr(self, "mask_shift"):
+                input[:, :, self.maskid] *= self.mask_shift
+            else:
+                input[:, :, self.maskid] *= self.mask
         if len(self.landid) > 0:
             self.logger.debug(f"Applying land mask to channels: {self.landid}")
-            input[:, :, self.landid] *= self.land_mask_shift
+            if hasattr(self, "land_mask_shift"):
+                input[:, :, self.landid] *= self.land_mask_shift
+            else:
+                input[:, :, self.landid] *= self.land_mask
         if len(self.logid) > 0:
             self.logger.debug(f"Applying clamp to log channels: {self.logid}")
             input[:, :, self.logid] = input[:, :, self.logid].clamp(min=0, max=7)
