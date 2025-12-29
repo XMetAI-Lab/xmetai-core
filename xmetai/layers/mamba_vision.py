@@ -223,6 +223,7 @@ class Block(nn.Module):
                  norm_layer=nn.LayerNorm,
                  Mlp_block=Mlp,
                  layer_scale=None,
+                 with_embedding=False,
                  ):
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -242,7 +243,12 @@ class Block(nn.Module):
                                           d_conv=3,
                                           expand=1
                                           )
-
+        self.with_embedding = with_embedding
+        if with_embedding:
+            self.time_embed = nn.Sequential(
+                act_layer(),
+                nn.Linear(dim, dim*6, bias=True),
+            )
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
@@ -251,9 +257,19 @@ class Block(nn.Module):
         self.gamma_1 = nn.Parameter(layer_scale * torch.ones(dim)) if use_layer_scale else 1
         self.gamma_2 = nn.Parameter(layer_scale * torch.ones(dim)) if use_layer_scale else 1
 
-    def forward(self, x):
-        x = x + self.drop_path(self.gamma_1 * self.mixer(self.norm1(x)))
-        x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
+    def forward(self, x, time_embedding=None, **kwargs):
+        if self.with_embedding and time_embedding is not None:
+            gamma = self.time_embed(time_embedding).unsqueeze(1)
+            scale_msa, shift_msa, gate_msa, scale_mlp, shift_mlp, gate_mlp = gamma.chunk(6, dim=-1)
+            gate_msa = torch.sigmoid(gate_msa)
+            gate_mlp = torch.sigmoid(gate_mlp)
+            norm1_x = self.norm1(x) * (1 + scale_msa) + shift_msa
+            x = x + gate_msa*self.drop_path(self.gamma_1 * self.mixer(norm1_x))
+            norm2_x = self.norm2(x) * (1 + scale_mlp) + shift_mlp
+            x = x + gate_mlp*self.drop_path(self.gamma_2 * self.mlp(norm2_x))
+        else:
+            x = x + self.drop_path(self.gamma_1 * self.mixer(self.norm1(x)))
+            x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x
 
 
@@ -275,6 +291,7 @@ class MambaVisionLayer(nn.Module):
                  drop_path=0.,
                  layer_scale=None,
                  transformer_blocks=[],
+                 with_embedding=False,
                  ):
         """
         Args:
@@ -308,10 +325,12 @@ class MambaVisionLayer(nn.Module):
                                            drop=drop,
                                            attn_drop=attn_drop,
                                            drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
-                                           layer_scale=layer_scale)
+                                           layer_scale=layer_scale,
+                                           with_embedding=with_embedding,
+                                           )
                                      for i in range(depth)])
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, time_embedding=None, **kwargs):
         for _, blk in enumerate(self.blocks):
-            x = blk(x)
+            x = blk(x, time_embedding=time_embedding)
         return x

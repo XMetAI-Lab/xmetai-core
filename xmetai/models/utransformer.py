@@ -183,8 +183,9 @@ class UTransformer(nn.Module):
 
         layers = []
         for i in range(self.num_layers):
-            if layer_type.lower() == "mamba":
-                self.logger.info("Using Mamba style transformer blocks.")
+            if layer_type.lower().find("mamba") > -1:
+                with_embedding = True if layer_type.lower().find("embed") > -1 else False
+                self.logger.info(f"Using Mamba style transformer blocks with embedding={with_embedding}.")
                 layer = MambaVisionLayer(
                     dim=embed_dim,
                     depth=depths[i],
@@ -195,8 +196,9 @@ class UTransformer(nn.Module):
                     conv=False,
                     drop=drop_mcmc,
                     transformer_blocks=list(range(depths[i]//2+1, depths[i])) if depths[i] % 2 != 0 else list(range(depths[i]//2, depths[i])),
+                    with_embedding=with_embedding,
                 )
-            elif layer_type.lower() == "deltanet":
+            elif layer_type.lower().find("deltanet") > -1:
                 self.logger.info("Using DeltaNet style transformer blocks.")
                 layer = DeltaNetLayer(
                     mode="chunk",
