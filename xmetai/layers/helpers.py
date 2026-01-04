@@ -2,8 +2,6 @@ import collections.abc
 from itertools import repeat
 from inspect import isfunction
 
-import numpy as np
-import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
@@ -49,6 +47,17 @@ def zero_module(module):
     """
     for p in module.parameters():
         p.detach().zero_()
+    return module
+
+
+def kaming_init(module):
+    """
+    Initialize a module with Kaming initialization.
+    """
+    if isinstance(module, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
+        nn.init.kaiming_normal_(module.weight)
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
     return module
 
 

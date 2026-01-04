@@ -74,7 +74,7 @@ test_names = [ch for ch in test_names if ch in out_names]
 test_chans = [out_names.index(n) for n in test_names]
 test_frames = np.arange(1, 13).tolist()  # predict 1-3 days ahead with 6-hour frequency
 test_frames = np.arange(1, 61).tolist()  # predict 1-15 days ahead with 6-hour frequency
-# test_frames = np.concatenate([test_frames, np.arange(64, 120, 4)]) # predict 28 days ahead
+#test_frames = np.concatenate([test_frames, np.arange(61, 170, 4)]) # predict 42 days ahead
 step_range = [max(test_frames)]
 
 in_chans = len(in_names)
@@ -95,7 +95,7 @@ dataloader = OmegaConf.create()
 
 train_times = ("19500101-00", "20231231-18")
 test_times = ("20240101-18", "20251231-18")
-#test_times = ("20200101-18", "20250502-18")
+#test_times = ("20050101-18", "20250502-18")
 dataloader.train = L(build_train_loader)(
     dataset=L(DATASETS.get("ERA5"))(
         data_name=data_dir,

@@ -6,9 +6,8 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 '''
 import torch
 from torch import nn
-import torch.nn.functional as F
 from einops import rearrange
-from xmetai.layers import zero_module
+from xmetai.layers import kaming_init
 
 __all__ = ["PLSFHead"]
 
@@ -27,8 +26,8 @@ class PLSFHead(nn.Module):
         self.sfc_chans = sfc_chans
         self.feat_size = feat_size
 
-        self.pl_head = zero_module(nn.ConvTranspose2d(in_chans, pl_chans, patch_size[0], patch_size[1]))
-        self.sf_head = zero_module(nn.ConvTranspose2d(in_chans, sfc_chans, patch_size[0], patch_size[1]))
+        self.pl_head = kaming_init(nn.ConvTranspose2d(in_chans, pl_chans, patch_size[0], patch_size[1]))
+        self.sf_head = kaming_init(nn.ConvTranspose2d(in_chans, sfc_chans, patch_size[0], patch_size[1]))
 
     def forward(self, h, need_rearrange=True):
         '''
