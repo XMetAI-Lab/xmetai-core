@@ -4,37 +4,47 @@ Date: 2025-07-28 19:12:10
 Description: Only for evaluation with onnx model.
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
 '''
+import os
 import torch
 import numpy as np
 from .base_predictor import BasePredictor
 from xmetai.utils.comm import get_local_rank
 from xmetai.builder import MODELS
 import onnxruntime as ort
-try:
-    from onnxruntime_extensions import onnx_op, PyOp, get_library_path
-    from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 
-    @onnx_op(op_type="SelectiveScanFn", inputs=[PyOp.dt_float, PyOp.dt_float, PyOp.dt_float, PyOp.dt_float,
-                                                PyOp.dt_float, PyOp.dt_float, PyOp.dt_float, PyOp.dt_float],
-             outputs=[PyOp.dt_float],
-             attrs={"delta_softplus": PyOp.dt_int64, "return_last_state": PyOp.dt_int64})
-    def selective_scan_onnx(u, delta, A, B, C, D, z, delta_bias, **kwargs):
-        delta_softplus = kwargs.get("delta_softplus", 0) == 1
-        return_last_state = kwargs.get("return_last_state", 0) == 1
-        # convert all inputs to torch tensors
-        u = torch.from_numpy(u).to(device="cuda")
-        delta = torch.from_numpy(delta).to(device="cuda")
-        A = torch.from_numpy(A).to(device="cuda")
-        B = torch.from_numpy(B).to(device="cuda")
-        C = torch.from_numpy(C).to(device="cuda")
-        D = torch.from_numpy(D).to(device="cuda")
-        z = None
-        delta_bias = torch.from_numpy(delta_bias).to(device="cuda")
-        return selective_scan_fn(u, delta, A, B, C, D, z, delta_bias,
-                                 delta_softplus, return_last_state)
-except ImportError as e:
-    print(f"import plugin error: {e}.")
-    get_library_path = None
+CUSTOM_OPS_LIB_PATH = "/workspace/cma/xmetai_onnx_plugins.cpython-311-x86_64-linux-gnu.so"
+if os.path.exists(CUSTOM_OPS_LIB_PATH):
+    # use custom ops library by default
+    def get_library_path():
+        return CUSTOM_OPS_LIB_PATH
+else:
+    # use mamba_ssm ops only when onnxruntime-extensions is installed.
+    try:
+        from onnxruntime_extensions import onnx_op, PyOp, get_library_path
+        from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
+
+        @onnx_op(op_type="SelectiveScanFn", inputs=[PyOp.dt_float, PyOp.dt_float, PyOp.dt_float, PyOp.dt_float,
+                                                    PyOp.dt_float, PyOp.dt_float, PyOp.dt_float, PyOp.dt_float],
+                 outputs=[PyOp.dt_float],
+                 attrs={"delta_softplus": PyOp.dt_int64, "return_last_state": PyOp.dt_int64})
+        def selective_scan_onnx(u, delta, A, B, C, D, z, delta_bias, **kwargs):
+            delta_softplus = kwargs.get("delta_softplus", 0) == 1
+            return_last_state = kwargs.get("return_last_state", 0) == 1
+            print(f"u:{u.shape}, delta:{delta.shape}, A:{A.shape}, B:{B.shape}, C:{C.shape}, D:{D.shape}, delta_bias:{delta_bias.shape}")
+            print(f"delta_softplus:{delta_softplus}, return_last_state:{return_last_state}")
+            # convert all inputs to torch tensors
+            u = torch.from_numpy(u).to(device="cuda")
+            delta = torch.from_numpy(delta).to(device="cuda")
+            A = torch.from_numpy(A).to(device="cuda")
+            B = torch.from_numpy(B).to(device="cuda")
+            C = torch.from_numpy(C).to(device="cuda")
+            D = torch.from_numpy(D).to(device="cuda")
+            z = None
+            delta_bias = torch.from_numpy(delta_bias).to(device="cuda")
+            return selective_scan_fn(u, delta, A, B, C, D, z, delta_bias,
+                                     delta_softplus, return_last_state)
+    except ImportError as e:
+        print(f"import plugin error: {e}.")
 
 __all__ = ["OnnxInferModel"]
 
@@ -46,30 +56,29 @@ class OnnxInferModel(BasePredictor):
         onnx_path,
         *args, **kwargs
     ):
+        self.gpu_mem_fraction = kwargs.pop("gpu_mem_fraction", 0.7)
+        self.use_cpu_initializers = kwargs.pop("use_cpu_initializers", True)
         super().__init__(*args, **kwargs)
         self.device_id = get_local_rank()
         self.logger.name = __name__
         self.load_model(onnx_path)
 
     def load_model(self, onnx_path):
-        ort.set_default_logger_severity(3)  # 0 = VERBOSE
-        options = ort.SessionOptions()
-
-        # Performance optimization settings
-        options.enable_mem_pattern = True
-        options.enable_cpu_mem_arena = True
-        options.add_session_config_entry("arena_extend_strategy", "kNextPowerOfTwo")
-
-        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        options.add_session_config_entry("cudnn_conv_algo_search", "EXHAUSTIVE")
-        options.add_session_config_entry("session.enable_bfloat16", "1")
+        # ort.set_default_logger_severity(0)  # 0 = VERBOSE
+        options = self._build_session_options()
 
         providers = []
-        # Configure CUDA provider with the specific GPU
-        cuda_provider = ('CUDAExecutionProvider', {
+        cuda_provider_options = {
             'device_id': self.device_id,
             'arena_extend_strategy': 'kSameAsRequested',
-        })
+            'cudnn_conv_use_max_workspace': '0',
+            'do_copy_in_default_stream': '1',
+        }
+        gpu_mem_limit = self._default_gpu_mem_limit()
+        if gpu_mem_limit is not None:
+            cuda_provider_options['gpu_mem_limit'] = gpu_mem_limit
+            self.logger.info(f"Limiting CUDA provider memory to {gpu_mem_limit / (1024 ** 3):.2f} GB")
+        cuda_provider = ('CUDAExecutionProvider', cuda_provider_options)
 
         if 'CUDAExecutionProvider' in ort.get_available_providers():
             providers.append(cuda_provider)
@@ -81,6 +90,8 @@ class OnnxInferModel(BasePredictor):
             self.logger.error("No suitable execution providers found. Ensure ONNX Runtime is installed with CUDA support.")
         else:
             self.logger.info(f"Using CUDA provider on device {self.device_id}")
+
+        providers.append(('CPUExecutionProvider', {'arena_extend_strategy': 'kSameAsRequested'}))
 
         # register custom op library for Mamba if get_library_path() is available
         if get_library_path is not None:
@@ -96,6 +107,30 @@ class OnnxInferModel(BasePredictor):
         self.logger.info(f"Device {self.device_id}: Using providers {self.session.get_providers()}")
         self.logger.info(f"Loaded ONNX model from {onnx_path}")
         return
+
+    def _build_session_options(self):
+        options = ort.SessionOptions()
+        options.enable_mem_pattern = False
+        options.enable_cpu_mem_arena = True
+        options.enable_mem_reuse = True
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+        options.add_session_config_entry("cudnn_conv_algo_search", "HEURISTIC")
+        if self.use_cpu_initializers:
+            options.add_session_config_entry("session.use_device_allocator_for_initializers", "0")
+            options.add_session_config_entry("session.use_ort_model_bytes_directly", "1")
+            self.logger.info("Keeping model initializers on host memory to reduce GPU usage")
+        return options
+
+    def _default_gpu_mem_limit(self):
+        if not torch.cuda.is_available():
+            return None
+        try:
+            props = torch.cuda.get_device_properties(self.device_id)
+        except (AssertionError, RuntimeError):
+            return None
+        limit = int(props.total_memory * self.gpu_mem_fraction)
+        return max(limit, 0)
 
     def forward(self, data):
         if not self.training:
@@ -186,7 +221,8 @@ class OnnxInferModel(BasePredictor):
             # accumulate result with current step.
             outputs[:, curr_step: curr_step + num_step] += normed_output
 
-            self.logger.debug(f"outputs: min/max/mean : \n{outputs.amin(axis=(0, 1, 3, 4))}\n{outputs.amax(axis=(0, 1, 3, 4))}\n{outputs.mean(axis=(0, 1, 3, 4))}")
+            self.logger.debug(
+                f"outputs: min/max/mean : \n{outputs.amin(axis=(0, 1, 3, 4))}\n{outputs.amax(axis=(0, 1, 3, 4))}\n{outputs.mean(axis=(0, 1, 3, 4))}")
 
         outputs /= self.members  # ensemble prediction with mean
         return outputs
