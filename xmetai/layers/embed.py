@@ -89,6 +89,14 @@ class PatchEmbed(nn.Module):
             x = self.norm(x)
         return x
 
+    def flops(self):
+        Ho, Wo = self.patch_size
+        flops = Ho * Wo * self.embed_dim * self.in_chans * \
+            (self.patch_size[0] * self.patch_size[1])
+        if self.norm is not None:
+            flops += Ho * Wo * self.embed_dim
+        return flops
+
 
 class CubeEmbed(nn.Module):
     def __init__(self,

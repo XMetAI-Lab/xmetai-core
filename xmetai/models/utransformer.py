@@ -10,55 +10,16 @@ from xmetai.layers import (
     TimestepEmbed,
     MCDropout,
     LayerNorm,
+    SwinLayer,
+    precompute_freqs_cis
 )
 try:
     from xmetai.layers import MambaVisionLayer
 except Exception:
     MambaVisionLayer = None
 from .pred_head import PLSFHead
-from .transformer import SwinBlock, precompute_freqs_cis
 
-__all__ = ["SwinLayer", "UTransformer"]
-
-
-class SwinLayer(nn.Module):
-    def __init__(
-        self,
-        in_chans,
-        embed_dim,
-        input_size,
-        window_size,
-        depth=4,
-        num_heads=8,
-        mlp_ratio=4.0,
-        drop_path=0.0,
-        attn_type="v1",
-        mask_type="hw",
-        norm_type="ln",
-        ffn_type="gegluffn"
-    ):
-        super().__init__()
-        self.blocks = nn.ModuleList()
-        for i in range(depth):
-            blk = SwinBlock(
-                dim=embed_dim,
-                input_size=input_size,
-                num_heads=num_heads,
-                window_size=window_size,
-                shift_size=0 if (i % 2 == 0) else window_size // 2,
-                mlp_ratio=mlp_ratio,
-                attn_type=attn_type,
-                mask_type=mask_type,
-                norm_type=norm_type,
-                drop_path=drop_path,
-                ffn_type=ffn_type,
-            )
-            self.blocks.append(blk)
-
-    def forward(self, h, time_embedding=None, freqs_cos=None, freqs_sin=None):
-        for blk in self.blocks:
-            h = blk(h, time_embedding=time_embedding, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
-        return h
+__all__ = ["UTransformer"]
 
 
 class DeltaNetLayer(nn.Module):

@@ -1,6 +1,4 @@
 import torch
-import torch.distributed as dist
-from xmetai.utils import comm, env
 from torch import nn
 from torch.nn import functional as F
 from einops import rearrange

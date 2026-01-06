@@ -68,7 +68,19 @@ def build_model(cfg):
             checkpoint_wrapper_fn=wrap_f1,
             check_fn=check_fn
         )
-    FSDPCheckpointer(model).load(cfg.train.init_checkpoint)  # TODO: Ugly hack to load before fsdp2 wrapping
+    # load checkpoint before distribute and update buffers from model config.
+    reload_buffers = ["channel_weights", "weight"]
+    model_buffers = {k: v for k, v in model.named_buffers() if any(rb in k for rb in reload_buffers)}
+    FSDPCheckpointer(model).load(cfg.train.init_checkpoint)
+    for k, v in model_buffers.items():
+        buf = dict(model.named_buffers())[k]
+        if buf.shape == v.shape:
+            buf.data.copy_(v.data)
+            if comm.is_main_process():
+                logger.info(f"Restored buffer {k} with shape {buf.shape} from model config.")
+        else:
+            if comm.is_main_process():
+                logger.warning(f"Buffer shape mismatch for {k}: checkpoint {v.shape} vs model {buf.shape}, skipping restore.")
     # clear freezed parameters grad
     def clear_grad(module):
         for param in module.parameters():
@@ -170,7 +182,7 @@ def do_train(args, cfg):
         ]
     )
 
-    if not cfg.train.use_fsdp2: # TODO: Ugly hack to avoid loading twice
+    if args.resume: # TODO: Should load trainer state only.
         checkpointer.resume_or_load(cfg.train.init_checkpoint, resume=args.resume)
 
     if cfg.train.use_ema:
