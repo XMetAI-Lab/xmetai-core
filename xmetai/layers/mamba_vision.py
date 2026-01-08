@@ -1,13 +1,9 @@
-#!/usr/bin/env python3
-
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
-#
-# NVIDIA CORPORATION and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto.  Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION is strictly prohibited.
-
+'''
+Author: DouZesheng && douzsh@gmail.com
+Date: 2025-09-06 18:02:10
+Description: Mamba layer for predictor in UTransformer.
+Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved. 
+'''
 
 import math
 import torch
@@ -17,6 +13,8 @@ from timm.layers.drop import DropPath
 from timm.layers.mlp import Mlp
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, SelectiveScanFn
 from einops import rearrange, repeat
+from xmetai.layers.rotary_attention import RotaryAttention
+from xmetai.layers.swin import window_partition, window_reverse
 
 __all__ = ["MambaVisionLayer"]
 
@@ -41,7 +39,7 @@ def symbolic_selective_scan_fn(g, u, delta, a, b, c, d=None, z=None, delta_bias=
 setattr(SelectiveScanFn, "symbolic", symbolic_selective_scan_fn)
 
 
-class MambaVisionMixer(nn.Module):
+class MambaMixer(nn.Module):
     def __init__(
         self,
         d_model,
@@ -224,25 +222,44 @@ class Block(nn.Module):
                  Mlp_block=Mlp,
                  layer_scale=None,
                  with_embedding=False,
+                 attn_type='standard',
+                 window_size=None,
+                 input_size=None,
                  ):
         super().__init__()
         self.norm1 = norm_layer(dim)
+        self.attn_type = attn_type
+        self.window_size = window_size
+        self.input_size = input_size
         if counter in transformer_blocks:
-            self.mixer = Attention(
-                dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                qk_norm=qk_scale,
-                attn_drop=attn_drop,
-                proj_drop=drop,
-                norm_layer=norm_layer,
-            )
+            if attn_type.find('rotary') != -1:
+                max_seq_len = None
+                if input_size is not None and window_size is not None:
+                    # For windowed attention, max_seq_len is the window size
+                    max_seq_len = input_size[0] * input_size[1] if isinstance(input_size, (tuple, list)) else input_size * input_size
+                self.mixer = RotaryAttention(
+                    dim=dim,
+                    n_heads=num_heads,
+                    dropout=attn_drop,
+                    max_seq_len=max_seq_len,
+                    flash=attn_type.find('flash') != -1,
+                )
+            else:  # default 'standard'
+                self.mixer = Attention(
+                    dim,
+                    num_heads=num_heads,
+                    qkv_bias=qkv_bias,
+                    qk_norm=qk_scale,
+                    attn_drop=attn_drop,
+                    proj_drop=drop,
+                    norm_layer=norm_layer,
+                )
         else:
-            self.mixer = MambaVisionMixer(d_model=dim,
-                                          d_state=8,
-                                          d_conv=3,
-                                          expand=1
-                                          )
+            self.mixer = MambaMixer(d_model=dim,
+                                    d_state=8,
+                                    d_conv=3,
+                                    expand=1
+                                    )
         self.with_embedding = with_embedding
         if with_embedding:
             self.time_embed = nn.Sequential(
@@ -257,20 +274,56 @@ class Block(nn.Module):
         self.gamma_1 = nn.Parameter(layer_scale * torch.ones(dim)) if use_layer_scale else 1
         self.gamma_2 = nn.Parameter(layer_scale * torch.ones(dim)) if use_layer_scale else 1
 
-    def forward(self, x, time_embedding=None, **kwargs):
+    def forward(self, x, time_embedding=None, freqs_cos=None, freqs_sin=None, **kwargs):
         if self.with_embedding and time_embedding is not None:
             gamma = self.time_embed(time_embedding).unsqueeze(1)
             scale_msa, shift_msa, gate_msa, scale_mlp, shift_mlp, gate_mlp = gamma.chunk(6, dim=-1)
             gate_msa = torch.sigmoid(gate_msa)
             gate_mlp = torch.sigmoid(gate_mlp)
             norm1_x = self.norm1(x) * (1 + scale_msa) + shift_msa
-            x = x + gate_msa*self.drop_path(self.gamma_1 * self.mixer(norm1_x))
+            if isinstance(self.mixer, RotaryAttention) and freqs_cos is not None and freqs_sin is not None:
+                if self.window_size is not None and self.input_size is not None:
+                    attn_out = self._apply_windowed_rotary_attn(norm1_x, freqs_cos, freqs_sin)
+                else:
+                    attn_out = self.mixer(norm1_x, freqs_cos, freqs_sin)
+            else:
+                attn_out = self.mixer(norm1_x)
+            x = x + gate_msa*self.drop_path(self.gamma_1 * attn_out)
             norm2_x = self.norm2(x) * (1 + scale_mlp) + shift_mlp
             x = x + gate_mlp*self.drop_path(self.gamma_2 * self.mlp(norm2_x))
         else:
-            x = x + self.drop_path(self.gamma_1 * self.mixer(self.norm1(x)))
+            norm1_x = self.norm1(x)
+            if isinstance(self.mixer, RotaryAttention) and freqs_cos is not None and freqs_sin is not None:
+                if self.window_size is not None and self.input_size is not None:
+                    attn_out = self._apply_windowed_rotary_attn(norm1_x, freqs_cos, freqs_sin)
+                else:
+                    attn_out = self.mixer(norm1_x, freqs_cos, freqs_sin)
+            else:
+                attn_out = self.mixer(norm1_x)
+            x = x + self.drop_path(self.gamma_1 * attn_out)
             x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x
+
+    def _apply_windowed_rotary_attn(self, x, freqs_cos, freqs_sin):
+        """Apply rotary attention with window partitioning."""
+        B, L, C = x.shape
+        H, W = self.input_size
+        # Reshape to spatial format (B, H, W, C)
+        x_spatial = x.view(B, H, W, C)
+        # Partition into windows
+        x_windows = window_partition(x_spatial, self.window_size)  # (nW*B, win_h, win_w, C)
+        x_windows = x_windows.view(-1, self.window_size[0] * self.window_size[1], C)  # (nW*B, win_size, C)
+        # Apply rotary attention
+        attn_windows = self.mixer(x_windows, freqs_cos, freqs_sin)  # (nW*B, win_size, C)
+        # Reshape back to spatial windows
+        attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], C)
+        # Reverse window partition
+        x_out = window_reverse(attn_windows, self.window_size, H, W)  # (B, H, W, C)
+
+        # Reshape back to sequence format (B, L, C)
+        x_out = x_out.view(B, L, C)
+
+        return x_out
 
 
 class MambaVisionLayer(nn.Module):
@@ -292,12 +345,16 @@ class MambaVisionLayer(nn.Module):
                  layer_scale=None,
                  transformer_blocks=[],
                  with_embedding=False,
+                 attn_type='standard',
+                 window_size=None,
+                 input_size=None,
                  ):
         """
         Args:
             dim: feature size dimension.
             depth: number of layers in each stage.
             window_size: window size in each stage.
+            input_size: input spatial size (H, W) for window partitioning.
             conv: bool argument for conv stage flag.
             downsample: bool argument for down-sampling.
             mlp_ratio: MLP ratio.
@@ -311,6 +368,7 @@ class MambaVisionLayer(nn.Module):
             layer_scale: layer scaling coefficient.
             layer_scale_conv: conv layer scaling coefficient.
             transformer_blocks: list of transformer blocks.
+            attn_type: attention type ('standard' or 'rotary').
         """
 
         super().__init__()
@@ -327,10 +385,13 @@ class MambaVisionLayer(nn.Module):
                                            drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
                                            layer_scale=layer_scale,
                                            with_embedding=with_embedding,
+                                           attn_type=attn_type,
+                                           window_size=window_size,
+                                           input_size=input_size,
                                            )
                                      for i in range(depth)])
 
-    def forward(self, x, time_embedding=None, **kwargs):
+    def forward(self, x, time_embedding=None, freqs_cos=None, freqs_sin=None, **kwargs):
         for _, blk in enumerate(self.blocks):
-            x = blk(x, time_embedding=time_embedding)
+            x = blk(x, time_embedding=time_embedding, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
         return x

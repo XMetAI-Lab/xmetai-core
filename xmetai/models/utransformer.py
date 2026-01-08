@@ -11,12 +11,9 @@ from xmetai.layers import (
     MCDropout,
     LayerNorm,
     SwinLayer,
+    MambaVisionLayer,
     precompute_freqs_cis
 )
-try:
-    from xmetai.layers import MambaVisionLayer
-except Exception:
-    MambaVisionLayer = None
 from .pred_head import PLSFHead
 
 __all__ = ["UTransformer"]
@@ -158,6 +155,9 @@ class UTransformer(nn.Module):
                     drop=drop_mcmc,
                     transformer_blocks=list(range(depths[i]//2+1, depths[i])) if depths[i] % 2 != 0 else list(range(depths[i]//2, depths[i])),
                     with_embedding=with_embedding,
+                    attn_type=attn_type,
+                    window_size=(window_size, window_size) if isinstance(window_size, int) else window_size,
+                    input_size=tuple(input_size) if isinstance(input_size, (list, tuple)) else input_size,
                 )
             elif layer_type.lower().find("deltanet") > -1:
                 self.logger.info("Using DeltaNet style transformer blocks.")

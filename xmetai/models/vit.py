@@ -13,11 +13,7 @@ from einops import rearrange
 from xmetai.builder import MODELS
 from xmetai.loss import charbonnier_loss
 from xmetai.layers import CubeEmbed, TimestepEmbed
-try:
-    from xmetai.layers import MambaVisionLayer
-except Exception:
-    MambaVisionLayer = None
-    print("Warning: MambaVisionLayer is not available. Please install mamba-ssm.")
+from xmetai.layers import MambaVisionLayer
 from .base_predictor import BasePredictor
 
 

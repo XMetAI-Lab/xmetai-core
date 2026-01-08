@@ -2,7 +2,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint as checkpoint
 
 from xmetai.layers import LayerNorm, DropPath, to_2tuple
 from .rotary_attention import RotaryAttention

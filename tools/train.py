@@ -13,7 +13,7 @@ sys.path.append(CUR_PATH + "/../configs/")
 
 try:
     from xmetai.config import LazyConfig, instantiate
-    from xmetai.models.transformer import SwinBlock
+    from xmetai.layers import SwinLayer, MambaVisionLayer
     from xmetai.core import (
         LRMultiplier,
         FSDPCheckpointer,
@@ -34,12 +34,6 @@ except ImportError as e:
     print(f"ImportError: {e}. You can do this by running `pip install -e .` in the root directory.")
     sys.exit(1)
 
-try:
-    from xmetai.layers import MambaVisionLayer
-except Exception as e:
-    MambaVisionLayer = None
-    print(f"Warning: MambaVisionLayer could not be imported: {e}")
-
 logger = logging.getLogger("xmetai")
 
 
@@ -49,9 +43,7 @@ def build_model(cfg):
         logger.info("Model parameters: {:.3f}M".format(model.params() / 1e6))
     model.freeze(cfg.train.freeze)
     model.to(cfg.train.device_type)
-    mods = (SwinBlock, torch.nn.TransformerEncoderLayer)
-    if MambaVisionLayer:
-        mods += (MambaVisionLayer,)
+    mods = (SwinLayer, torch.nn.TransformerEncoderLayer, MambaVisionLayer)
     cfg.train.fsdp.mods = mods
     # Apply activation checkpointing
     if cfg.train.activation_checkpointing:
