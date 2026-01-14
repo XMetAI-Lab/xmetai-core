@@ -20,7 +20,7 @@ pytorch-lightning>=2.0.0
 # File I/O and path management
 iopath>=0.1.9
 
-# Mamba State Space Model (optional but recommended)
+# Mamba State Space Model
 mamba-ssm>=1.0.0
 
 # TIMM (for layers)

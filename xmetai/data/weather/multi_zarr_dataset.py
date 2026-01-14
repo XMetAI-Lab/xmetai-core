@@ -84,7 +84,7 @@ class MultiZarrDataset(Dataset):
         stage = "train" if self.training else "test"
         self.logger.info(f"{stage}_times: {self.start_time} ~ {self.end_time} = {len(self.inds)} samples")
         if len(in_names) > 0:
-            level_values = ds.level.values.tolist()
+            level_values = self.ds.level.values.tolist()
             self.select_vars = [level_values.index(v) for v in in_names if v in level_values]
             missing = [v for v in in_names if v not in level_values]
             if len(missing) > 0:
