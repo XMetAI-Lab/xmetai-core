@@ -25,6 +25,7 @@ class MultiZarrDataset(Dataset):
         inference_only: bool = False,
         years: tuple = ('19790101', '20161231'),
         in_names: list = [],  # list of variable names to use, if empty, use all variables in the dataset
+        lat_flip: bool = False,  # whether to flip latitude axis
     ):
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Loading data from: {data_paths}")
@@ -33,6 +34,7 @@ class MultiZarrDataset(Dataset):
         self.fcst_frames = np.array(fcst_frames)
         self.training = training
         self.inference_only = inference_only
+        self.lat_flip = lat_flip
 
         # 1. 加载并筛选时间范围
         datasets = []
@@ -130,6 +132,8 @@ class MultiZarrDataset(Dataset):
         if self.select_vars is not None:
             imgs = imgs[:, self.select_vars, ...]
         inputs = imgs[: self.hist_frames]
+        if self.lat_flip: # flip latitude axis
+            inputs = torch.flip(inputs, dims=[2])
         if self.inference_only:
             return dict(times=time_tensor, inputs=inputs)
 
