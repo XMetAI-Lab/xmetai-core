@@ -131,9 +131,9 @@ class MultiZarrDataset(Dataset):
         imgs = torch.nan_to_num(imgs, nan=0.0, posinf=0.0, neginf=0.0)
         if self.select_vars is not None:
             imgs = imgs[:, self.select_vars, ...]
-        inputs = imgs[: self.hist_frames]
         if self.lat_flip: # flip latitude axis
-            inputs = torch.flip(inputs, dims=[2])
+            imgs = torch.flip(imgs, dims=[2])
+        inputs = imgs[:self.hist_frames]
         if self.inference_only:
             return dict(times=time_tensor, inputs=inputs)
 
