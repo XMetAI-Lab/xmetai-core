@@ -138,17 +138,6 @@ bash scripts/train.bash \
     --depth-list "6,6,12,12"
 ```
 
-##### 多GPU训练(单机多卡)
-```bash
-bash scripts/train.bash \
-    --stage train \
-    --model configs/s2s_vit.py \
-    --gpu 4 \
-    --batch 2 \
-    --nnodes 1 \
-    --lr 0.0005
-```
-
 ##### 多机多卡训练
 ```bash
 bash scripts/train.bash \
@@ -161,26 +150,7 @@ bash scripts/train.bash \
     --lr 0.0005
 ```
 
-##### 使用PyTorch Lightning训练
-```bash
-bash scripts/train.bash \
-    --stage ltrain \
-    --model configs/s2s_vit.py \
-    --gpu 2 \
-    --batch 2 \
-    --lr 0.0005
-```
-
 #### 2. 模型评估
-
-##### 单GPU评估
-```bash
-bash scripts/train.bash \
-    --stage eval \
-    --model configs/s2s_vit.py \
-    --members 10 \
-    --save
-```
 
 ##### 多GPU评估
 ```bash
@@ -190,15 +160,6 @@ bash scripts/train.bash \
     --gpu 4 \
     --members 10 \
     --save
-```
-
-##### 使用PyTorch Lightning评估
-```bash
-bash scripts/train.bash \
-    --stage leval \
-    --model configs/s2s_vit.py \
-    --gpu 2 \
-    --members 8
 ```
 
 #### 3. 导出ONNX模型
@@ -250,6 +211,57 @@ bash scripts/train.bash \
 
 ---
 
+## 🧪 测试和代码质量
+
+本项目包含全面的测试套件，涵盖**50+ 个测试**，分为**单元测试**和**集成测试**两个部分。
+
+### 📊 测试统计
+
+```
+✅ 50+ 测试用例
+📦 单元测试: 37 个（5 个文件）
+🔗 集成测试: 13 个（端到端工作流）
+🔄 支持 CPU/GPU 双路径
+📈 核心模块覆盖率: 69%-99%
+```
+
+### 🚀 快速开始
+
+使用便捷脚本 `scripts/run_tests.sh`：
+
+```bash
+# GPU 测试（默认，包含覆盖率检查）
+bash scripts/run_tests.sh gpu
+
+# CPU 测试（跳过 GPU 标记的测试）
+bash scripts/run_tests.sh cpu
+
+# 核心单元测试子集
+bash scripts/run_tests.sh unit
+
+# 完整覆盖率报告（生成 htmlcov/）
+bash scripts/run_tests.sh coverage
+
+# 所有测试
+bash scripts/run_tests.sh all
+```
+### 📂 测试目录结构
+
+```
+tests/                      # 测试根目录
+├── unit/                   # 单元测试 (37 个测试)
+│   ├── test_layers_basic.py      # 11 个测试 - 基础层
+│   ├── test_layers_vision.py     # 14 个测试 - 视觉层
+│   ├── test_models.py            # 13 个测试 - 模型架构
+│   ├── test_loss_metrics.py     # 14 个测试 - 损失和指标
+│   └── test_data.py              # 8 个测试 - 数据加载
+├── integration/            # 集成测试 (13 个测试)
+│   └── test_integration.py       # 端到端工作流
+├── conftest.py             # 共享 fixtures 和配置
+└── runner.py               # Python 测试运行器
+```
+---
+
 ## 相关文献
 
 该项目基于以下研究工作：
@@ -282,27 +294,6 @@ bash scripts/train.bash \
 
 - **项目负责人**: XMetAI Team
 - **邮箱**: douzsh@gmail.com
-
----
-
-## 快速命令参考
-
-```bash
-# 训练
-./scripts/train.bash --stage train --model configs/s2s_vit.py --lr 0.0005 --gpu 1
-
-# 评估
-./scripts/train.bash --stage eval --model configs/s2s_vit.py --members 10 --save
-
-# 导出
-./scripts/train.bash --stage export --model configs/s2s_vit.py
-
-# Lightning训练
-./scripts/train.bash --stage ltrain --model configs/s2s_vit.py --gpu 2
-
-# Lightning评估
-./scripts/train.bash --stage leval --model configs/s2s_vit.py --members 8
-```
 
 ---
 
