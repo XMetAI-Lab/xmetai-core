@@ -54,11 +54,11 @@ line-length = 160
 [tool.ruff.lint]
 select = ["E", "F", "W", "C90", "I"]
 ignore = ["C901", "E501"]  # Ignore line-too-long (handled by black)
-per-file-ignores = {
-  "**/__init__.py" = ["F401", "F403"],
-  "tests/**" = ["F401", "F403", "F841"],
-  "xmetai/builder.py" = ["E402", "F403"],
-}
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401", "F403"]
+"tests/**" = ["F401", "F403", "F841"]
+"xmetai/builder.py" = ["E402", "F403"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["xmetai"]
