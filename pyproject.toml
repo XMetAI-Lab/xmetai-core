@@ -40,6 +40,7 @@ dependencies = [
   "h5py>=3.8.0",
   "zarr>=2.15.0",
   "xarray>=2023.0.0",
+  "dask>=2023.0.0",
   "onnx>=1.14.0",
   "onnxruntime>=1.15.0",
   "onnxruntime-extensions>=0.7.0",
