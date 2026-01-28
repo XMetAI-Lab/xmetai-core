@@ -21,7 +21,7 @@ def precompute_freqs_cis_2d(dim: int, size: tuple, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 4)[: (dim // 4)].float() / dim))
     y = torch.arange(size[0], device=freqs.device)
     x = torch.arange(size[1], device=freqs.device)
-    yy, xx = torch.meshgrid(y, x, indexing='ij')
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
     freqs_yy = torch.outer(yy.flatten(), freqs).float()  # type: ignore
     freqs_xx = torch.outer(xx.flatten(), freqs).float()  # type: ignore
     freqs = torch.cat([freqs_yy, freqs_xx], dim=-1)
@@ -38,12 +38,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     return freqs_cis.view(shape)
 
 
-def apply_rotary_emb(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cos: torch.Tensor,
-    freqs_sin: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
+def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     # xv = xv.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
     # reshape xq and xk to match the complex representation
     xq_r, xq_i = xq.float().reshape(xq.shape[:-1] + (-1, 2)).unbind(-1)
@@ -70,11 +65,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     bs, slen, n_kv_heads, head_dim = x.shape
     if n_rep == 1:
         return x
-    return (
-        x[:, :, :, None, :]
-        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
-        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
-    )
+    return x[:, :, :, None, :].expand(bs, slen, n_kv_heads, n_rep, head_dim).reshape(bs, slen, n_kv_heads * n_rep, head_dim)
 
 
 class RotaryAttention(nn.Module):
@@ -124,8 +115,8 @@ class RotaryAttention(nn.Module):
             xv = xv.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
         else:
             ns = self.max_seq_len // seq_len
-            xq = xq.view(-1, ns*seq_len, self.n_local_heads, self.head_dim)
-            xk = xk.view(-1, ns*seq_len, self.n_local_kv_heads, self.head_dim)
+            xq = xq.view(-1, ns * seq_len, self.n_local_heads, self.head_dim)
+            xk = xk.view(-1, ns * seq_len, self.n_local_kv_heads, self.head_dim)
             xv = xv.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
 
         # RoPE relative positional embeddings
@@ -150,7 +141,14 @@ class RotaryAttention(nn.Module):
 
         # flash implementation
         if self.flash:
-            output = F.scaled_dot_product_attention(xq, xk, xv, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0, is_causal=self.is_causal)
+            output = F.scaled_dot_product_attention(
+                xq,
+                xk,
+                xv,
+                attn_mask=mask,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=self.is_causal,
+            )
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / np.sqrt(self.head_dim)

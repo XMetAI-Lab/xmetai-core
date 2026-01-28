@@ -27,10 +27,7 @@ if version.parse(torch.__version__) >= version.parse("2.0.0"):
             "enable_flash": False,
             "enable_mem_efficient": True,
         },
-        None: {
-            "enable_math": True,
-            "enable_flash": True,
-            "enable_mem_efficient": True},
+        None: {"enable_math": True, "enable_flash": True, "enable_mem_efficient": True},
     }
 else:
     from contextlib import nullcontext
@@ -86,9 +83,7 @@ class NewCrossAttention(nn.Module):
         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
         self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
 
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
-        )
+        self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
         self.backend = backend
 
     def forward(self, x, context=None, mask=None):
@@ -99,16 +94,12 @@ class NewCrossAttention(nn.Module):
         k = self.to_k(context)
         v = self.to_v(context)
 
-        q, k, v = map(
-            lambda t: rearrange(
-                t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
+        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
 
         # new
         with sdp_kernel(**BACKEND_MAP[self.backend]):
             # print("dispatching into backend", self.backend, "q/k/v shape: ", q.shape, k.shape, v.shape)
-            out = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=mask
-            )  # scale is dim_head ** -0.5 per default
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)  # scale is dim_head ** -0.5 per default
 
         del q, k, v
 
@@ -139,9 +130,7 @@ class CrossAttention(nn.Module):
         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
         self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
 
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
-        )
+        self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
 
     def forward(self, x, context=None, mask=None):
         h = self.heads
@@ -151,9 +140,7 @@ class CrossAttention(nn.Module):
         k = self.to_k(context)
         v = self.to_v(context)
 
-        q, k, v = map(
-            lambda t: rearrange(
-                t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
+        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
 
         # force cast to fp32 to avoid overflowing
         if self.precision == "fp32":
@@ -218,13 +205,7 @@ class TwoAttentionBlock(AttentionBlock):
         context_dim=None,
         sdp_backend=None,
     ):
-        super().__init__(
-            dim,
-            dim_head,
-            n_heads,
-            dropout,
-            context_dim=None,
-            sdp_backend=sdp_backend)
+        super().__init__(dim, dim_head, n_heads, dropout, context_dim=None, sdp_backend=sdp_backend)
         self.attn2 = CrossAttention(
             query_dim=dim,
             heads=n_heads,
@@ -260,16 +241,12 @@ class TransformerBlock(nn.Module):
         d_head = in_channels // n_heads
         inner_dim = n_heads * d_head
 
-        self.norm = nn.GroupNorm(
-            num_groups=32, num_channels=in_channels, eps=1e-6, affine=True
-        )
+        self.norm = nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
 
         if proj_type == "linear":
             self.proj_in = nn.Linear(in_channels, inner_dim)
         else:
-            self.proj_in = nn.Conv2d(
-                in_channels, inner_dim, kernel_size=1, stride=1, padding=0
-            )
+            self.proj_in = nn.Conv2d(in_channels, inner_dim, kernel_size=1, stride=1, padding=0)
 
         self.transformer_blocks = nn.ModuleList(
             [
@@ -288,13 +265,7 @@ class TransformerBlock(nn.Module):
         if proj_type == "linear":
             self.proj_out = zero_module(nn.Linear(in_channels, inner_dim))
         else:
-            self.proj_out = zero_module(
-                nn.Conv2d(
-                    inner_dim,
-                    in_channels,
-                    kernel_size=1,
-                    stride=1,
-                    padding=0))
+            self.proj_out = zero_module(nn.Conv2d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0))
 
     def forward(self, x, context=None):
         h, w = x.shape[-2:]

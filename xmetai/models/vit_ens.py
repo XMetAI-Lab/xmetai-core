@@ -1,9 +1,10 @@
-'''
+"""
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-11-03 08:05:44
 Description: ViT model with ensemble strategy.
-Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
-'''
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
+"""
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -47,7 +48,7 @@ class EnsNoiseMLP(nn.Module):
             nn.GELU(),
             nn.LayerNorm(512),
             nn.Linear(512, embed_dim),
-            nn.Softsign()
+            nn.Softsign(),
         )
         # learnable global scaling factor
         self.noise_scale = nn.Parameter(torch.full((1,), init_scale))
@@ -69,10 +70,7 @@ class EnsNoiseMLP(nn.Module):
 
 @MODELS.register()
 class ViTEnsModel(ViTModel):
-    def __init__(self,
-                 embed_dim=256,
-                 alpha=1.0,
-                 *args, **kwargs):
+    def __init__(self, embed_dim=256, alpha=1.0, *args, **kwargs):
         super().__init__(embed_dim=embed_dim, *args, **kwargs)
         self.logger.name = __name__
         self.alpha = alpha
@@ -102,7 +100,7 @@ class ViTEnsModel(ViTModel):
 
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
-            target = targets[:, k:k+self.out_frames]
+            target = targets[:, k : k + self.out_frames]
             self.reset_input(input)
             output, delta_h = self.forward_step(input, times, step=t)
             if "channel_weights" in self._buffers:
@@ -113,7 +111,7 @@ class ViTEnsModel(ViTModel):
             loss_noise += noise_magnitude_loss(delta_h)
 
             # prepare next input with current output
-            input = torch.cat([input, output], dim=1)[:, -self.in_frames:]
+            input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
 
         loss_dict = dict(loss_rec=loss_rec, loss_crps=loss_crps, loss_noise=loss_noise)
         return loss_dict
@@ -123,9 +121,9 @@ class ViTEnsModel(ViTModel):
         if timestamp is None:
             timestamp = self.get_timestamp(input, times, step)
         self.logger.debug(f"timestamp: {timestamp}")
-        time_token = self.step_embed(timestamp['step']).unsqueeze(1)  # Bx1xC
-        time_token = torch.concat([time_token, self.hour_embed(timestamp['hour']).unsqueeze(1)], dim=1)
-        time_token = torch.concat([time_token, self.doy_embed(timestamp['doy']).unsqueeze(1)], dim=1)
+        time_token = self.step_embed(timestamp["step"]).unsqueeze(1)  # Bx1xC
+        time_token = torch.concat([time_token, self.hour_embed(timestamp["hour"]).unsqueeze(1)], dim=1)
+        time_token = torch.concat([time_token, self.doy_embed(timestamp["doy"]).unsqueeze(1)], dim=1)
         self.logger.debug(f"time embed shape: {time_token.shape}, min: {time_token.min().item()}, max: {time_token.max().item()}")  # Bx3xC
 
         # start forward calculation
@@ -150,13 +148,20 @@ class ViTEnsModel(ViTModel):
         self.logger.debug(f"encoder output shape: {h.shape}, min: {h.min().item()}, max: {h.max().item()}")
         output = self.head(h)  # B, N, C_out*P*P
         self.logger.debug(f"head output shape: {output.shape}")
-        output = rearrange(output, "n (h w) (c p1 p2) -> n c (h p1) (w p2)",
-                           h=self.feat_size[0],
-                           p1=self.patch_size,
-                           p2=self.patch_size,
-                           )
+        output = rearrange(
+            output,
+            "n (h w) (c p1 p2) -> n c (h p1) (w p2)",
+            h=self.feat_size[0],
+            p1=self.patch_size,
+            p2=self.patch_size,
+        )
         if output.shape[-2:] != input.shape[-2:]:
-            output = F.interpolate(output.float(), size=input.shape[-2:], mode="bilinear", align_corners=False,).to(input)
+            output = F.interpolate(
+                output.float(),
+                size=input.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            ).to(input)
         # decode output is only a residual, so we add the last input frame
         self.logger.debug(f"final output shape: {output.shape}, min: {output.min().item()}, max: {output.max().item()}")
         output = output.unsqueeze(1) + input[:, -1:]
@@ -184,12 +189,12 @@ class ViTEnsModel(ViTModel):
                 curr_step = 0
                 for step in range(num_step):
                     self.reset_input(new_input)
-                    output = self.forward_step(new_input, times, step=step+self.start_frames)
-                    new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames:]
+                    output = self.forward_step(new_input, times, step=step + self.start_frames)
+                    new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames :]
                     # save for output
-                    if step+1 in steps:
+                    if step + 1 in steps:
                         self.logger.debug(f"Saving output for step {step} with curr_step {curr_step}")
-                        outputs[:, curr_step:curr_step + 1, :self.out_chans] += output
+                        outputs[:, curr_step : curr_step + 1, : self.out_chans] += output
                         curr_step += 1
         outputs /= self.members  # ensemble prediction with mean
         return outputs

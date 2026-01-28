@@ -5,7 +5,6 @@ Tests: Attention, RotaryAttention, Embeddings, Activations, Normalizations
 
 import pytest
 import torch
-import torch.nn as nn
 
 # Import helpers: prefer package exports, fall back to module-level imports
 try:
@@ -42,7 +41,11 @@ except Exception:
         # Last resort: try to import a named symbol if available
         from xmetai.layers.attention import AttentionBlock as Attention
 
-    from xmetai.layers.rotary_attention import RotaryAttention, precompute_freqs_cis, precompute_freqs_cis_2d
+    from xmetai.layers.rotary_attention import (
+        RotaryAttention,
+        precompute_freqs_cis,
+        precompute_freqs_cis_2d,
+    )
     from xmetai.layers.embed import CubeEmbed, TimestepEmbed
     from xmetai.layers.norm import LayerNorm
 
@@ -56,7 +59,7 @@ class TestAttention:
         B, L, C = sample_input_2d.shape
         num_heads = 8
         attn = Attention(dim=C, num_heads=num_heads)
-        
+
         output = attn(sample_input_2d)
         assert output.shape == sample_input_2d.shape
 
@@ -65,12 +68,12 @@ class TestAttention:
         """Test attention produces different outputs for different batches."""
         C, num_heads = 64, 8
         attn = Attention(dim=C, num_heads=num_heads)
-        
+
         # Same sequence in batch
         x = torch.randn(2, 256, C)
         out1 = attn(x[0:1])
         out2 = attn(x[1:2])
-        
+
         # Outputs should be different (not all zeros)
         assert not torch.allclose(out1, out2, atol=1e-4)
 
@@ -79,11 +82,11 @@ class TestAttention:
         """Test gradients flow through attention."""
         attn = Attention(dim=sample_input_2d.shape[-1], num_heads=8)
         sample_input_2d.requires_grad = True
-        
+
         output = attn(sample_input_2d)
         loss = output.sum()
         loss.backward()
-        
+
         assert sample_input_2d.grad is not None
         assert sample_input_2d.grad.abs().sum() > 0
 
@@ -92,11 +95,11 @@ class TestAttention:
         """Test attention on GPU."""
         if device.type == "cpu":
             pytest.skip("GPU test")
-        
+
         attn = Attention(dim=sample_input_2d.shape[-1], num_heads=8).to(device)
         x = sample_input_2d.to(device)
         output = attn(x)
-        
+
         assert output.device.type == device.type
 
 
@@ -108,20 +111,20 @@ class TestRotaryAttention:
         B, L, C = sample_input_2d.shape
         num_heads = 8
         freqs_cos, freqs_sin = sample_freqs_cis
-        
+
         attn = RotaryAttention(dim=C, n_heads=num_heads)
         output = attn(sample_input_2d, freqs_cos, freqs_sin)
-        
+
         assert output.shape == sample_input_2d.shape
 
     def test_rotary_attention_with_max_seq_len(self, sample_input_2d):
         """Test rotary attention with explicit max_seq_len."""
         B, L, C = sample_input_2d.shape
         num_heads = 8
-        
+
         attn = RotaryAttention(dim=C, n_heads=num_heads, max_seq_len=512)
         freqs_cos, freqs_sin = precompute_freqs_cis(C // num_heads, 512)
-        
+
         output = attn(sample_input_2d, freqs_cos, freqs_sin)
         assert output.shape == sample_input_2d.shape
 
@@ -131,7 +134,7 @@ class TestRotaryAttention:
         """Test rotary attention flash path on GPU without mask."""
         B, L, C = sample_input_2d.shape
         num_heads = 8
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         x = sample_input_2d.to(device)
         attn = RotaryAttention(dim=C, n_heads=num_heads, flash=True, max_seq_len=L).to(device)
         freqs_cos, freqs_sin = precompute_freqs_cis(C // num_heads, L)
@@ -143,7 +146,7 @@ class TestRotaryAttention:
         """Test manual attention path (flash=False) to increase coverage."""
         B, L, C = sample_input_2d.shape
         num_heads = 8
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         x = sample_input_2d.to(device)
         attn = RotaryAttention(dim=C, n_heads=num_heads, flash=False).to(device)
         freqs_cos, freqs_sin = precompute_freqs_cis(C // num_heads, L)
@@ -155,7 +158,7 @@ class TestRotaryAttention:
         """Cover mask broadcasting for both flash and manual attention paths."""
         _, L, C = sample_input_2d.shape
         num_heads = 8
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # Use batch=1 to keep mask repeat compatible with flash attention
         x = torch.randn(1, L, C, device=device)
         freqs_cos, freqs_sin = precompute_freqs_cis(C // num_heads, L)
@@ -184,12 +187,12 @@ class TestRotaryAttention:
         C = sample_input_2d.shape[-1]
         freqs_cos, freqs_sin = sample_freqs_cis
         sample_input_2d.requires_grad = True
-        
+
         attn = RotaryAttention(dim=C, n_heads=8)
         output = attn(sample_input_2d, freqs_cos, freqs_sin)
         loss = output.sum()
         loss.backward()
-        
+
         assert sample_input_2d.grad is not None
         assert sample_input_2d.grad.abs().sum() > 0
 
@@ -205,7 +208,7 @@ class TestRotaryAttention:
         assert freqs_sin.shape[0] == seq_len
         assert freqs_cos.shape[1] == freqs_sin.shape[1]
         # cos and sin should sum to ~1 (Pythagorean identity)
-        trig_sum = freqs_cos ** 2 + freqs_sin ** 2
+        trig_sum = freqs_cos**2 + freqs_sin**2
         assert torch.allclose(trig_sum, torch.ones_like(trig_sum), atol=1e-5)
 
 
@@ -217,7 +220,7 @@ class TestEmbeddings:
         B, T, C_in, H, W = sample_input_4d.shape
         embed_dim = 128
         patch_size = 4
-        
+
         embed = CubeEmbed(
             in_chans=C_in,
             out_chans=embed_dim,
@@ -225,7 +228,7 @@ class TestEmbeddings:
             patch_size=patch_size,
             flatten=True,
         )
-        
+
         output = embed(sample_input_4d)
         expected_len = (H // patch_size) * (W // patch_size)
         assert output.shape == (B, expected_len, embed_dim)
@@ -238,7 +241,7 @@ class TestEmbeddings:
 
         x_dynamic = torch.randn(B, T, dyn_chans, H, W)
         x_const = torch.randn(B, const_chans, H, W)
-        
+
         embed = CubeEmbed(
             in_chans=dyn_chans,
             out_chans=128,
@@ -247,7 +250,7 @@ class TestEmbeddings:
             patch_size=4,
             flatten=True,
         )
-        
+
         # Flatten temporal dimension for dynamic inputs; pass const separately to exercise const_proj
         merged = x_dynamic.reshape(B, T * dyn_chans, H, W)
         output = embed(merged, const=x_const)
@@ -258,22 +261,22 @@ class TestEmbeddings:
         """Test TimestepEmbed output shape."""
         embed_dim = 256
         embed = TimestepEmbed(embed_dim)
-        
+
         # Test with scalar tensor
         t = torch.tensor([[1], [2]], dtype=torch.float32)
         output = embed(t)
-        
+
         assert output.shape == (2, embed_dim)
 
     def test_timestep_embed_sinusoidal(self):
         """Test that TimestepEmbed uses sinusoidal encoding."""
         embed = TimestepEmbed(64)
-        
+
         # Embed same timestep multiple times
         t = torch.tensor([[5]], dtype=torch.float32)
         out1 = embed(t)
         out2 = embed(t)
-        
+
         assert torch.allclose(out1, out2)
 
 
@@ -284,7 +287,7 @@ class TestLayerNorm:
         """Test LayerNorm forward pass."""
         ln = LayerNorm(sample_input_2d.shape[-1])
         output = ln(sample_input_2d)
-        
+
         assert output.shape == sample_input_2d.shape
         # Output should be approximately normalized (mean ~0, std ~1)
         assert torch.allclose(output.mean(dim=-1), torch.zeros_like(output.mean(dim=-1)), atol=1e-5)
@@ -292,13 +295,13 @@ class TestLayerNorm:
     def test_layernorm_numerical_stability(self):
         """Test LayerNorm numerical stability with extreme values."""
         ln = LayerNorm(64)
-        
+
         # Very large values
         x_large = torch.randn(2, 256, 64) * 1e6
         output = ln(x_large)
         assert not torch.isnan(output).any()
         assert not torch.isinf(output).any()
-        
+
         # Very small values
         x_small = torch.randn(2, 256, 64) * 1e-6
         output = ln(x_small)

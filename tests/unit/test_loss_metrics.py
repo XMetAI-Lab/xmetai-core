@@ -5,7 +5,6 @@ Tests: CRPS loss, MSE, TCC metrics with numerical stability.
 
 import pytest
 import torch
-import numpy as np
 
 
 class TestCRPSLoss:
@@ -19,13 +18,13 @@ class TestCRPSLoss:
             from xmetai.loss import CRPSLoss
         except ImportError:
             pytest.skip("CRPS loss not available")
-        
+
         crps = CRPSLoss()
-        
+
         # Deterministic case: ensemble all same = perfect prediction
         pred = torch.tensor([[[2.0, 2.0, 2.0]]])  # batch=1, location=1, ensemble=3
         target = torch.tensor([[[2.0]]])  # batch=1, location=1
-        
+
         loss = crps(pred, target)
         assert loss >= 0
         assert loss < 0.1  # Should be very small for perfect prediction
@@ -37,13 +36,13 @@ class TestCRPSLoss:
             from xmetai.loss import CRPSLoss
         except ImportError:
             pytest.skip("CRPS loss not available")
-        
+
         crps = CRPSLoss()
-        
+
         # Large values
         pred_large = torch.randn(2, 256, 10) * 1e6
         target_large = torch.randn(2, 256) * 1e6
-        
+
         loss = crps(pred_large, target_large)
         assert not torch.isnan(loss)
         assert not torch.isinf(loss)
@@ -55,15 +54,15 @@ class TestCRPSLoss:
             from xmetai.loss import CRPSLoss
         except ImportError:
             pytest.skip("CRPS loss not available")
-        
+
         crps = CRPSLoss()
-        
+
         pred = torch.randn(2, 256, 10, requires_grad=True)
         target = torch.randn(2, 256)
-        
+
         loss = crps(pred, target)
         loss.backward()
-        
+
         assert pred.grad is not None
         assert pred.grad.abs().sum() > 0
 
@@ -78,12 +77,12 @@ class TestMSEMetric:
             from xmetai.metrics import MSE
         except ImportError:
             pytest.skip("MSE metric not available")
-        
+
         mse_fn = MSE(test_names=["z500"], test_times=[24])
-        
+
         pred = torch.tensor([[1.0, 2.0, 3.0]])
         target = torch.tensor([[1.0, 2.0, 3.0]])
-        
+
         mse = torch.mean((pred - target) ** 2)
         assert torch.allclose(mse, torch.tensor(0.0), atol=1e-5)
 
@@ -94,12 +93,12 @@ class TestMSEMetric:
             from xmetai.metrics import MSE
         except ImportError:
             pytest.skip("MSE metric not available")
-        
+
         mse_fn = MSE(test_names=["z500"], test_times=[24])
-        
+
         pred = torch.ones(2, 256, 65)
         target = torch.ones(2, 256, 65)
-        
+
         mse = torch.mean((pred - target) ** 2)
         assert torch.allclose(mse, torch.tensor(0.0), atol=1e-5)
 
@@ -110,12 +109,12 @@ class TestMSEMetric:
             from xmetai.metrics import MSE
         except ImportError:
             pytest.skip("MSE metric not available")
-        
+
         mse_fn = MSE(test_names=["z500"], test_times=[24])
-        
+
         pred = torch.tensor([[1.0, 2.0]])
         target = torch.tensor([[2.0, 4.0]])
-        
+
         mse = torch.mean((pred - target) ** 2)
         expected = torch.tensor(2.5)
         assert torch.allclose(mse, expected, atol=1e-5)
@@ -131,13 +130,13 @@ class TestTCCMetric:
             from xmetai.metrics import TCC
         except ImportError:
             pytest.skip("TCC metric not available")
-        
+
         tcc = TCC(test_names=["z500"], test_times=[24])
-        
+
         # Identical predictions
         pred = torch.randn(2, 256, 65)
         target = pred.clone()
-        
+
         corr = torch.tensor(1.0)
         assert corr > 0.95
 
@@ -148,14 +147,14 @@ class TestTCCMetric:
             from xmetai.metrics import TCC
         except ImportError:
             pytest.skip("TCC metric not available")
-        
+
         tcc = TCC(test_names=["z500"], test_times=[24])
-        
+
         torch.manual_seed(42)
         pred = torch.randn(10, 256, 65)
         torch.manual_seed(999)
         target = torch.randn(10, 256, 65)
-        
+
         corr = torch.tensor(0.0)
         assert corr < 0.3
 
@@ -166,12 +165,12 @@ class TestTCCMetric:
             from xmetai.metrics import TCC
         except ImportError:
             pytest.skip("TCC metric not available")
-        
+
         tcc = TCC(test_names=["z500"], test_times=[24])
-        
+
         pred = torch.randn(2, 256, 65) * 1e10
         target = torch.randn(2, 256, 65) * 1e10
-        
+
         corr = torch.tensor(0.0)
         assert not torch.isnan(corr)
         assert not torch.isinf(corr)
@@ -188,12 +187,12 @@ class TestCharbonnierLoss:
             from xmetai.loss import CharbonnierLoss
         except ImportError:
             pytest.skip("Charbonnier loss not available")
-        
+
         loss_fn = CharbonnierLoss()
-        
+
         pred = torch.tensor([[1.0, 2.0, 3.0]])
         target = torch.tensor([[1.0, 2.0, 3.0]])
-        
+
         loss = loss_fn(pred, target)
         assert torch.allclose(loss, torch.tensor(0.0), atol=1e-5)
 
@@ -204,15 +203,15 @@ class TestCharbonnierLoss:
             from xmetai.loss import CharbonnierLoss
         except ImportError:
             pytest.skip("Charbonnier loss not available")
-        
+
         loss_fn = CharbonnierLoss()
-        
+
         pred = torch.randn(2, 256, 65, requires_grad=True)
         target = torch.randn(2, 256, 65)
-        
+
         loss = loss_fn(pred, target)
         loss.backward()
-        
+
         assert pred.grad is not None
         assert pred.grad.abs().sum() > 0
 
@@ -223,13 +222,13 @@ class TestCharbonnierLoss:
             from xmetai.loss import CharbonnierLoss
         except ImportError:
             pytest.skip("Charbonnier loss not available")
-        
+
         loss_fn = CharbonnierLoss()
-        
+
         # Large differences
         pred = torch.ones(2, 256, 65) * 1e6
         target = torch.ones(2, 256, 65) * (-1e6)
-        
+
         loss = loss_fn(pred, target)
         assert not torch.isnan(loss)
         assert not torch.isinf(loss)
@@ -244,12 +243,12 @@ class TestKLLoss:
             from xmetai.loss import KLLoss
         except ImportError:
             pytest.skip("KL loss not available")
-        
+
         kl = KLLoss()
-        
+
         # Two identical distributions should have KL=0
         pred = torch.softmax(torch.randn(2, 256, 10), dim=-1)
-        
+
         loss = kl(pred, pred)
         assert torch.allclose(loss, torch.tensor(0.0), atol=1e-5)
 
@@ -259,12 +258,12 @@ class TestKLLoss:
             from xmetai.loss import KLLoss
         except ImportError:
             pytest.skip("KL loss not available")
-        
+
         kl = KLLoss()
-        
+
         pred1 = torch.softmax(torch.randn(2, 256, 10), dim=-1)
         pred2 = torch.softmax(torch.randn(2, 256, 10), dim=-1)
-        
+
         loss = kl(pred1, pred2)
         assert loss >= 0
 

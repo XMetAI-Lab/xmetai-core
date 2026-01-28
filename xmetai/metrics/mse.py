@@ -33,7 +33,7 @@ class MSE(DatasetEvaluator):
         output = outputs["output"].cpu()
         target = outputs["target"].cpu()
 
-        if 'weight' in outputs:
+        if "weight" in outputs:
             weight = outputs["weight"].cpu()
         else:
             weight = 1
@@ -67,7 +67,7 @@ class MSE(DatasetEvaluator):
                 rmse = np.mean(self.rmse[key])
                 results[key] = rmse
 
-        flatten_results = {'Times': self.test_times}
+        flatten_results = {"Times": self.test_times}
 
         for name in self.test_names:
             flatten_results[name] = []

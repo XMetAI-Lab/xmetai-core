@@ -1,0 +1,15 @@
+# CODEOWNERS controls automatic reviewer assignment.
+# Replace usernames/teams below to fit your org.
+
+# Default owner for the repo
+* @douzsh
+
+# Core library and configs
+xmetai/** @douzsh
+configs/** @douzsh
+common/** @douzsh
+
+# Scripts, tools, tests
+tools/** @douzsh
+scripts/** @douzsh
+tests/** @douzsh

@@ -1,14 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-'''
+"""
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-10-09 20:14:49
 Description: Inference config for land model with onnx.
-Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
-'''
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
+"""
+
 import logging
 import numpy as np
-from land_base import train, optimizer, scheduler, dataloader
+from land_base import train, dataloader
 from land_base import output_dir, buffers
 from land_base import in_chans, out_chans, in_frames, test_chans, test_names, freq
 from land_base import logid, maskid, accumid
@@ -29,10 +30,10 @@ train.use_ddp = False  # Disable DDP for ONNX inference
 test_frames = np.arange(1, 15).tolist()  # predict 1-14 days ahead
 step_range = [max(test_frames)]
 members = 8  # for ensemble prediction inference mse calculation.
-zero_accum = True # set accumid to zero every time.
+zero_accum = True  # set accumid to zero every time.
 model = L(MODELS.get("OnnxInferModel"))(
     onnx_path="land.onnx",
-    save_dir=output_dir+"/pred/",
+    save_dir=output_dir + "/pred/",
     in_chans=in_chans,
     out_chans=out_chans,
     in_frames=in_frames,

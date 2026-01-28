@@ -5,14 +5,25 @@ import logging
 from collections import defaultdict
 
 from enum import Enum
-from typing import (Any, Callable, Dict, Iterable, List, Optional, Set, Type, Union)
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Type, Union
 
 import torch
 from xmetai.config import CfgNode
-from .scheduler import (CosineParamScheduler, CyclicScheduler, LRMultiplier, MultiStepParamScheduler, WarmupParamScheduler)
+from .scheduler import (
+    CosineParamScheduler,
+    CyclicScheduler,
+    LRMultiplier,
+    MultiStepParamScheduler,
+    WarmupParamScheduler,
+)
 
-
-__all__ = ["build_lr_scheduler", "build_optimizer", "get_default_optimizer_params", "gradient_clipping", "get_muon_params_group"]
+__all__ = [
+    "build_lr_scheduler",
+    "build_optimizer",
+    "get_default_optimizer_params",
+    "gradient_clipping",
+    "get_muon_params_group",
+]
 
 
 _GradientClipperInput = Union[torch.Tensor, Iterable[torch.Tensor]]
@@ -54,9 +65,7 @@ def _generate_optimizer_class_with_gradient_clipping(
     Dynamically creates a new type that inherits the type of a given instance
     and overrides the `step` method to add gradient clipping
     """
-    assert (
-        per_param_clipper is None or global_clipper is None
-    ), "Not allowed to use both per-parameter clipping and global clipping"
+    assert per_param_clipper is None or global_clipper is None, "Not allowed to use both per-parameter clipping and global clipping"
 
     def optimizer_wgc_step(self, closure=None):
         if per_param_clipper is not None:
@@ -66,8 +75,7 @@ def _generate_optimizer_class_with_gradient_clipping(
         else:
             # global clipper for future use with detr
             # (https://github.com/facebookresearch/detr/pull/287)
-            all_params = itertools.chain(
-                *[g["params"] for g in self.param_groups])
+            all_params = itertools.chain(*[g["params"] for g in self.param_groups])
             global_clipper(all_params)
         super(type(self), self).step(closure)
 
@@ -79,9 +87,7 @@ def _generate_optimizer_class_with_gradient_clipping(
     return OptimizerWithGradientClip
 
 
-def maybe_add_gradient_clipping(
-    cfg: CfgNode, optimizer: Type[torch.optim.Optimizer]
-) -> Type[torch.optim.Optimizer]:
+def maybe_add_gradient_clipping(cfg: CfgNode, optimizer: Type[torch.optim.Optimizer]) -> Type[torch.optim.Optimizer]:
     """
     If gradient clipping is enabled through config options, wraps the existing
     optimizer type to become a new dynamically created class OptimizerWithGradientClip
@@ -105,8 +111,7 @@ def maybe_add_gradient_clipping(
         optimizer_type = optimizer
 
     grad_clipper = _create_gradient_clipper(cfg.SOLVER.CLIP_GRADIENTS)
-    OptimizerWithGradientClip = _generate_optimizer_class_with_gradient_clipping(
-        optimizer_type, per_param_clipper=grad_clipper)
+    OptimizerWithGradientClip = _generate_optimizer_class_with_gradient_clipping(optimizer_type, per_param_clipper=grad_clipper)
     if isinstance(optimizer, torch.optim.Optimizer):
         optimizer.__class__ = OptimizerWithGradientClip  # a bit hacky, not recommended
         return optimizer
@@ -114,9 +119,7 @@ def maybe_add_gradient_clipping(
         return OptimizerWithGradientClip
 
 
-def build_optimizer(
-        cfg: CfgNode,
-        model: torch.nn.Module) -> torch.optim.Optimizer:
+def build_optimizer(cfg: CfgNode, model: torch.nn.Module) -> torch.optim.Optimizer:
     """
     Build an optimizer from config.
     """
@@ -151,10 +154,11 @@ def build_optimizer(
             params,
             lr=cfg.SOLVER.BASE_LR,
             betas=cfg.SOLVER.BETAS,
-            weight_decay=cfg.SOLVER.WEIGHT_DECAY
+            weight_decay=cfg.SOLVER.WEIGHT_DECAY,
         )
     elif optimizer_type == "AdamW8bit":
         import bitsandbytes as bnb
+
         return maybe_add_gradient_clipping(cfg, bnb.optim.AdamW8bit)(
             params,
             lr=cfg.SOLVER.BASE_LR,
@@ -237,7 +241,6 @@ def get_default_optimizer_params(
         torch.nn.InstanceNorm3d,
         torch.nn.LayerNorm,
         torch.nn.LocalResponseNorm,
-
     )
     params: List[Dict[str, Any]] = []
     memo: Set[torch.nn.parameter.Parameter] = set()
@@ -247,7 +250,7 @@ def get_default_optimizer_params(
         for param_name, value in module.named_parameters(recurse=False):
 
             if not value.requires_grad:
-                logger.info(f'freeze {module_name}')
+                logger.info(f"freeze {module_name}")
                 continue
 
             # Avoid duplicating parameters
@@ -256,9 +259,7 @@ def get_default_optimizer_params(
             memo.add(value)
 
             hyperparams = copy.copy(defaults)
-            if isinstance(
-                    module,
-                    norm_module_types) and weight_decay_norm is not None:
+            if isinstance(module, norm_module_types) and weight_decay_norm is not None:
                 hyperparams["weight_decay"] = weight_decay_norm
 
             params.append({"params": [value], **hyperparams})
@@ -272,16 +273,25 @@ def get_muon_params_group(
     muon_lr: Optional[float] = 0.02,
 ):
     # we shoud use muon for conv & mean/var, check them with params name
-    distribute_names=["cov", "mean", "var", "diag"]
+    distribute_names = ["cov", "mean", "var", "diag"]
     hidden_weights = [p for p in model.parameters() if len(p.shape) >= 4 and p.requires_grad]
-    distribution_weights_names = [n for n,_ in model.named_parameters() if any(name in n for name in distribute_names) and "weight" in n]
-    distribution_weights = [p for n,p in model.named_parameters() if n in distribution_weights_names]
-    other_weights = [p for n,p in model.named_parameters() if p.requires_grad and len(p.shape) < 4 and n not in distribution_weights_names]
+    distribution_weights_names = [n for n, _ in model.named_parameters() if any(name in n for name in distribute_names) and "weight" in n]
+    distribution_weights = [p for n, p in model.named_parameters() if n in distribution_weights_names]
+    other_weights = [p for n, p in model.named_parameters() if p.requires_grad and len(p.shape) < 4 and n not in distribution_weights_names]
     param_groups = [
-        dict(params=hidden_weights + distribution_weights, use_muon=True,
-             lr=muon_lr, weight_decay=0.01),
-        dict(params=other_weights, use_muon=False,
-             lr=base_lr, betas=(0.9, 0.95), weight_decay=0.01),
+        dict(
+            params=hidden_weights + distribution_weights,
+            use_muon=True,
+            lr=muon_lr,
+            weight_decay=0.01,
+        ),
+        dict(
+            params=other_weights,
+            use_muon=False,
+            lr=base_lr,
+            betas=(0.9, 0.95),
+            weight_decay=0.01,
+        ),
     ]
     return param_groups
 
@@ -319,9 +329,7 @@ def reduce_param_groups(params: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return ret
 
 
-def build_lr_scheduler(
-    cfg: CfgNode, optimizer: torch.optim.Optimizer
-) -> torch.optim.lr_scheduler._LRScheduler:
+def build_lr_scheduler(cfg: CfgNode, optimizer: torch.optim.Optimizer) -> torch.optim.lr_scheduler._LRScheduler:
     """
     Build a LR scheduler from config.
     """
@@ -340,12 +348,9 @@ def build_lr_scheduler(
         steps = [x for x in cfg.SOLVER.STEPS if x <= cfg.SOLVER.MAX_ITER]
         if len(steps) != len(cfg.SOLVER.STEPS):
             logger = logging.getLogger(__name__)
-            logger.warning(
-                "SOLVER.STEPS contains values larger than SOLVER.MAX_ITER. "
-                "These values will be ignored."
-            )
+            logger.warning("SOLVER.STEPS contains values larger than SOLVER.MAX_ITER. " "These values will be ignored.")
         sched = MultiStepParamScheduler(
-            values=[cfg.SOLVER.GAMMA ** k for k in range(len(steps) + 1)],
+            values=[cfg.SOLVER.GAMMA**k for k in range(len(steps) + 1)],
             milestones=steps,
             num_updates=cfg.SOLVER.MAX_ITER,
         )
@@ -360,7 +365,4 @@ def build_lr_scheduler(
         min(cfg.SOLVER.WARMUP_ITERS / cfg.SOLVER.MAX_ITER, 1.0),
         cfg.SOLVER.WARMUP_METHOD,
     )
-    return LRMultiplier(
-        optimizer,
-        multiplier=sched,
-        max_iter=cfg.SOLVER.MAX_ITER)
+    return LRMultiplier(optimizer, multiplier=sched, max_iter=cfg.SOLVER.MAX_ITER)

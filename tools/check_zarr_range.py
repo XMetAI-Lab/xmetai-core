@@ -14,7 +14,6 @@ Usage:
 import argparse
 import numpy as np
 import xarray as xr
-import pandas as pd
 import sys
 from tqdm import tqdm
 import os
@@ -25,31 +24,29 @@ import multiprocessing
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Check min/max/mean values of a Zarr dataset along a specified axis."
-    )
+    parser = argparse.ArgumentParser(description="Check min/max/mean values of a Zarr dataset along a specified axis.")
     parser.add_argument("--input", "-i", required=True, help="Path to Zarr dataset")
+    parser.add_argument("--var", "-v", default="data", help="Variable name to analyze")
     parser.add_argument(
-        "--var", "-v", default="data", help="Variable name to analyze"
+        "--axis",
+        "-a",
+        default="level",
+        help="Axis to iterate over (e.g., time, level, lat, lon)",
+    )
+    parser.add_argument("--output", "-o", help="Output file to save results (default: print to stdout)")
+    parser.add_argument("--slice", "-s", help="Optional slice in format 'start:end:step' for the axis")
+    parser.add_argument(
+        "--workers",
+        "-w",
+        type=int,
+        default=None,
+        help="Number of Dask workers (default: number of CPU cores)",
     )
     parser.add_argument(
-        "--axis", "-a", default="level",
-        help="Axis to iterate over (e.g., time, level, lat, lon)"
-    )
-    parser.add_argument(
-        "--output", "-o", help="Output file to save results (default: print to stdout)"
-    )
-    parser.add_argument(
-        "--slice", "-s", help="Optional slice in format 'start:end:step' for the axis"
-    )
-    parser.add_argument(
-        "--workers", "-w", type=int, default=None,
-        help="Number of Dask workers (default: number of CPU cores)"
-    )
-    parser.add_argument(
-        "--scheduler", default="processes",
+        "--scheduler",
+        default="processes",
         choices=["processes", "threads", "distributed", "sequential"],
-        help="Dask scheduler to use (default: processes)"
+        help="Dask scheduler to use (default: processes)",
     )
     return parser.parse_args()
 
@@ -105,20 +102,20 @@ def analyze_single_slice(data_slice, axis_values):
     )
 
     result = {
-        'axis_val': axis_values,
-        'min': np.array(min_val.values),
-        'max': np.array(max_val.values),
+        "axis_val": axis_values,
+        "min": np.array(min_val.values),
+        "max": np.array(max_val.values),
     }
 
     # Calculate nan statistics
     nan_count = np.isnan(data_slice.values).sum()
     inf_count = np.isinf(data_slice.values).sum()
-    result['nan_count'] = int(nan_count)
-    result['inf_count'] = int(inf_count)
+    result["nan_count"] = int(nan_count)
+    result["inf_count"] = int(inf_count)
 
-    if nan_count>0 or inf_count>0:
+    if nan_count > 0 or inf_count > 0:
         print(f"data {data_slice.time.values} has NaN/Inf values")
-    
+
     if np.min(min_val) < -100.0 or np.max(max_val) > 100.0:
         print(f"data {data_slice.time.values} has out-of-range values: min={np.min(min_val.values)}, max={np.max(max_val.values)}")
 
@@ -147,7 +144,7 @@ def analyze_data(data, axis, slice_arg=None, scheduler="processes", num_workers=
     # Apply slice if provided
     if slice_arg:
         # time split by :
-        slice_time = slice_arg.split(':')
+        slice_time = slice_arg.split(":")
         data = data.sel(time=slice(*slice_time))
 
     # Output header
@@ -159,7 +156,7 @@ def analyze_data(data, axis, slice_arg=None, scheduler="processes", num_workers=
     if num_workers:
         print(f"Number of workers: {num_workers}")
     else:
-        print(f"Number of workers: auto (using all available cores)")
+        print("Number of workers: auto (using all available cores)")
 
     print("\n{:<20} | {:<15} | {:<15}".format(axis, "Min", "Max"))
     print("-" * 57)
@@ -172,16 +169,17 @@ def analyze_data(data, axis, slice_arg=None, scheduler="processes", num_workers=
     def merge_result(results, result):
         """Merge results from multiple slices."""
         if "min" in results:
-            results["min"] = np.minimum(results["min"], result['min'])
-            results["max"] = np.maximum(results["max"], result['max'])
-            results["nan_count"] += result.get('nan_count', 0)
-            results["inf_count"] += result.get('inf_count', 0)
+            results["min"] = np.minimum(results["min"], result["min"])
+            results["max"] = np.maximum(results["max"], result["max"])
+            results["nan_count"] += result.get("nan_count", 0)
+            results["inf_count"] += result.get("inf_count", 0)
         else:
             results.update(result)
         return
 
     if scheduler == "distributed":
         from dask.distributed import Client
+
         # Use a distributed client
         n_workers = num_workers if num_workers else multiprocessing.cpu_count()
         client = Client(n_workers=n_workers)
@@ -195,7 +193,11 @@ def analyze_data(data, axis, slice_arg=None, scheduler="processes", num_workers=
             futures.append(client.submit(analyze_single_slice, slice_data, axis_val))
 
         # Compute and get results
-        for future in tqdm(concurrent.futures.as_completed(futures), desc=f"Processing {chunk_axis}", total=len(futures)):
+        for future in tqdm(
+            concurrent.futures.as_completed(futures),
+            desc=f"Processing {chunk_axis}",
+            total=len(futures),
+        ):
             merge_result(results, future.result())
     elif scheduler == "sequential":
         # Process slices sequentially
@@ -218,7 +220,11 @@ def analyze_data(data, axis, slice_arg=None, scheduler="processes", num_workers=
                 futures.append(executor.submit(analyze_single_slice, slice_data, axis_values))
 
             # Get results as they complete
-            for future in tqdm(concurrent.futures.as_completed(futures), desc=f"Processing {chunk_axis}", total=len(futures)):
+            for future in tqdm(
+                concurrent.futures.as_completed(futures),
+                desc=f"Processing {chunk_axis}",
+                total=len(futures),
+            ):
                 merge_result(results, future.result())
 
     # Print results
@@ -231,7 +237,7 @@ def analyze_data(data, axis, slice_arg=None, scheduler="processes", num_workers=
         print(f"  Inf count: {results['inf_count']}")
 
     # Close client if using distributed
-    if scheduler == "distributed" and 'client' in locals():
+    if scheduler == "distributed" and "client" in locals():
         client.close()
 
 
@@ -240,7 +246,7 @@ def main():
     args = parse_args()
 
     # Set number of workers
-    num_workers = args.workers if args.workers else multiprocessing.cpu_count()//4
+    num_workers = args.workers if args.workers else multiprocessing.cpu_count() // 4
 
     print(f"Loading Zarr dataset from: {args.input}")
     print(f"Using Dask parallel processing with {args.scheduler} scheduler")
@@ -251,17 +257,11 @@ def main():
     # Redirect output to file if specified
     if args.output:
         orig_stdout = sys.stdout
-        f = open(args.output, 'w')
+        f = open(args.output, "w")
         sys.stdout = f
 
     # Analyze data with parallel processing
-    analyze_data(
-        data,
-        args.axis,
-        args.slice,
-        scheduler=args.scheduler,
-        num_workers=num_workers
-    )
+    analyze_data(data, args.axis, args.slice, scheduler=args.scheduler, num_workers=num_workers)
 
     # Restore stdout if needed
     if args.output:

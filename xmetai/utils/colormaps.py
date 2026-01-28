@@ -18,7 +18,8 @@ precip_colors = [
     "#bc0000",  # 5.00 - 6.00 inches
     "#f800fd",  # 6.00 - 8.00 inches
     "#9854c6",  # 8.00 - 10.00 inches
-    "#fdfdfd"]   # 10.00+
+    "#fdfdfd",
+]  # 10.00+
 
 radar_colors = [
     "#FFFFFF",  # 0
@@ -37,10 +38,29 @@ radar_colors = [
     "#800000",  # 60-65
     "#FF00FF",  # 65-70
     "#8A2BE2",  # 70-75
-    "#FFFFFF"]  # 75+
+    "#FFFFFF",
+]  # 75+
 
-radar_norms = [-32768, 0, 5, 10, 15, 20, 25, 30,
-               35, 40, 45, 50, 55, 60, 65, 70, 75, 32767]
+radar_norms = [
+    -32768,
+    0,
+    5,
+    10,
+    15,
+    20,
+    25,
+    30,
+    35,
+    40,
+    45,
+    50,
+    55,
+    60,
+    65,
+    70,
+    75,
+    32767,
+]
 
 
 snow_colors = [
@@ -63,7 +83,8 @@ snow_colors = [
     "#FF0000",
     "#FF004E",
     "#FF009C",
-    "#FF00EA"]
+    "#FF00EA",
+]
 
 hail_colors = [
     "#FFFFFF",
@@ -80,7 +101,8 @@ hail_colors = [
     "#FF3700",
     "#FF0000",
     "#FF0075",
-    "#FF00EA"]
+    "#FF00EA",
+]
 
 
 radar_cmap = ListedColormap(radar_colors)

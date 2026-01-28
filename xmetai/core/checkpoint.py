@@ -16,21 +16,19 @@ from termcolor import colored
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, FSDPModule
 from torch.distributed.tensor import DTensor
-from torch.distributed.checkpoint.state_dict import set_model_state_dict, StateDictOptions
+from torch.distributed.checkpoint.state_dict import (
+    set_model_state_dict,
+    StateDictOptions,
+)
 
 
 from xmetai.utils.comm import is_main_process
-
 
 TORCH_VERSION: Tuple[int, ...] = tuple(int(x) for x in torch.__version__.split(".")[:2])
 if TORCH_VERSION >= (1, 11):
     from torch.ao import quantization
     from torch.ao.quantization import FakeQuantizeBase, ObserverBase
-elif (
-    TORCH_VERSION >= (1, 8)
-    and hasattr(torch.quantization, "FakeQuantizeBase")
-    and hasattr(torch.quantization, "ObserverBase")
-):
+elif TORCH_VERSION >= (1, 8) and hasattr(torch.quantization, "FakeQuantizeBase") and hasattr(torch.quantization, "ObserverBase"):
     from torch import quantization
     from torch.quantization import FakeQuantizeBase, ObserverBase
 
@@ -104,9 +102,7 @@ class Checkpointer:
         if key in self.checkpointables:
             raise KeyError(f"Key {key} already used in the Checkpointer")
         if not hasattr(checkpointable, "state_dict"):
-            raise TypeError(
-                "add_checkpointable needs an object with 'state_dict()' method."
-            )
+            raise TypeError("add_checkpointable needs an object with 'state_dict()' method.")
         self.checkpointables[key] = checkpointable
 
     def save(self, name: str, **kwargs: Any) -> None:
@@ -135,9 +131,7 @@ class Checkpointer:
             torch.save(data, cast(IO[bytes], f))
         self.tag_last_checkpoint(basename)
 
-    def load(
-        self, path: str, checkpointables: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+    def load(self, path: str, checkpointables: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Load from the given checkpoint.
 
@@ -160,9 +154,7 @@ class Checkpointer:
         # path may not be a local file, but _load_file is responsible to handle it.
         checkpoint = self._load_file(path)
         incompatible = self._load_model(checkpoint)
-        if (
-            incompatible is not None
-        ):  # handle some existing subclasses that returns None
+        if incompatible is not None:  # handle some existing subclasses that returns None
             self._log_incompatible_keys(incompatible)
 
         for key in self.checkpointables if checkpointables is None else checkpointables:
@@ -206,8 +198,7 @@ class Checkpointer:
         all_model_checkpoints = [
             os.path.join(self.save_dir, file)
             for file in self.path_manager.ls(self.save_dir)
-            if self.path_manager.isfile(os.path.join(self.save_dir, file))
-            and file.endswith(".pth")
+            if self.path_manager.isfile(os.path.join(self.save_dir, file)) and file.endswith(".pth")
         ]
         return all_model_checkpoints
 
@@ -257,7 +248,11 @@ class Checkpointer:
         """
         with self.path_manager.open(f, "rb") as file:
             # pyre-fixme[22]: The cast is redundant.
-            return torch.load(cast(IO[bytes], file), map_location=torch.device("cpu"), weights_only=False)
+            return torch.load(
+                cast(IO[bytes], file),
+                map_location=torch.device("cpu"),
+                weights_only=False,
+            )
 
     def _load_model(self, checkpoint: Any) -> _IncompatibleKeys:
         """
@@ -295,24 +290,16 @@ class Checkpointer:
             if k in model_state_dict:
                 model_param = model_state_dict[k]
                 # Allow mismatch for uninitialized parameters
-                if TORCH_VERSION >= (1, 8) and isinstance(
-                    model_param, nn.parameter.UninitializedParameter
-                ):
+                if TORCH_VERSION >= (1, 8) and isinstance(model_param, nn.parameter.UninitializedParameter):
                     continue
                 shape_model = tuple(model_param.shape)
                 shape_checkpoint = tuple(checkpoint_state_dict[k].shape)
                 if shape_model != shape_checkpoint:
-                    has_observer_base_classes = (
-                        TORCH_VERSION >= (1, 8)
-                        and hasattr(quantization, "ObserverBase")
-                        and hasattr(quantization, "FakeQuantizeBase")
-                    )
+                    has_observer_base_classes = TORCH_VERSION >= (1, 8) and hasattr(quantization, "ObserverBase") and hasattr(quantization, "FakeQuantizeBase")
                     if has_observer_base_classes:
                         # Handle the special case of quantization per channel observers,
                         # where buffer shape mismatches are expected.
-                        def _get_module_for_key(
-                            model: torch.nn.Module, key: str
-                        ) -> torch.nn.Module:
+                        def _get_module_for_key(model: torch.nn.Module, key: str) -> torch.nn.Module:
                             # foo.bar.param_or_buffer_name -> [foo, bar]
                             key_parts = key.split(".")[:-1]
                             cur_module = model
@@ -348,20 +335,14 @@ class Checkpointer:
             self.logger.warning(
                 "Skip loading parameter '{}' to the model due to incompatible "
                 "shapes: {} in the checkpoint but {} in the "
-                "model! You might want to double check if this is expected.".format(
-                    k, shape_checkpoint, shape_model
-                )
+                "model! You might want to double check if this is expected.".format(k, shape_checkpoint, shape_model)
             )
         if incompatible.missing_keys:
-            missing_keys = _filter_reused_missing_keys(
-                self.model, incompatible.missing_keys
-            )
+            missing_keys = _filter_reused_missing_keys(self.model, incompatible.missing_keys)
             if missing_keys:
                 self.logger.warning(get_missing_parameters_message(missing_keys))
         if incompatible.unexpected_keys:
-            self.logger.warning(
-                get_unexpected_parameters_message(incompatible.unexpected_keys)
-            )
+            self.logger.warning(get_unexpected_parameters_message(incompatible.unexpected_keys))
 
     def _convert_ndarray_to_tensor(self, state_dict: Dict[str, Any]) -> None:
         """
@@ -376,9 +357,7 @@ class Checkpointer:
         for k in list(state_dict.keys()):
             v = state_dict[k]
             if not isinstance(v, np.ndarray) and not isinstance(v, torch.Tensor):
-                raise ValueError(
-                    "Unsupported type found in checkpoint! {}: {}".format(k, type(v))
-                )
+                raise ValueError("Unsupported type found in checkpoint! {}: {}".format(k, type(v)))
             if not isinstance(v, torch.Tensor):
                 state_dict[k] = torch.from_numpy(v)
 
@@ -435,17 +414,13 @@ class PeriodicCheckpointer:
         additional_state.update(kwargs)
 
         # if (iteration + 1) % self.period == 0:
-        self.checkpointer.save(
-            "{}_{:07d}".format(self.file_prefix, iteration), **additional_state
-        )
+        self.checkpointer.save("{}_{:07d}".format(self.file_prefix, iteration), **additional_state)
 
         if self.max_to_keep is not None and is_main_process():
             self.recent_checkpoints.append(self.checkpointer.get_checkpoint_file())
             if len(self.recent_checkpoints) > self.max_to_keep:
                 file_to_delete = self.recent_checkpoints.pop(0)
-                if self.path_manager.exists(
-                    file_to_delete
-                ) and not file_to_delete.endswith(f"{self.file_prefix}_final.pth"):
+                if self.path_manager.exists(file_to_delete) and not file_to_delete.endswith(f"{self.file_prefix}_final.pth"):
                     self.path_manager.rm(file_to_delete)
 
         if self.max_iter is not None:
@@ -523,18 +498,16 @@ class FSDPCheckpointer(Checkpointer):
                 shape_model = tuple(model_param.shape)
                 shape_checkpoint = tuple(checkpoint_state_dict[k].shape)
                 if shape_model != shape_checkpoint:
-                    has_observer_base_classes = (
-                        TORCH_VERSION >= (1, 8)
-                        and hasattr(quantization, "ObserverBase")
-                        and hasattr(quantization, "FakeQuantizeBase")
-                    )
+                    has_observer_base_classes = TORCH_VERSION >= (1, 8) and hasattr(quantization, "ObserverBase") and hasattr(quantization, "FakeQuantizeBase")
                     if has_observer_base_classes:
+
                         def _get_module_for_key(model, key: str):
                             key_parts = key.split(".")[:-1]
                             cur_module = model
                             for key_part in key_parts:
                                 cur_module = getattr(cur_module, key_part)
                             return cur_module
+
                         target_module = _get_module_for_key(self.model, k)
                         if isinstance(target_module, (ObserverBase, FakeQuantizeBase)):
                             continue
@@ -545,7 +518,11 @@ class FSDPCheckpointer(Checkpointer):
                 incompatible = self.model.load_state_dict(checkpoint_state_dict, strict=False)
         elif isinstance(self.model, FSDPModule):
             self.model.to_empty(device="cpu")
-            incompatible = set_model_state_dict(self.model, checkpoint_state_dict, options=StateDictOptions(full_state_dict=True, strict=False))
+            incompatible = set_model_state_dict(
+                self.model,
+                checkpoint_state_dict,
+                options=StateDictOptions(full_state_dict=True, strict=False),
+            )
             self.model.to(torch.device("cuda", torch.cuda.current_device()))
         else:
             incompatible = self.model.load_state_dict(checkpoint_state_dict, strict=False)
@@ -564,9 +541,7 @@ def _filter_reused_missing_keys(model: nn.Module, keys: List[str]) -> List[str]:
     keyset = set(keys)
     param_to_names = defaultdict(set)  # param -> names that points to it
     for module_prefix, module in _named_modules_with_dup(model):
-        for name, param in list(module.named_parameters(recurse=False)) + list(
-            module.named_buffers(recurse=False)
-        ):
+        for name, param in list(module.named_parameters(recurse=False)) + list(module.named_buffers(recurse=False)):
             full_name = (module_prefix + "." if module_prefix else "") + name
             param_to_names[param].add(full_name)
     for names in param_to_names.values():
@@ -604,9 +579,7 @@ def get_unexpected_parameters_message(keys: List[str]) -> str:
     """
     groups = _group_checkpoint_keys(keys)
     msg = "The checkpoint state_dict contains keys that are not used by the model:\n"
-    msg += "\n".join(
-        "  " + colored(k + _group_to_str(v), "magenta") for k, v in groups.items()
-    )
+    msg += "\n".join("  " + colored(k + _group_to_str(v), "magenta") for k, v in groups.items())
     return msg
 
 
@@ -622,7 +595,7 @@ def _strip_prefix_if_present(state_dict: Dict[str, Any], prefix: str) -> None:
         return
 
     for key in keys:
-        newkey = key[len(prefix):]
+        newkey = key[len(prefix) :]
         state_dict[newkey] = state_dict.pop(key)
 
     # also strip the prefix in metadata, if any..
@@ -639,7 +612,7 @@ def _strip_prefix_if_present(state_dict: Dict[str, Any], prefix: str) -> None:
 
             if len(key) == 0:
                 continue
-            newkey = key[len(prefix):]
+            newkey = key[len(prefix) :]
             metadata[newkey] = metadata.pop(key)
 
 
@@ -657,7 +630,7 @@ def _group_checkpoint_keys(keys: List[str]) -> Dict[str, List[str]]:
     for key in keys:
         pos = key.rfind(".")
         if pos >= 0:
-            head, tail = key[:pos], [key[pos + 1:]]
+            head, tail = key[:pos], [key[pos + 1 :]]
         else:
             head, tail = key, []
         groups[head].extend(tail)
@@ -681,9 +654,7 @@ def _group_to_str(group: List[str]) -> str:
     return ".{" + ", ".join(sorted(group)) + "}"
 
 
-def _named_modules_with_dup(
-    model: nn.Module, prefix: str = ""
-) -> Iterable[Tuple[str, nn.Module]]:
+def _named_modules_with_dup(model: nn.Module, prefix: str = "") -> Iterable[Tuple[str, nn.Module]]:
     """
     The same as `model.named_modules()`, except that it includes
     duplicated modules that have more than one name.

@@ -18,7 +18,10 @@ except Exception:
     except Exception as e:
         import pytest as _pytest
 
-        _pytest.skip(f"UTransformer import failed; skipping model tests: {e}", allow_module_level=True)
+        _pytest.skip(
+            f"UTransformer import failed; skipping model tests: {e}",
+            allow_module_level=True,
+        )
 
 
 class TestUTransformer:
@@ -39,7 +42,7 @@ class TestUTransformer:
             num_heads=8,
             layer_type="swin",
         )
-        
+
         assert isinstance(model, nn.Module)
         assert model.embed_dim == 128
         assert model.in_chans == 65
@@ -59,7 +62,7 @@ class TestUTransformer:
             num_heads=8,
             layer_type="mamba",
         )
-        
+
         assert isinstance(model, nn.Module)
         assert len(model.layers) == 2
 
@@ -68,7 +71,7 @@ class TestUTransformer:
         """Test UTransformer patch embedding."""
         B, T, C, H, W = 2, 2, 65, 32, 64
         x = torch.randn(B, T, C, H, W)
-        
+
         model = UTransformer(
             in_chans=C,
             out_chans=C,
@@ -81,10 +84,10 @@ class TestUTransformer:
             num_heads=8,
             layer_type="swin",
         )
-        
+
         # Test patch embedding
         x_embed = model.patch_embed(x)
-        
+
         # Expected: (B, (H*W)/(patch_size^2), embed_dim)
         expected_len = (H // 4) * (W // 4)
         assert x_embed.shape == (B, expected_len, 128)
@@ -105,7 +108,7 @@ class TestUTransformer:
             attn_type="rotary",
             layer_type="mamba",
         )
-        
+
         # Check RoPE buffers registered
         assert hasattr(model, "freqs_cos")
         assert hasattr(model, "freqs_sin")
@@ -128,14 +131,14 @@ class TestUTransformer:
             drop_mcmc=0.1,
             layer_type="swin",
         )
-        
+
         assert model.drop_mcmc == 0.1
 
     @pytest.mark.gpu
     def test_utransformer_head_types(self, torch_seed):
         """Test UTransformer with different head types."""
         in_chans, out_chans = 65, 65
-        
+
         for head_type in ["1fc", "2fc"]:
             model = UTransformer(
                 in_chans=in_chans,
@@ -150,7 +153,7 @@ class TestUTransformer:
                 head_type=head_type,
                 layer_type="swin",
             )
-            
+
             assert model.head is not None
 
     @pytest.mark.gpu
@@ -191,7 +194,7 @@ class TestUTransformer:
                 num_heads=8,
                 layer_type="swin",
             )
-            
+
             assert model.image_size == tuple(image_size)
 
     @pytest.mark.gpu
@@ -210,7 +213,7 @@ class TestUTransformer:
                 num_heads=8,
                 layer_type="swin",
             )
-            
+
             assert model.patch_size == patch_size
 
     @pytest.mark.gpu
@@ -218,7 +221,7 @@ class TestUTransformer:
         """Test feature size is correctly calculated."""
         H, W = 32, 64
         patch_size = 4
-        
+
         model = UTransformer(
             in_chans=65,
             out_chans=65,
@@ -231,7 +234,7 @@ class TestUTransformer:
             num_heads=8,
             layer_type="swin",
         )
-        
+
         assert model.feat_size == [H // patch_size, W // patch_size]
 
     def test_utransformer_timestep_embedding(self, torch_seed):
@@ -249,7 +252,7 @@ class TestUTransformer:
             norm_type="adaln",
             layer_type="swin",
         )
-        
+
         # Check timestep embeddings exist
         assert hasattr(model, "step_embed")
         assert hasattr(model, "hour_embed")
@@ -269,11 +272,11 @@ class TestUTransformer:
             num_heads=8,
             layer_type="swin",
         )
-        
+
         # Freeze patch embedding
         for param in model.patch_embed.parameters():
             param.requires_grad = False
-        
+
         frozen_count = sum(1 for p in model.parameters() if not p.requires_grad)
         assert frozen_count > 0
 
@@ -291,7 +294,7 @@ class TestUTransformer:
             num_heads=4,
             layer_type="swin",
         )
-        
+
         total_params = sum(p.numel() for p in model.parameters())
         assert total_params > 0
         assert total_params < 100_000_000  # Should be reasonable size
@@ -301,7 +304,7 @@ class TestUTransformer:
         """Test UTransformer on GPU."""
         if device.type == "cpu":
             pytest.skip("GPU test")
-        
+
         model = UTransformer(
             in_chans=65,
             out_chans=65,
@@ -314,7 +317,7 @@ class TestUTransformer:
             num_heads=8,
             layer_type="swin",
         ).to(device)
-        
+
         # Check all parameters are on GPU
         for param in model.parameters():
             assert param.device.type == device.type
@@ -337,10 +340,10 @@ class TestModelUtilities:
             num_heads=4,
             layer_type="swin",
         )
-        
+
         total = sum(p.numel() for p in model.parameters())
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        
+
         assert trainable == total
         assert total > 1000
 

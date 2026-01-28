@@ -23,7 +23,7 @@ class MultiZarrDataset(Dataset):
         interval: int = 1,
         training: bool = True,
         inference_only: bool = False,
-        years: tuple = ('19790101', '20161231'),
+        years: tuple = ("19790101", "20161231"),
         in_names: list = [],  # list of variable names to use, if empty, use all variables in the dataset
         lat_flip: bool = False,  # whether to flip latitude axis
     ):
@@ -76,9 +76,7 @@ class MultiZarrDataset(Dataset):
         else:
             self.inds = make_seq(common_times, self.total_frames, freq=freq, interval=interval)
 
-        self.id_to_time = {
-            i: common_times[i + self.hist_frames - 1] for i in self.inds
-        }
+        self.id_to_time = {i: common_times[i + self.hist_frames - 1] for i in self.inds}
 
         self.start_time = self.id_to_time[self.inds[0]]
         self.end_time = self.id_to_time[self.inds[-1]]
@@ -116,11 +114,11 @@ class MultiZarrDataset(Dataset):
         # convert time to tensor
         time_tensor = torch.tensor(init_time.value)
 
-        lft_inds = inds[:self.hist_frames]
-        rht_inds = inds[self.hist_frames:]
+        lft_inds = inds[: self.hist_frames]
+        rht_inds = inds[self.hist_frames :]
 
         if self.training:
-            rht_inds = rht_inds[self.start_frames:]
+            rht_inds = rht_inds[self.start_frames :]
         elif self.inference_only:
             rht_inds = np.array([], dtype=int)
         else:
@@ -131,11 +129,11 @@ class MultiZarrDataset(Dataset):
         imgs = torch.nan_to_num(imgs, nan=0.0, posinf=0.0, neginf=0.0)
         if self.select_vars is not None:
             imgs = imgs[:, self.select_vars, ...]
-        if self.lat_flip: # flip latitude axis
+        if self.lat_flip:  # flip latitude axis
             imgs = torch.flip(imgs, dims=[2])
-        inputs = imgs[:self.hist_frames]
+        inputs = imgs[: self.hist_frames]
         if self.inference_only:
             return dict(times=time_tensor, inputs=inputs)
 
-        targets = imgs[self.hist_frames:]
+        targets = imgs[self.hist_frames :]
         return dict(times=time_tensor, inputs=inputs, targets=targets)

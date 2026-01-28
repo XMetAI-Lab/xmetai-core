@@ -8,7 +8,6 @@ import weakref
 from contextlib import contextmanager
 from typing import List, Mapping, Optional
 import torch
-from torch.nn.parallel import DataParallel, DistributedDataParallel
 
 from xmetai.utils.comm import get_rank, gather, is_main_process
 from xmetai.utils.events import EventStorage, get_event_storage
@@ -343,9 +342,7 @@ class SimpleTrainer(TrainerBase):
 
         if self.async_write_metrics:
             # write metrics asynchronically
-            self.concurrent_executor.submit(
-                self._write_metrics, loss_dict, data_time, iter=self.iter
-            )
+            self.concurrent_executor.submit(self._write_metrics, loss_dict, data_time, iter=self.iter)
         else:
             self._write_metrics(loss_dict, data_time)
 
@@ -420,19 +417,12 @@ class SimpleTrainer(TrainerBase):
             storage.put_scalar("data_time", data_time, cur_iter=cur_iter)
 
             # average the rest metrics
-            metrics_dict = {
-                k: np.mean([x[k] for x in all_metrics_dict]) for k in all_metrics_dict[0].keys()
-            }
+            metrics_dict = {k: np.mean([x[k] for x in all_metrics_dict]) for k in all_metrics_dict[0].keys()}
             total_losses_reduced = sum(metrics_dict.values())
             if not np.isfinite(total_losses_reduced):
-                raise FloatingPointError(
-                    f"Loss became infinite or NaN at iteration={cur_iter}!\n"
-                    f"loss_dict = {metrics_dict}"
-                )
+                raise FloatingPointError(f"Loss became infinite or NaN at iteration={cur_iter}!\n" f"loss_dict = {metrics_dict}")
 
-            storage.put_scalar(
-                "{}total_loss".format(prefix), total_losses_reduced, cur_iter=cur_iter
-            )
+            storage.put_scalar("{}total_loss".format(prefix), total_losses_reduced, cur_iter=cur_iter)
             if len(metrics_dict) > 1:
                 storage.put_scalars(cur_iter=cur_iter, **metrics_dict)
 
@@ -451,12 +441,31 @@ class SimpleTrainer(TrainerBase):
 
 
 class ExpandTrainer(SimpleTrainer):
-    def __init__(self, model, data_loader, optimizer, gather_metric_period=1, zero_grad_before_forward=False, async_write_metrics=False, use_ema=True, increment_iter=1000, ens_train=False):
+    def __init__(
+        self,
+        model,
+        data_loader,
+        optimizer,
+        gather_metric_period=1,
+        zero_grad_before_forward=False,
+        async_write_metrics=False,
+        use_ema=True,
+        increment_iter=1000,
+        ens_train=False,
+    ):
         """
         Args:
             increment_iter (int): The number of iterations to increment the step.
         """
-        super().__init__(model, data_loader, optimizer, gather_metric_period, zero_grad_before_forward, async_write_metrics, use_ema)
+        super().__init__(
+            model,
+            data_loader,
+            optimizer,
+            gather_metric_period,
+            zero_grad_before_forward,
+            async_write_metrics,
+            use_ema,
+        )
         self.increment_iter = increment_iter
         self.future_step = 1
         self.ens_train = ens_train
@@ -517,9 +526,7 @@ class ExpandTrainer(SimpleTrainer):
 
         if self.async_write_metrics:
             # write metrics asynchronically
-            self.concurrent_executor.submit(
-                self._write_metrics, loss_dict, data_time, iter=self.iter
-            )
+            self.concurrent_executor.submit(self._write_metrics, loss_dict, data_time, iter=self.iter)
         else:
             self._write_metrics(loss_dict, data_time)
 

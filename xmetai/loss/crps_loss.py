@@ -49,7 +49,12 @@ def fcrps_loss_lite(output: torch.Tensor, target: torch.Tensor, weight: Optional
     return loss
 
 
-def afcrps_loss_lite(output: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor] = None, alpha: float = 0.95) -> torch.Tensor:
+def afcrps_loss_lite(
+    output: torch.Tensor,
+    target: torch.Tensor,
+    weight: Optional[torch.Tensor] = None,
+    alpha: float = 0.95,
+) -> torch.Tensor:
     """Lite version of afCRPS (AIFS-ENS) loss to reduce memory usage.
     This mirrors :func:`afcrps_loss` but avoids constructing full member-by-member tensors.
     """
@@ -78,7 +83,12 @@ def afcrps_loss_lite(output: torch.Tensor, target: torch.Tensor, weight: Optiona
     return loss
 
 
-def afcrps_loss(output: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor] = None, alpha: float = 0.95) -> torch.Tensor:
+def afcrps_loss(
+    output: torch.Tensor,
+    target: torch.Tensor,
+    weight: Optional[torch.Tensor] = None,
+    alpha: float = 0.95,
+) -> torch.Tensor:
     """almost fire CRPS loss according to AIFS-ENS(2412.15832)
     Args:
         output (torch.Tensor): predict member with same target/observation in dimension 1xTxCxHxW.

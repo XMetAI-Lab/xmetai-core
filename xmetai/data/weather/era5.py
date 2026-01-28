@@ -1,9 +1,10 @@
-'''
+"""
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-08-18 20:06:08
 Description: Read From Zarr format ERA5 dataset. Makesure dataset is already normalized.
-Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
-'''
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
+"""
+
 import logging
 import numpy as np
 import pandas as pd
@@ -29,7 +30,7 @@ class ERA5(Dataset):
         interval: int = 1,
         training: bool = True,
         inference_only: bool = False,
-        years: tuple = ('19790101', '20161231'),
+        years: tuple = ("19790101", "20161231"),
         in_names: list = [],  # list of variable names to use, if empty, use all variables in the dataset
     ):
         self.logger = logging.getLogger(__name__)
@@ -94,11 +95,11 @@ class ERA5(Dataset):
         # convert time to tensor
         time_tensor = torch.tensor(init_time.value)
 
-        lft_inds = inds[:self.hist_frames]
-        rht_inds = inds[self.hist_frames:]
+        lft_inds = inds[: self.hist_frames]
+        rht_inds = inds[self.hist_frames :]
 
         if self.training:
-            rht_inds = rht_inds[self.start_frames:]
+            rht_inds = rht_inds[self.start_frames :]
         elif self.inference_only:
             rht_inds = np.array([], dtype=int)
         else:
@@ -113,5 +114,5 @@ class ERA5(Dataset):
         if self.inference_only:
             return dict(times=time_tensor, inputs=inputs)
 
-        targets = imgs[self.hist_frames:]
+        targets = imgs[self.hist_frames :]
         return dict(times=time_tensor, inputs=inputs, targets=targets)

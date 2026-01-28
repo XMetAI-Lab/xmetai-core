@@ -32,11 +32,7 @@ def seed_all_rng(seed=None):
         seed (int): if None, will use a strong random seed.
     """
     if seed is None:
-        seed = (
-            os.getpid()
-            + int(datetime.now().strftime("%S%f"))
-            + int.from_bytes(os.urandom(2), "big")
-        )
+        seed = os.getpid() + int(datetime.now().strftime("%S%f")) + int.from_bytes(os.urandom(2), "big")
         logger = logging.getLogger(__name__)
         logger.info("Using a generated random seed {}".format(seed))
 
@@ -124,14 +120,11 @@ def setup_custom_environment(custom_module):
     module, and run the setup function.
     """
     if custom_module.endswith(".py"):
-        module = _import_file(
-            "detectron2.utils.env.custom_module",
-            custom_module)
+        module = _import_file("detectron2.utils.env.custom_module", custom_module)
     else:
         module = importlib.import_module(custom_module)
     assert hasattr(module, "setup_environment") and callable(module.setup_environment), (
-        "Custom environment module defined in {} does not have the "
-        "required callable attribute 'setup_environment'."
+        "Custom environment module defined in {} does not have the " "required callable attribute 'setup_environment'."
     ).format(custom_module)
     module.setup_environment()
 
@@ -154,8 +147,7 @@ def fixup_module_metadata(module_name, namespace, keys=None):
         seen_ids.add(id(obj))
 
         mod = getattr(obj, "__module__", None)
-        if mod is not None and (mod.startswith(
-                module_name) or mod.startswith("fvcore.")):
+        if mod is not None and (mod.startswith(module_name) or mod.startswith("fvcore.")):
             obj.__module__ = module_name
             # Modules, unlike everything else in Python, put fully-qualitied
             # names into their __name__ attribute. We check for "." to avoid

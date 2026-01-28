@@ -6,7 +6,6 @@ Provides device management, data generation, and model initialization utilities.
 import pytest
 import torch
 import numpy as np
-from pathlib import Path
 
 
 @pytest.fixture(scope="session")
@@ -70,12 +69,12 @@ def sample_freqs_cis(torch_seed):
 @pytest.fixture(scope="function")
 def sample_weather_data(torch_seed):
     """Generate realistic weather data sample.
-    
+
     Returns:
         dict with keys: 'input', 'target', 'mean', 'std'
     """
     B, T_in, C, H, W = 1, 2, 65, 32, 64  # 1 sample, 2 input timesteps
-    
+
     return {
         "input": torch.randn(B, T_in, C, H, W),
         "target": torch.randn(B, 1, C, H, W),  # 1 output step

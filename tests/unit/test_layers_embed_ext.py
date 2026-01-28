@@ -5,7 +5,6 @@ GeoEmbed forward, and sincos_embedding periodic path.
 """
 
 import torch
-import pytest
 
 from xmetai.layers.embed import CubeEmbed, FieldEmbed, GeoEmbed, sincos_embedding
 

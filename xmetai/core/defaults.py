@@ -82,7 +82,7 @@ def create_fsdp_model(model, **kwargs):
     # 使用基于大小的自动包装策略
     auto_wrap_policy = functools.partial(
         size_based_auto_wrap_policy,
-        min_num_params=200_000  # 只对参数超过20万的模块应用FSDP
+        min_num_params=200_000,  # 只对参数超过20万的模块应用FSDP
     )
 
     fsdp = FSDP(
@@ -96,7 +96,7 @@ def create_fsdp_model(model, **kwargs):
         use_orig_params=True,
         cpu_offload=cpu_offload,
         limit_all_gathers=True,
-        #ignored_states=[param for param in model.parameters() if not param.requires_grad],
+        # ignored_states=[param for param in model.parameters() if not param.requires_grad],
     )
     # 设置 dtype 供 autocast 使用
     fsdp.dtype = mp.param_dtype
@@ -107,8 +107,13 @@ def create_fsdp2_model(model, **kwargs):
     """
     create FSDP2 model
     """
-    from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy, CPUOffloadPolicy
+    from torch.distributed.fsdp import (
+        fully_shard,
+        MixedPrecisionPolicy,
+        CPUOffloadPolicy,
+    )
     from torch.distributed.device_mesh import init_device_mesh
+
     # device mesh
     world_size = comm.get_world_size()
     device_mesh = init_device_mesh("cuda", mesh_shape=(world_size,), mesh_dim_names=("dp",))
@@ -178,8 +183,7 @@ def default_argument_parser(epilog=None):
         argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
-        epilog=epilog
-        or f"""
+        epilog=epilog or f"""
 Examples:
 
 Run on single machine:
@@ -198,15 +202,17 @@ Run on multiple machines:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Whether to attempt to resume from the checkpoint directory. "
-        "See documentation of `DefaultTrainer.resume_or_load()` for what it means.",
+        help="Whether to attempt to resume from the checkpoint directory. " "See documentation of `DefaultTrainer.resume_or_load()` for what it means.",
     )
     parser.add_argument("--eval", action="store_true", help="perform evaluation only")
     parser.add_argument("--export", action="store_true", help="perform onnx model export")
     parser.add_argument("--num-gpus", type=int, default=1, help="number of gpus *per machine*")
     parser.add_argument("--num-machines", type=int, default=1, help="total number of machines")
     parser.add_argument(
-        "--machine-rank", type=int, default=0, help="the rank of this machine (unique per machine)"
+        "--machine-rank",
+        type=int,
+        default=0,
+        help="the rank of this machine (unique per machine)",
     )
 
     # PyTorch still may leave orphan processes in multi-gpu training.
@@ -216,8 +222,7 @@ Run on multiple machines:
     parser.add_argument(
         "--dist-url",
         default="tcp://127.0.0.1:{}".format(port),
-        help="initialization URL for pytorch distributed backend. See "
-        "https://pytorch.org/docs/stable/distributed.html for details.",
+        help="initialization URL for pytorch distributed backend. See " "https://pytorch.org/docs/stable/distributed.html for details.",
     )
     parser.add_argument(
         "opts",
@@ -244,6 +249,7 @@ def _try_get_key(cfg, *keys, default=None):
         if p is not none:
             return p
     return default
+
 
 # adapted from:
 # https://github.com/pytorch/tnt/blob/ebda066f8f55af6a906807d35bc829686618074d/torchtnt/utils/device.py#L328-L346
@@ -336,9 +342,7 @@ def default_setup(cfg, args):
     # cudnn benchmark has large overhead. It shouldn't be used considering the small size of
     # typical validation set.
     if not (hasattr(args, "eval") and args.eval):
-        torch.backends.cudnn.benchmark = _try_get_key(
-            cfg, "CUDNN_BENCHMARK", "train.cudnn_benchmark", default=False
-        )
+        torch.backends.cudnn.benchmark = _try_get_key(cfg, "CUDNN_BENCHMARK", "train.cudnn_benchmark", default=False)
 
     fp32_precision = _try_get_key(cfg, "FLOAT32_PRECISION", "train.float32_precision", default="")
     if fp32_precision != "":

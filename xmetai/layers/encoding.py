@@ -15,7 +15,7 @@ class StepEncoding(nn.Module):
 
     def forward(self, x):
         emb = torch.log(self.max_period) / (self.dim_half - 1)
-        emb = torch.exp(torch.arange(self.dim_half, dtype=torch.float32) * - emb)
+        emb = torch.exp(torch.arange(self.dim_half, dtype=torch.float32) * -emb)
         emb = rearrange(x.float(), "i -> i 1") * rearrange(emb.to(x.device), "j -> 1 j")
         emb = torch.cat([emb.sin(), emb.cos()], dim=-1)
         return emb.to(x)

@@ -12,7 +12,7 @@ from xmetai.layers import (
     LayerNorm,
     SwinLayer,
     MambaVisionLayer,
-    precompute_freqs_cis
+    precompute_freqs_cis,
 )
 from .pred_head import PLSFHead
 
@@ -35,6 +35,7 @@ class DeltaNetLayer(nn.Module):
         super().__init__()
         self.blocks = nn.ModuleList()
         from fla.layers import DeltaNet
+
         for i in range(depth):
             blk = DeltaNet(
                 mode=mode,
@@ -132,7 +133,8 @@ class UTransformer(nn.Module):
         else:
             input_size = [sz // (stride_size * (2**down_times)) for sz in image_size]
         self.logger.info(
-            f"Input size for {self.__class__.__name__}: {input_size}, patch size: {patch_size}, stride size: {stride_size}, down times: {down_times}")
+            f"Input size for {self.__class__.__name__}: {input_size}, patch size: {patch_size}, stride size: {stride_size}, down times: {down_times}"
+        )
 
         if "rotary" in attn_type:
             freqs_cos, freqs_sin = precompute_freqs_cis(embed_dim // num_heads, np.prod(input_size))
@@ -153,11 +155,11 @@ class UTransformer(nn.Module):
                     qk_scale=True,
                     conv=False,
                     drop=drop_mcmc,
-                    transformer_blocks=list(range(depths[i]//2+1, depths[i])) if depths[i] % 2 != 0 else list(range(depths[i]//2, depths[i])),
+                    transformer_blocks=(list(range(depths[i] // 2 + 1, depths[i])) if depths[i] % 2 != 0 else list(range(depths[i] // 2, depths[i]))),
                     with_embedding=with_embedding,
                     attn_type=attn_type,
-                    window_size=(window_size, window_size) if isinstance(window_size, int) else window_size,
-                    input_size=tuple(input_size) if isinstance(input_size, (list, tuple)) else input_size,
+                    window_size=((window_size, window_size) if isinstance(window_size, int) else window_size),
+                    input_size=(tuple(input_size) if isinstance(input_size, (list, tuple)) else input_size),
                 )
             elif layer_type.lower().find("deltanet") > -1:
                 self.logger.info("Using DeltaNet style transformer blocks.")
@@ -209,12 +211,18 @@ class UTransformer(nn.Module):
             self.head = nn.Sequential(
                 nn.Linear(embed_dim, embed_dim),
                 nn.GELU(),
-                nn.Linear(embed_dim, out_chans * patch_size * patch_size)
+                nn.Linear(embed_dim, out_chans * patch_size * patch_size),
             )
         elif head_type == "plsf":
             pl_chans = 65
             self.logger.info(f"Using PLSF head with embed_dim: {embed_dim}, pl_chans: {pl_chans}, patch_size: {patch_size}")
-            self.head = PLSFHead(embed_dim, pl_chans=pl_chans, sfc_chans=in_chans-pl_chans, patch_size=(patch_size, patch_size), feat_size=self.feat_size)
+            self.head = PLSFHead(
+                embed_dim,
+                pl_chans=pl_chans,
+                sfc_chans=in_chans - pl_chans,
+                patch_size=(patch_size, patch_size),
+                feat_size=self.feat_size,
+            )
         else:
             self.logger.error(f"Unknown head type: {head_type}.")
             self.head = None
@@ -223,9 +231,7 @@ class UTransformer(nn.Module):
         x = rearrange(input, "n t c h w -> (n t) c h w")
 
         if x.shape[-2:] != self.image_size:
-            x = F.interpolate(
-                x.float(), size=self.image_size, mode="bilinear", align_corners=False
-            ).to(input)
+            x = F.interpolate(x.float(), size=self.image_size, mode="bilinear", align_corners=False).to(input)
 
         return x
 
@@ -240,17 +246,20 @@ class UTransformer(nn.Module):
 
         if output.shape[-2:] != input.shape[-2:]:
             output = F.interpolate(
-                output.float(), size=input.shape[-2:], mode="bilinear", align_corners=False,
+                output.float(),
+                size=input.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
             ).to(input)
 
         return output
 
     def get_embed(self, timestamp):
-        embed = self.step_embed(timestamp['step'])
-        if 'hour' in timestamp:
-            embed += self.hour_embed(timestamp['hour'])
-        if 'doy' in timestamp:
-            embed += self.doy_embed(timestamp['doy'])
+        embed = self.step_embed(timestamp["step"])
+        if "hour" in timestamp:
+            embed += self.hour_embed(timestamp["hour"])
+        if "doy" in timestamp:
+            embed += self.doy_embed(timestamp["doy"])
         return embed
 
     def forward(self, input):

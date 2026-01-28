@@ -11,7 +11,6 @@ import torch
 from xmetai.layers.attention import (
     CrossAttention,
     NewCrossAttention,
-    AttentionBlock,
     TwoAttentionBlock,
     TransformerBlock,
 )
@@ -71,7 +70,13 @@ def test_new_cross_attention_sdp_backends(device):
     # Test Flash Attention backend when available
     try:
         from torch.backends.cuda import SDPBackend
-        attn_flash = NewCrossAttention(query_dim=C, heads=heads, dim_head=dim_head, backend=SDPBackend.FLASH_ATTENTION).to(device)
+
+        attn_flash = NewCrossAttention(
+            query_dim=C,
+            heads=heads,
+            dim_head=dim_head,
+            backend=SDPBackend.FLASH_ATTENTION,
+        ).to(device)
         out_flash = attn_flash(x)
         assert out_flash.shape == x.shape
     except Exception:

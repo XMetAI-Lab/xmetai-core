@@ -6,7 +6,6 @@ Tests: DataLoader, Sampler, Weather data utilities.
 import pytest
 import torch
 import numpy as np
-from pathlib import Path
 
 
 class TestDataUtils:
@@ -19,17 +18,17 @@ class TestDataUtils:
             from xmetai.data.weather_util import normalize, denormalize
         except ImportError:
             pytest.skip("Weather utilities not available")
-        
+
         x = sample_weather_data["input"]
         mean = sample_weather_data["mean"]
         std = sample_weather_data["std"]
-        
+
         # Normalize
         x_norm = normalize(x, mean, std)
-        
+
         # Denormalize
         x_denorm = denormalize(x_norm, mean, std)
-        
+
         assert torch.allclose(x_denorm, x, atol=1e-5)
 
     @pytest.mark.gpu
@@ -39,12 +38,12 @@ class TestDataUtils:
             from xmetai.data.weather_util import normalize
         except ImportError:
             pytest.skip("Weather utilities not available")
-        
+
         x = torch.ones(2, 4, 65, 32, 64)
         mean = torch.zeros(65, 1, 1)
         std = torch.ones(65, 1, 1)
         std[0] = 0  # One channel with zero std
-        
+
         x_norm = normalize(x, mean, std)
         # Should handle gracefully (typically by not dividing or using small epsilon)
         assert not torch.isnan(x_norm).any()
@@ -56,9 +55,9 @@ class TestDataUtils:
             from xmetai.data.weather_util import validate_range
         except ImportError:
             pytest.skip("Weather utilities not available")
-        
+
         data = torch.randn(2, 4, 65, 32, 64) * 100
-        
+
         # Should validate without error
         validate_range(data)
 
@@ -69,12 +68,12 @@ class TestDataUtils:
             from xmetai.data.weather_util import remove_invalid
         except ImportError:
             pytest.skip("Weather utilities not available")
-        
+
         data = torch.randn(2, 4, 65, 32, 64)
         # Inject some NaN and inf values
-        data[0, 0, 0, 0, 0] = float('nan')
-        data[1, 2, 3, 5, 5] = float('inf')
-        
+        data[0, 0, 0, 0, 0] = float("nan")
+        data[1, 2, 3, 5, 5] = float("inf")
+
         cleaned = remove_invalid(data, fill_value=0.0)
         assert not torch.isnan(cleaned).any()
         assert not torch.isinf(cleaned).any()
@@ -89,7 +88,7 @@ class TestWeatherDataset:
             from xmetai.data.era5 import ERA5Dataset
         except ImportError:
             pytest.skip("ERA5 dataset not available")
-        
+
         # This would require actual data files
         # Just test instantiation with mock data
         pytest.skip("Requires actual data files")
@@ -100,7 +99,7 @@ class TestWeatherDataset:
             from xmetai.data.multi_zarr_dataset import MultiZarrDataset
         except ImportError:
             pytest.skip("MultiZarr dataset not available")
-        
+
         # This would require actual zarr files
         pytest.skip("Requires actual zarr files")
 
@@ -115,10 +114,10 @@ class TestDataSampler:
             from xmetai.data.sampler import SequentialSampler
         except ImportError:
             pytest.skip("Sampler not available")
-        
+
         dataset_size = 100
         sampler = SequentialSampler(dataset_size)
-        
+
         indices = list(sampler)
         assert len(indices) == dataset_size
         assert indices == list(range(dataset_size))
@@ -130,17 +129,17 @@ class TestDataSampler:
             from xmetai.data.sampler import DistributedSampler
         except ImportError:
             pytest.skip("DistributedSampler not available")
-        
+
         dataset_size = 100
         num_replicas = 2
         rank = 0
-        
+
         sampler = DistributedSampler(
             dataset_size,
             num_replicas=num_replicas,
             rank=rank,
         )
-        
+
         indices = list(sampler)
         # Should be roughly half the dataset per rank
         assert len(indices) == dataset_size // num_replicas
@@ -156,49 +155,50 @@ class TestDataLoader:
             from xmetai.data.loader import build_loader
         except ImportError:
             pytest.skip("DataLoader not available")
-        
+
         # Create mock dataset
         class MockDataset(torch.utils.data.Dataset):
             def __len__(self):
                 return 10
-            
+
             def __getitem__(self, idx):
                 return {
-                    'input': torch.randn(4, 65, 32, 64),
-                    'target': torch.randn(1, 65, 32, 64),
+                    "input": torch.randn(4, 65, 32, 64),
+                    "target": torch.randn(1, 65, 32, 64),
                 }
-        
+
         dataset = MockDataset()
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=2,
             shuffle=False,
         )
-        
+
         for batch in loader:
-            assert batch['input'].shape[0] == 2
-            assert batch['target'].shape[0] == 2
+            assert batch["input"].shape[0] == 2
+            assert batch["target"].shape[0] == 2
             break
 
     @pytest.mark.gpu
     def test_dataloader_num_workers(self):
         """Test data loader with multiple workers."""
+
         class MockDataset(torch.utils.data.Dataset):
             def __len__(self):
                 return 10
-            
+
             def __getitem__(self, idx):
                 return torch.randn(65, 32, 64)
-        
+
         dataset = MockDataset()
-        
+
         # Test with num_workers=0 (no multiprocessing)
         loader = torch.utils.data.DataLoader(
             dataset,
             batch_size=2,
             num_workers=0,
         )
-        
+
         batches = list(loader)
         assert len(batches) == 5
 
@@ -212,13 +212,13 @@ class TestNormalizationConstants:
             from xmetai.data.weather_util import compute_statistics
         except ImportError:
             pytest.skip("compute_statistics not available")
-        
+
         # Create synthetic data
         data = torch.randn(10, 4, 65, 32, 64)
-        
+
         mean = data.mean(dim=(0, 1, 3, 4), keepdim=True)
         std = data.std(dim=(0, 1, 3, 4), keepdim=True)
-        
+
         assert mean.shape[-1] == 1
         assert std.shape[-1] == 1
         assert (std > 0).all()
@@ -228,9 +228,9 @@ class TestNormalizationConstants:
         x = torch.randn(2, 4, 65, 32, 64)
         mean = torch.zeros(65, 1, 1)
         std = torch.ones(65, 1, 1)
-        
+
         x_norm = (x - mean) / std
-        
+
         assert x_norm.shape == x.shape
 
 

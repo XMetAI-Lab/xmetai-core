@@ -12,7 +12,8 @@ __all__ = [
     "AdaptiveLN",
     "AdaptiveGroupNorm",
     "AdaptiveInstanceNorm",
-    "AdaptiveGroupNorm2D"]
+    "AdaptiveGroupNorm2D",
+]
 
 
 class PixelNorm(nn.Module):
@@ -97,11 +98,7 @@ class AdaptiveGroupNorm2D(nn.Module):
 
         num_groups = min(out_channels // 4, 32)
 
-        self.norm = nn.GroupNorm(
-            num_groups,
-            out_channels,
-            affine=False,
-            eps=1e-6)
+        self.norm = nn.GroupNorm(num_groups, out_channels, affine=False, eps=1e-6)
         self.style = nn.Conv2d(style_dim, out_channels * 2, 1)
         # ddpm_fill(self.style)
         nn.init.constant_(self.style.weight, 0)
@@ -128,12 +125,12 @@ class AdaptiveInstanceNorm(nn.Module):
         self.style.bias.data[out_channels:] = 0
 
     def forward(self, input, style):
-        input = rearrange(input, 'n l c -> n c l')
+        input = rearrange(input, "n l c -> n c l")
         style = self.style(style).unsqueeze(-1)
         gamma, beta = style.chunk(2, 1)
         out = self.norm(input)
         out = gamma * out + beta
-        out = rearrange(out, 'n c l -> n l c')
+        out = rearrange(out, "n c l -> n l c")
         return out
 
 
@@ -193,25 +190,24 @@ class FrozenBatchNorm2d(nn.Module):
             )
 
     def _load_from_state_dict(
-            self,
-            state_dict,
-            prefix,
-            local_metadata,
-            strict,
-            missing_keys,
-            unexpected_keys,
-            error_msgs):
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
         version = local_metadata.get("version", None)
 
         if version is None or version < 2:
             # No running_mean/var in early versions
             # This will silent the warnings
             if prefix + "running_mean" not in state_dict:
-                state_dict[prefix +
-                           "running_mean"] = torch.zeros_like(self.running_mean)
+                state_dict[prefix + "running_mean"] = torch.zeros_like(self.running_mean)
             if prefix + "running_var" not in state_dict:
-                state_dict[prefix +
-                           "running_var"] = torch.ones_like(self.running_var)
+                state_dict[prefix + "running_var"] = torch.ones_like(self.running_var)
 
         super()._load_from_state_dict(
             state_dict,
@@ -220,11 +216,11 @@ class FrozenBatchNorm2d(nn.Module):
             strict,
             missing_keys,
             unexpected_keys,
-            error_msgs)
+            error_msgs,
+        )
 
     def __repr__(self):
-        return "FrozenBatchNorm2d(num_features={}, eps={})".format(
-            self.num_features, self.eps)
+        return "FrozenBatchNorm2d(num_features={}, eps={})".format(self.num_features, self.eps)
 
     @classmethod
     def convert_frozen_batchnorm(cls, module):

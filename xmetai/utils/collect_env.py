@@ -35,9 +35,7 @@ def detect_compute_compatibility(CUDA_HOME, so_file):
     try:
         cuobjdump = os.path.join(CUDA_HOME, "bin", "cuobjdump")
         if os.path.isfile(cuobjdump):
-            output = subprocess.check_output(
-                "'{}' --list-elf '{}'".format(cuobjdump, so_file), shell=True
-            )
+            output = subprocess.check_output("'{}' --list-elf '{}'".format(cuobjdump, so_file), shell=True)
             output = output.decode("utf-8").strip().split("\n")
             arch = []
             for line in output:
@@ -61,8 +59,7 @@ def collect_env_info():
     from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
 
     has_rocm = False
-    if (getattr(torch.version, "hip", None)
-            is not None) and (ROCM_HOME is not None):
+    if (getattr(torch.version, "hip", None) is not None) and (ROCM_HOME is not None):
         has_rocm = True
     has_cuda = has_gpu and (not has_rocm)
 
@@ -72,12 +69,7 @@ def collect_env_info():
     data.append(("Python", sys.version.replace("\n", "")))
     data.append(("numpy", np.__version__))
     data.append(get_env_module())
-    data.append(
-        ("PyTorch",
-         torch_version +
-         " @" +
-         os.path.dirname(
-             torch.__file__)))
+    data.append(("PyTorch", torch_version + " @" + os.path.dirname(torch.__file__)))
     data.append(("PyTorch debug build", torch.version.debug))
 
     if not has_gpu:
@@ -88,20 +80,17 @@ def collect_env_info():
     if has_gpu:
         devices = defaultdict(list)
         for k in range(torch.cuda.device_count()):
-            cap = ".".join((str(x)
-                           for x in torch.cuda.get_device_capability(k)))
+            cap = ".".join((str(x) for x in torch.cuda.get_device_capability(k)))
             name = torch.cuda.get_device_name(k) + f" (arch={cap})"
             devices[name].append(str(k))
         for name, devids in devices.items():
             data.append(("GPU " + ",".join(devids), name))
 
         if has_rocm:
-            msg = " - invalid!" if not (
-                ROCM_HOME and os.path.isdir(ROCM_HOME)) else ""
+            msg = " - invalid!" if not (ROCM_HOME and os.path.isdir(ROCM_HOME)) else ""
             data.append(("ROCM_HOME", str(ROCM_HOME) + msg))
         else:
-            msg = " - invalid!" if not (
-                CUDA_HOME and os.path.isdir(CUDA_HOME)) else ""
+            msg = " - invalid!" if not (CUDA_HOME and os.path.isdir(CUDA_HOME)) else ""
             data.append(("CUDA_HOME", str(CUDA_HOME) + msg))
 
             cuda_arch_list = os.environ.get("TORCH_CUDA_ARCH_LIST", None)
@@ -110,12 +99,15 @@ def collect_env_info():
     data.append(("Pillow", PIL.__version__))
 
     try:
-        data.append(("torchvision", str(torchvision.__version__) +
-                     " @" + os.path.dirname(torchvision.__file__), ))
+        data.append(
+            (
+                "torchvision",
+                str(torchvision.__version__) + " @" + os.path.dirname(torchvision.__file__),
+            )
+        )
         if has_cuda:
             try:
-                torchvision_C = importlib.util.find_spec(
-                    "torchvision._C").origin
+                torchvision_C = importlib.util.find_spec("torchvision._C").origin
                 msg = detect_compute_compatibility(CUDA_HOME, torchvision_C)
                 data.append(("torchvision arch flags", msg))
             except (ImportError, AttributeError):
@@ -163,7 +155,4 @@ if __name__ == "__main__":
                 x = torch.tensor([1, 2.0], dtype=torch.float32)
                 x = x.to(device)
             except Exception as e:
-                print(
-                    f"Unable to copy tensor to device={device}: {e}. "
-                    "Your CUDA environment is broken."
-                )
+                print(f"Unable to copy tensor to device={device}: {e}. " "Your CUDA environment is broken.")

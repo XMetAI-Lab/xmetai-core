@@ -71,9 +71,7 @@ class Conv2d(torch.nn.Conv2d):
         if not torch.jit.is_scripting():
             if x.numel() == 0 and self.training:
                 # https://github.com/pytorch/pytorch/issues/12013
-                assert not isinstance(
-                    self.norm, torch.nn.SyncBatchNorm
-                ), "SyncBatchNorm does not support empty inputs!"
+                assert not isinstance(self.norm, torch.nn.SyncBatchNorm), "SyncBatchNorm does not support empty inputs!"
 
         x = F.conv2d(
             x,
@@ -82,7 +80,8 @@ class Conv2d(torch.nn.Conv2d):
             self.stride,
             self.padding,
             self.dilation,
-            self.groups)
+            self.groups,
+        )
 
         if self.norm is not None:
             x = self.norm(x)
@@ -108,10 +107,9 @@ class ModulatedConv2d(nn.Module):
         self.scale = 1 / math.sqrt(fan_in)
         self.padding = kernel_size // 2
 
-        self.weight = nn.Parameter(
-            torch.randn(1, out_channels, in_channels, kernel_size, kernel_size)
-        )
-        self.affine = EqualLinear(style_channels, in_channels, bias_init=1)
+        self.weight = nn.Parameter(torch.randn(1, out_channels, in_channels, kernel_size, kernel_size))
+        self.affine = nn.Linear(style_channels, in_channels)
+        nn.init.constant_(self.affine.bias, 1)
 
     def forward(self, x, style):
         bs = len(style)
@@ -121,7 +119,7 @@ class ModulatedConv2d(nn.Module):
         weight = weight * demod.reshape((bs, -1, 1, 1, 1))
         weight = weight.flatten(0, 1)
         out = F.conv2d(x, weight, padding=self.padding, groups=bs)
-        return rearrange(out, '1 (n c) h w -> n (h w) c', n=bs)
+        return rearrange(out, "1 (n c) h w -> n (h w) c", n=bs)
 
 
 ConvTranspose2d = torch.nn.ConvTranspose2d
@@ -155,16 +153,9 @@ def aligned_bilinear(tensor, factor):
     tensor = F.pad(tensor, pad=(0, 1, 0, 1), mode="replicate")
     oh = factor * h + 1
     ow = factor * w + 1
-    tensor = F.interpolate(
-        tensor, size=(oh, ow),
-        mode='bilinear',
-        align_corners=True
-    )
-    tensor = F.pad(
-        tensor, pad=(factor // 2, 0, factor // 2, 0),
-        mode="replicate"
-    )
-    return tensor[:, :, :oh - 1, :ow - 1]
+    tensor = F.interpolate(tensor, size=(oh, ow), mode="bilinear", align_corners=True)
+    tensor = F.pad(tensor, pad=(factor // 2, 0, factor // 2, 0), mode="replicate")
+    return tensor[:, :, : oh - 1, : ow - 1]
 
 
 class PeriodicConv2d(torch.nn.Conv2d):
@@ -177,20 +168,6 @@ class PeriodicConv2d(torch.nn.Conv2d):
         left = x[:, :, :, :1]
         right = x[:, :, :, -1:]
         x = torch.cat([right, x, left], dim=-1)
-        x = F.pad(
-            x,
-            (0,
-             0,
-             self.padding[0],
-             self.padding[0]),
-            mode="constant",
-            value=0)
-        x = F.conv2d(
-            x,
-            self.weight,
-            self.bias,
-            self.stride,
-            0,
-            self.dilation,
-            self.groups)
+        x = F.pad(x, (0, 0, self.padding[0], self.padding[0]), mode="constant", value=0)
+        x = F.conv2d(x, self.weight, self.bias, self.stride, 0, self.dilation, self.groups)
         return x

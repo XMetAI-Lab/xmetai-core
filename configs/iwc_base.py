@@ -9,13 +9,20 @@ import os
 import numpy as np
 from omegaconf import OmegaConf
 from xmetai.config import LazyCall as L
-from xmetai import MODELS, METRICS, DATASETS, LazyConfig, build_test_loader, build_train_loader, get_data_info
+from xmetai import (
+    METRICS,
+    DATASETS,
+    LazyConfig,
+    build_test_loader,
+    build_train_loader,
+    get_data_info,
+)
 
 ######################################################################
 # Global settings
 ######################################################################
 # set the environment variable for PyTorch CUDA memory allocation
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32,expandable_segments:True'
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:32,expandable_segments:True"
 
 CONFIG_PATH = os.path.dirname(__file__)
 ROOT_PATH = os.path.join(CONFIG_PATH, "../")
@@ -38,24 +45,24 @@ optimizer = LazyConfig.load(os.path.join(ROOT_PATH, "common/optim.py")).AdamW
 scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).cosine_lr
 
 load_from_pretrain = False
-if os.path.exists(f'{output_dir}/model_final.pth'):
-    train.init_checkpoint = f'{output_dir}/model_best.pth'
+if os.path.exists(f"{output_dir}/model_final.pth"):
+    train.init_checkpoint = f"{output_dir}/model_best.pth"
     train.teacher_forcing.teach_iters = 100
     train.teacher_forcing.teach_steps = 4
     output_dir += "/mstep/"
     lr = 1.28e-5
-    epochs = epochs//3
+    epochs = epochs // 3
     load_from_pretrain = True
     scheduler.scheduler.end_value = 1e-2
-    #scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).const_lr
+    # scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).const_lr
 
-train.max_iter = epochs * iters_per_epoch//total_batch_size  # max_steps with 60000 iterations per epoch
+train.max_iter = epochs * iters_per_epoch // total_batch_size  # max_steps with 60000 iterations per epoch
 train.output_dir = output_dir
 train.activation_checkpointing = True
 train.use_fsdp2 = True
 train.use_fsdp = False
 train.use_ddp = False
-#train.eval_period = iters_per_epoch//total_batch_size  # eval for each epoch
+# train.eval_period = iters_per_epoch//total_batch_size  # eval for each epoch
 optimizer.lr = lr
 ######################################################################
 # Model settings
@@ -69,12 +76,12 @@ maskid = data_info["maskid"]
 buffers = data_info["buffers"]
 
 test_names = ["z500", "msl", "t2m", "sst", "ttr", "tp"]
-#test_names = ["z500", "t2m", "tp"]
+# test_names = ["z500", "t2m", "tp"]
 test_names = [ch for ch in test_names if ch in out_names]
 test_chans = [out_names.index(n) for n in test_names]
 test_frames = np.arange(1, 13).tolist()  # predict 1-3 days ahead with 6-hour frequency
 test_frames = np.arange(1, 61).tolist()  # predict 1-15 days ahead with 6-hour frequency
-#test_frames = np.concatenate([test_frames, np.arange(61, 170, 4)]) # predict 42 days ahead
+# test_frames = np.concatenate([test_frames, np.arange(61, 170, 4)]) # predict 42 days ahead
 step_range = [max(test_frames)]
 
 in_chans = len(in_names)
@@ -95,7 +102,7 @@ dataloader = OmegaConf.create()
 
 train_times = ("19500101-00", "20231231-18")
 test_times = ("20240101-18", "20251231-18")
-#test_times = ("20050101-18", "20250502-18")
+# test_times = ("20050101-18", "20250502-18")
 dataloader.train = L(build_train_loader)(
     dataset=L(DATASETS.get("ERA5"))(
         data_name=data_dir,
@@ -142,6 +149,7 @@ dataloader.evaluator = [
 export_onnx = False
 if export_onnx:
     from xmetai.data import make_onnx
+
     train.use_ddp = False
     train.use_fsdp = False
     train.use_fsdp2 = False
@@ -156,5 +164,5 @@ if export_onnx:
         output_dir=output_dir,
         embed_types=["step", "hour", "doy"],
         model_name="iwc_pred.onnx",
-        device=train.device_type
+        device=train.device_type,
     )

@@ -11,7 +11,6 @@ from termcolor import colored
 
 from xmetai.utils.file_io import PathManager
 
-
 __all__ = ["setup_logger", "log_first_n", "log_every_n", "log_every_n_seconds"]
 
 
@@ -39,13 +38,7 @@ class _ColorfulFormatter(logging.Formatter):
 
 # so that calling setup_logger multiple times won't add many handlers
 @functools.lru_cache()
-def setup_logger(
-        output=None,
-        distributed_rank=0,
-        *,
-        color=True,
-        name="xmetai",
-        abbrev_name=None):
+def setup_logger(output=None, distributed_rank=0, *, color=True, name="xmetai", abbrev_name=None):
     """
     Initialize the detectron2 logger and set its verbosity level to "DEBUG".
 
@@ -70,7 +63,8 @@ def setup_logger(
 
     plain_formatter = logging.Formatter(
         "[%(asctime)s %(name)s:%(lineno)s-%(process)d] %(levelname)s: %(message)s",
-        datefmt="%m/%d %H:%M:%S")
+        datefmt="%m/%d %H:%M:%S",
+    )
     # stdout logging: master only
     if distributed_rank == 0:
         ch = logging.StreamHandler(stream=sys.stdout)
@@ -110,11 +104,7 @@ def setup_logger(
 @functools.lru_cache(maxsize=None)
 def _cached_log_stream(filename):
     # use 1K buffer if writing to cloud storage
-    io = PathManager.open(
-        filename,
-        "a",
-        buffering=1024 if "://" in filename else -
-        1)
+    io = PathManager.open(filename, "a", buffering=1024 if "://" in filename else -1)
     atexit.register(io.close)
     return io
 

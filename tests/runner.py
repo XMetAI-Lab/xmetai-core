@@ -37,15 +37,18 @@ def run_gpu_tests():
 def run_unit_tests():
     """Run unit tests (exclude slow/integration tests)."""
     print("Running unit tests...")
-    return run_tests([
-        "-v",
-        "-m", "not slow",
-        "tests/test_layers_basic.py",
-        "tests/test_layers_vision.py",
-        "tests/test_models.py",
-        "tests/test_loss_metrics.py",
-        "tests/test_data.py",
-    ])
+    return run_tests(
+        [
+            "-v",
+            "-m",
+            "not slow",
+            "tests/test_layers_basic.py",
+            "tests/test_layers_vision.py",
+            "tests/test_models.py",
+            "tests/test_loss_metrics.py",
+            "tests/test_data.py",
+        ]
+    )
 
 
 def run_integration_tests():
@@ -63,12 +66,14 @@ def run_numerical_tests():
 def run_with_coverage():
     """Run tests with coverage report."""
     print("Running tests with coverage...")
-    return run_tests([
-        "-v",
-        "--cov=xmetai",
-        "--cov-report=html",
-        "--cov-report=term-missing",
-    ])
+    return run_tests(
+        [
+            "-v",
+            "--cov=xmetai",
+            "--cov-report=html",
+            "--cov-report=term-missing",
+        ]
+    )
 
 
 if __name__ == "__main__":

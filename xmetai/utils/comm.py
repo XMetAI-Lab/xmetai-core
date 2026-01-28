@@ -197,7 +197,7 @@ def shared_random_seed():
     seed = torch.randint(2**31, (1,), dtype=torch.int64)
     if get_world_size() == 1:
         return seed.item()
-    else:# convert seed to cuda
+    else:  # convert seed to cuda
         seed = seed.to(torch.device("cuda"))
     all_seeds = [torch.zeros_like(seed) for _ in range(dist.get_world_size())]
     dist.all_gather(all_seeds, seed)

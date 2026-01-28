@@ -7,6 +7,7 @@ DATASETS = Registry("datasets")
 
 from .metrics import *
 
+
 def build(cfg, func):
     values = list(cfg.values())
     if len(values) == 0:
@@ -23,7 +24,7 @@ def build(cfg, func):
 
 def build_model(cfg):
     cfg_ = cfg.copy()
-    name = cfg_.pop('name')
+    name = cfg_.pop("name")
     model = MODELS.get(name)(**cfg_)
     return model
 
@@ -34,7 +35,7 @@ def build_models(cfg):
 
 def build_criterion(cfg):
     cfg_ = cfg.copy()
-    name = cfg_.pop('name')
+    name = cfg_.pop("name")
     criterion = CRITERIONS.get(name)(**cfg_)
     return criterion
 
@@ -45,7 +46,7 @@ def build_criterions(cfg):
 
 def build_metric(cfg):
     cfg_ = cfg.copy()
-    name = cfg_.pop('name')
+    name = cfg_.pop("name")
     metrics = METRICS.get(name)(**cfg_)
     return metrics
 
@@ -57,7 +58,7 @@ def build_metrics(cfg):
 
 def build_dataset(cfg):
     cfg_ = cfg.copy()
-    name = cfg_.pop('name')
+    name = cfg_.pop("name")
     dataset = DATASETS.get(name)(**cfg_)
     return dataset
 

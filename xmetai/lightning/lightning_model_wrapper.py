@@ -1,12 +1,12 @@
-'''
+"""
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-09-19 10:55:22
 Description: PyTorch Lightning Module for model wrapper
-Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
-'''
-from typing import Any, Union, List, Mapping, Iterable
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
+"""
+
+from typing import Mapping, Iterable
 import math
-import logging
 import numpy as np
 import torch
 import pytorch_lightning as pl
@@ -40,12 +40,14 @@ def flatten_results_dict(results):
 
 
 class Lightning_Model_Wrapper(pl.LightningModule):
-    def __init__(self,
-                 model_cfg: LazyConfig,
-                 evaluator_cfg: list[LazyConfig],
-                 lr: float = 0.0005,
-                 max_iter: int = 30000,
-                 warmup_rate: float = 0.01):
+    def __init__(
+        self,
+        model_cfg: LazyConfig,
+        evaluator_cfg: list[LazyConfig],
+        lr: float = 0.0005,
+        max_iter: int = 30000,
+        warmup_rate: float = 0.01,
+    ):
         super().__init__()
         self.save_hyperparameters(ignore=["evaluator_cfg"])
         self.evaluator = DatasetEvaluators([instantiate(item) for item in evaluator_cfg])
@@ -112,7 +114,7 @@ class Lightning_Model_Wrapper(pl.LightningModule):
 
         scheduler = {
             "scheduler": LambdaLR(optimizer, lr_lambda),
-            "interval": "step",   # 按 step 更新
+            "interval": "step",  # 按 step 更新
             "frequency": 1,
         }
         return {"optimizer": optimizer, "lr_scheduler": scheduler}

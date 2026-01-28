@@ -16,35 +16,13 @@
 ## 项目结构
 
 ```
-xmetai-core/
-├── xmetai/                       # 核心库
-│   ├── models/                   # 模型架构
-│   │   ├── base_predictor.py     # 基础推理模型
-│   │   ├── vit.py                # Vision Transformer模型
-│   │   ├── vit_ens.py            # ViT模型的集合训练版本
-│   │   └── onnx_infer.py         # ONNX推理模型
-│   ├── data/                     # 数据处理
-│   │   ├── weather/              # 天气数据工具
-│   │   ├── loader.py             # 数据加载器
-│   │   └── sampler.py            # 数据采样器
-│   ├── core/                     # 核心模块
-│   │   ├── trainer.py            # 训练器
-│   │   ├── evaluator.py          # 评估器
-│   │   ├── hooks.py              # 训练钩子
-│   │   └── checkpoint.py         # 检查点管理
-│   ├── config/                   # 配置系统
-│   ├── layers/                   # 神经网络层
-│   ├── loss/                     # 损失函数
-│   └── metrics/                  # 评估指标
-├── configs/                      # 配置文件
-│   ├── s2s_base.py               # S2S基础配置
-│   ├── s2s_vit.py                # S2S确定性预报配置
-│   └── ...
-├── tools/                        # 训练和导出脚本
-│   ├── train.py                  # 标准训练脚本
-│   └── train_lightning.py        # PyTorch Lightning训练脚本
-└── scripts/                      # 辅助脚本
-    └── train.bash                # 训练、评估和导出的统一脚本
+├── xmetai/                       # 核心库（模型、数据、训练、配置等）
+├── configs/                      # 训练/推理配置（LazyConfig）
+├── tools/                        # 训练与导出脚本
+├── scripts/                      # 辅助脚本（train.bash、run_tests.sh 等）
+├── tests/                        # 单元与集成测试
+├── README.md                     # 项目说明
+└── CONTRIBUTING.md               # 贡献指南
 ```
 
 ---
@@ -54,8 +32,8 @@ xmetai-core/
 ### 环境配置
 
 ```bash
-# 安装依赖
-pip install -r requirements.txt
+# 安装开发依赖（含 lint/test 工具）
+pip install -e .[dev]
 ```
 
 ### 数据准备
@@ -268,10 +246,10 @@ tests/                      # 测试根目录
 
 - **FuXi**: 伏羲模型
   - 论文: [FuXi: A Large-Scale Climate Foundation Model for Medium-Range Weather Forecasting](https://arxiv.org/abs/2306.12873)
-  
+
 - **SwinTransformer**: 窗口注意力机制
   - 论文: [Swin Transformer: Hierarchical Vision Transformer using Shifted Windows](https://arxiv.org/abs/2103.14030)
-  
+
 - **Mamba**: 状态空间模型
   - 论文: [Mamba: Linear-Time Sequence Modeling with Selective State Spaces](https://arxiv.org/abs/2312.00752)
   - 论文: [Vision Mamba: Efficient Visual Representation Learning with Bidirectional State Space Model](https://arxiv.org/abs/2401.09417)

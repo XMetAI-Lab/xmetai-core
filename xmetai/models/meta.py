@@ -9,6 +9,7 @@ class Meta(nn.Module, metaclass=ABCMeta):
     """
     Abstract base class for model.
     """
+
     dtype_dict = {
         "fp32": torch.float32,
         "fp16": torch.float16,

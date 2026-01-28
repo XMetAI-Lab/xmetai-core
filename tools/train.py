@@ -4,7 +4,11 @@ import logging
 from functools import partial
 from typing import Dict, Any
 import torch
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (CheckpointImpl, apply_activation_checkpointing, checkpoint_wrapper)
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    CheckpointImpl,
+    apply_activation_checkpointing,
+    checkpoint_wrapper,
+)
 
 # set python path from ../
 CUR_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -47,19 +51,18 @@ def build_model(cfg):
     cfg.train.fsdp.mods = mods
     # Apply activation checkpointing
     if cfg.train.activation_checkpointing:
+
         def wrap_f1(module):
-            return checkpoint_wrapper(module,
-                                      checkpoint_impl=CheckpointImpl.NO_REENTRANT,
-                                      preserve_rng_state=False)
+            return checkpoint_wrapper(
+                module,
+                checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+                preserve_rng_state=False,
+            )
 
         def check_fn(submodule):
             return isinstance(submodule, mods)
 
-        apply_activation_checkpointing(
-            model,
-            checkpoint_wrapper_fn=wrap_f1,
-            check_fn=check_fn
-        )
+        apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap_f1, check_fn=check_fn)
     # load checkpoint before distribute and update buffers from model config.
     reload_buffers = ["channel_weights", "weight"]
     model_buffers = {k: v for k, v in model.named_buffers() if any(rb in k for rb in reload_buffers)}
@@ -73,11 +76,13 @@ def build_model(cfg):
         else:
             if comm.is_main_process():
                 logger.warning(f"Buffer shape mismatch for {k}: checkpoint {v.shape} vs model {buf.shape}, skipping restore.")
+
     # clear freezed parameters grad
     def clear_grad(module):
         for param in module.parameters():
             if not param.requires_grad and param.grad is not None:
                 param.grad = None
+
     # Wrap model with DDP or FSDP
     if cfg.train.use_ddp:
         model.apply(clear_grad)
@@ -95,8 +100,8 @@ def build_model(cfg):
 
 
 def convert_model(model: torch.nn.Module, dtype=torch.float16, ignore_list=["mean", "std"]):
-    """ Convert all floating point parameters and buffers of the model to the specified dtype,
-        except those in the ignore_list.
+    """Convert all floating point parameters and buffers of the model to the specified dtype,
+    except those in the ignore_list.
     """
     for name, param in list(model.named_parameters(recurse=True)):
         if "." in name:
@@ -138,8 +143,14 @@ def do_train(args, cfg):
     train_loader = instantiate(cfg.dataloader.train)
     scheduler = instantiate(cfg.scheduler)
     if cfg.train.teacher_forcing.teach_iters > 0:
-        trainer = ExpandTrainer(model, train_loader, optimizer, increment_iter=cfg.train.teacher_forcing.teach_iters,
-                                use_ema=cfg.train.use_ema, ens_train=cfg.train.ens_train)
+        trainer = ExpandTrainer(
+            model,
+            train_loader,
+            optimizer,
+            increment_iter=cfg.train.teacher_forcing.teach_iters,
+            use_ema=cfg.train.use_ema,
+            ens_train=cfg.train.ens_train,
+        )
     else:
         trainer = SimpleTrainer(model, train_loader, optimizer, use_ema=cfg.train.use_ema)
 
@@ -156,7 +167,12 @@ def do_train(args, cfg):
             hooks.PeriodicCheckpointer(checkpointer, **cfg.train.checkpointer),
             hooks.EvalHook(cfg.train.eval_period, lambda: do_test(cfg, model)),
             hooks.GradientClipHook(),
-            hooks.BestCheckpointer(eval_period=cfg.train.eval_period, checkpointer=checkpointer, val_metric=cfg.train.val_metric, mode="min"),
+            hooks.BestCheckpointer(
+                eval_period=cfg.train.eval_period,
+                checkpointer=checkpointer,
+                val_metric=cfg.train.val_metric,
+                mode="min",
+            ),
             (
                 hooks.PeriodicWriter(
                     default_writers(cfg.train.output_dir, cfg.train.max_iter),
@@ -165,16 +181,12 @@ def do_train(args, cfg):
                 if comm.is_main_process()
                 else None
             ),
-            (
-                hooks.TorchMemoryStats(cfg.train.log_period, 20)
-                if comm.is_main_process()
-                else None
-            ),
+            (hooks.TorchMemoryStats(cfg.train.log_period, 20) if comm.is_main_process() else None),
             # hooks.TorchProfiler(lambda trainer: 10 < trainer.iter < 20, cfg.train.output_dir, save_tensorboard=False),
         ]
     )
 
-    if args.resume: # TODO: Should load trainer state only.
+    if args.resume:  # TODO: Should load trainer state only.
         checkpointer.resume_or_load(cfg.train.init_checkpoint, resume=args.resume)
 
     if cfg.train.use_ema:
@@ -210,7 +222,7 @@ def do_export(
         else:
             input_tensors.append(torch.tensor(v, device=device))
         input_names.append(k)
-        logger.info(f'input:{k} with shape:{input_tensors[-1].shape} and dtype:{input_tensors[-1].dtype} on device:{input_tensors[-1].device}')
+        logger.info(f"input:{k} with shape:{input_tensors[-1].shape} and dtype:{input_tensors[-1].dtype} on device:{input_tensors[-1].device}")
 
     torch.onnx.export(
         model,
@@ -230,6 +242,7 @@ def do_export(
     if model.params() * type_size > 2**31:  # 2GB limit
         logger.warning(f"Model size {model.params() * type_size / 1e9:.2f}GB exceeds the ONNX limit of 2GB. Consider export params to one extra data file.")
         import onnx
+
         model_onnx = onnx.load(save_name, load_external_data=True)
         location = os.path.basename(save_name).replace(".onnx", ".data")
         onnx.save_model(

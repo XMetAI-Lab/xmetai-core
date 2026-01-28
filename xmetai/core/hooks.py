@@ -2,25 +2,29 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
 import datetime
+import itertools
 import logging
-import os
-import time
 import math
+import os
+import tempfile
+import time
 import warnings
 from collections import Counter
-from collections.abc import Mapping, Iterable
+from collections.abc import Iterable, Mapping
+import operator
+
+import numpy as np
 import torch
 import torch.distributed as dist
+from torch.nn.modules.batchnorm import _BatchNorm
 from torch.nn.utils import clip_grad_norm_
-import operator
-import numpy as np
 from .checkpoint import Checkpointer
 from .checkpoint import PeriodicCheckpointer as _PeriodicCheckpointer
 from .scheduler import LRMultiplier, ParamScheduler
 from xmetai.utils.timer import Timer
 
 from xmetai.utils.comm import get_rank, synchronize
-from xmetai.utils.events import EventWriter
+from xmetai.utils.events import EventStorage, EventWriter
 from xmetai.utils.file_io import PathManager
 
 from .trainer import HookBase
@@ -40,6 +44,34 @@ __all__ = [
     "TorchMemoryStats",
     "GradientClipHook",
 ]
+
+
+def get_bn_modules(model):
+    """Collect batch norm modules for precise BN updates."""
+    return [m for m in model.modules() if isinstance(m, _BatchNorm)]
+
+
+def update_bn_stats(model, data_loader, num_iter):
+    """Recompute running BN stats using a few batches."""
+    bn_modules = get_bn_modules(model)
+    if len(bn_modules) == 0:
+        return
+
+    momentum = {bn: bn.momentum for bn in bn_modules}
+    training_mode = {bn: bn.training for bn in bn_modules}
+
+    for bn in bn_modules:
+        bn.train()
+        bn.momentum = 1.0
+        bn.reset_running_stats()
+
+    with torch.no_grad():
+        for _ in range(num_iter):
+            model(next(data_loader))
+
+    for bn in bn_modules:
+        bn.momentum = momentum[bn]
+        bn.train(training_mode[bn])
 
 
 # results pattern: {key:{times:values, level1: values, ...}}
@@ -197,9 +229,7 @@ class PeriodicWriter(HookBase):
         self._period = period
 
     def after_step(self):
-        if (self.trainer.iter + 1) % self._period == 0 or (
-            self.trainer.iter == self.trainer.max_iter - 1
-        ):
+        if (self.trainer.iter + 1) % self._period == 0 or (self.trainer.iter == self.trainer.max_iter - 1):
             for writer in self._writers:
                 writer.write()
 
@@ -285,19 +315,14 @@ class BestCheckpointer(HookBase):
         should_save = False
         additional_state = {}
         if metric_tuple is None:
-            self._logger.warning(
-                f"Given val metric {self._val_metric} does not seem to be computed/stored."
-                "Will not be checkpointing based on it."
-            )
+            self._logger.warning(f"Given val metric {self._val_metric} does not seem to be computed/stored." "Will not be checkpointing based on it.")
         else:
             latest_metric, metric_iter = metric_tuple
             if self.best_metric is None:
                 if self._update_best(latest_metric, metric_iter):
                     should_save = True
                     additional_state = {"iteration": metric_iter}
-                    self._logger.info(
-                        f"Saved first model at {self.best_metric:0.5f} @ {self.best_iter} steps"
-                    )
+                    self._logger.info(f"Saved first model at {self.best_metric:0.5f} @ {self.best_iter} steps")
             elif self._compare(latest_metric, self.best_metric):
                 additional_state = {"iteration": metric_iter}
                 should_save = True
@@ -326,11 +351,7 @@ class BestCheckpointer(HookBase):
     def after_step(self):
         # same conditions as `EvalHook`
         next_iter = self.trainer.iter + 1
-        if (
-            self._period > 0
-            and next_iter % self._period == 0
-            and next_iter != self.trainer.max_iter
-        ):
+        if self._period > 0 and next_iter % self._period == 0 and next_iter != self.trainer.max_iter:
             self._best_checking()
 
     def after_train(self):
@@ -358,8 +379,8 @@ class SchedulerMultiplier(HookBase):
         for param_group in self._optimizer.param_groups:
             lr_multiplier = param_group["lr_multiplier"]
             wd_multiplier = param_group["wd_multiplier"]
-            lr = self.hyp['lr'] * lr_multiplier
-            wd = self.hyp['wd'] * wd_multiplier
+            lr = self.hyp["lr"] * lr_multiplier
+            wd = self.hyp["wd"] * wd_multiplier
             param_group["lr"] = lr
             param_group["weight_decay"] = wd
 
@@ -508,9 +529,7 @@ class TorchProfiler(HookBase):
         self._profiler.__exit__(None, None, None)
         if not self._save_tensorboard:
             PathManager.mkdirs(self._output_dir)
-            out_file = os.path.join(
-                self._output_dir, "profiler-trace-iter{}.json".format(self.trainer.iter)
-            )
+            out_file = os.path.join(self._output_dir, "profiler-trace-iter{}.json".format(self.trainer.iter))
             if "://" not in out_file:
                 self._profiler.export_chrome_trace(out_file)
             else:
@@ -600,19 +619,14 @@ class EvalHook(HookBase):
             results = self._func()
 
         if results:
-            assert isinstance(
-                results, dict
-            ), "Eval function must return a dict. Got {} instead.".format(results)
+            assert isinstance(results, dict), "Eval function must return a dict. Got {} instead.".format(results)
 
             flattened_results = flatten_results_dict(results)
             for k, v in flattened_results.items():
                 try:
                     v = float(v)
                 except Exception as e:
-                    raise ValueError(
-                        "[EvalHook] eval_function should return a nested dict of float. "
-                        "Got '{}: {}' instead.".format(k, v)
-                    ) from e
+                    raise ValueError("[EvalHook] eval_function should return a nested dict of float. " "Got '{}: {}' instead.".format(k, v)) from e
             self.trainer.storage.put_scalars(**flattened_results, smoothing_hint=False)
 
         # Evaluation may take different time among workers.
@@ -660,9 +674,7 @@ class PreciseBN(HookBase):
         """
         self._logger = logging.getLogger(__name__)
         if len(get_bn_modules(model)) == 0:
-            self._logger.info(
-                "PreciseBN is disabled because model does not contain BN layers in training mode."
-            )
+            self._logger.info("PreciseBN is disabled because model does not contain BN layers in training mode.")
             self._disabled = True
             return
 
@@ -693,16 +705,13 @@ class PreciseBN(HookBase):
         def data_loader():
             for num_iter in itertools.count(1):
                 if num_iter % 100 == 0:
-                    self._logger.info(
-                        "Running precise-BN ... {}/{} iterations.".format(num_iter, self._num_iter)
-                    )
+                    self._logger.info("Running precise-BN ... {}/{} iterations.".format(num_iter, self._num_iter))
                 # This way we can reuse the same iterator
                 yield next(self._data_iter)
 
         with EventStorage():  # capture events in a new storage to discard them
             self._logger.info(
-                "Running precise-BN for {} iterations...  ".format(self._num_iter)
-                + "Note that this could produce different statistics every time."
+                "Running precise-BN for {} iterations...  ".format(self._num_iter) + "Note that this could produce different statistics every time."
             )
             update_bn_stats(self._model, data_loader(), self._num_iter)
 
@@ -728,9 +737,7 @@ class TorchMemoryStats(HookBase):
         if self._runs > self._max_runs:
             return
 
-        if (self.trainer.iter + 1) % self._period == 0 or (
-            self.trainer.iter == self.trainer.max_iter - 1
-        ):
+        if (self.trainer.iter + 1) % self._period == 0 or (self.trainer.iter == self.trainer.max_iter - 1):
             if torch.cuda.is_available():
                 max_reserved_mb = torch.cuda.max_memory_reserved() / 1024.0 / 1024.0
                 reserved_mb = torch.cuda.memory_reserved() / 1024.0 / 1024.0
@@ -738,13 +745,7 @@ class TorchMemoryStats(HookBase):
                 allocated_mb = torch.cuda.memory_allocated() / 1024.0 / 1024.0
 
                 self._logger.info(
-                    (
-                        " iter: {} "
-                        " max_reserved_mem: {:.0f}MB "
-                        " reserved_mem: {:.0f}MB "
-                        " max_allocated_mem: {:.0f}MB "
-                        " allocated_mem: {:.0f}MB "
-                    ).format(
+                    (" iter: {} " " max_reserved_mem: {:.0f}MB " " reserved_mem: {:.0f}MB " " max_allocated_mem: {:.0f}MB " " allocated_mem: {:.0f}MB ").format(
                         self.trainer.iter,
                         max_reserved_mb,
                         reserved_mb,
@@ -767,8 +768,4 @@ class GradientClipHook(HookBase):
         self.norm_type = norm_type
 
     def after_backward(self):
-        clip_grad_norm_(
-            self.trainer.model.parameters(),
-            self.max_norm,
-            self.norm_type
-        )
+        clip_grad_norm_(self.trainer.model.parameters(), self.max_norm, self.norm_type)

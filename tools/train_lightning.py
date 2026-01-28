@@ -1,19 +1,25 @@
-'''
+"""
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-09-19 10:56:12
 Description: Training script for PyTorch Lightning
-Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
-'''
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
+"""
+
 import os
 import sys
-from typing import Dict, Any
+from typing import Any
 from typing_extensions import override
 import torch
 import pytorch_lightning as pl
 from torch.distributed.fsdp import MixedPrecision
 from pytorch_lightning.strategies import FSDPStrategy
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, TQDMProgressBar, Callback, DeviceStatsMonitor
-
+from pytorch_lightning.callbacks import (
+    ModelCheckpoint,
+    LearningRateMonitor,
+    TQDMProgressBar,
+    Callback,
+    DeviceStatsMonitor,
+)
 
 # set python path from ../
 CUR_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -64,7 +70,13 @@ class AccumulateGradientCallback(Callback):
         return accumulate_grad_batches
 
     @override
-    def on_train_batch_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", batch: Any, batch_idx: int) -> None:
+    def on_train_batch_start(
+        self,
+        trainer: "pl.Trainer",
+        pl_module: "pl.LightningModule",
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
         trainer.accumulate_grad_batches = self.get_accumulate_grad_batches(batch_idx)
 
 
@@ -102,12 +114,12 @@ class EMACallback(Callback):
 
 
 def main(args):
-    torch.set_float32_matmul_precision('medium')
+    torch.set_float32_matmul_precision("medium")
     cfg = LazyConfig.load(args.config_file)
     cfg = LazyConfig.apply_overrides(cfg, args.opts)
     default_setup(cfg, args)
 
-    if not hasattr(cfg.scheduler, 'warmup_length'):
+    if not hasattr(cfg.scheduler, "warmup_length"):
         cfg.scheduler.warmup_length = 0.01
     train_loader = instantiate(cfg.dataloader.train)
     val_loader = instantiate(cfg.dataloader.test)
@@ -116,7 +128,7 @@ def main(args):
     val_metric = cfg.train.val_metric.replace("/", "_")
     checkpoint_callback = ModelCheckpoint(
         dirpath=cfg.train.output_dir,
-        filename="model-{step:07d}-{"+val_metric+":.1f}",
+        filename="model-{step:07d}-{" + val_metric + ":.1f}",
         save_top_k=1,
         monitor=val_metric,
         mode="min",
@@ -132,8 +144,15 @@ def main(args):
         "max_steps": cfg.train.max_iter,
         "val_check_interval": cfg.train.eval_period,
         "log_every_n_steps": cfg.train.log_period,
-        "callbacks": [MemoryCleaner(), checkpoint_callback, lr_monitor, train_bar, accumulate_callback, DeviceStatsMonitor()],
-        "accelerator": "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu",
+        "callbacks": [
+            MemoryCleaner(),
+            checkpoint_callback,
+            lr_monitor,
+            train_bar,
+            accumulate_callback,
+            DeviceStatsMonitor(),
+        ],
+        "accelerator": ("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"),
         "devices": args.num_gpus,
         "num_nodes": args.num_machines,
         "use_distributed_sampler": False,
@@ -147,7 +166,11 @@ def main(args):
     cfg.train.use_fsdp = True
     # 启用 activation_checkpointing
     if cfg.train.use_fsdp:
-        fsdp_mp = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.float32)
+        fsdp_mp = MixedPrecision(
+            param_dtype=torch.bfloat16,
+            reduce_dtype=torch.bfloat16,
+            buffer_dtype=torch.float32,
+        )
         trainer_args["strategy"] = FSDPStrategy(
             cpu_offload=False,
             mixed_precision=fsdp_mp,
@@ -166,13 +189,18 @@ def main(args):
         trainer_args["callbacks"].append(EMACallback(decay=0.99))
 
     trainer = pl.Trainer(**trainer_args)
-    model = Lightning_Model_Wrapper(cfg.model, cfg.dataloader.evaluator, lr=cfg.optimizer.lr,
-                                    max_iter=cfg.train.max_iter, warmup_rate=cfg.scheduler.warmup_length)
+    model = Lightning_Model_Wrapper(
+        cfg.model,
+        cfg.dataloader.evaluator,
+        lr=cfg.optimizer.lr,
+        max_iter=cfg.train.max_iter,
+        warmup_rate=cfg.scheduler.warmup_length,
+    )
     if os.path.exists(cfg.train.init_checkpoint):
-        if cfg.train.init_checkpoint.endswith('.pth'):
+        if cfg.train.init_checkpoint.endswith(".pth"):
             state_dict = torch.load(cfg.train.init_checkpoint, map_location="cpu", weights_only=False)
             model.model.load_state_dict(state_dict["model"], strict=True)
-        elif cfg.train.init_checkpoint.endswith('.ckpt'):
+        elif cfg.train.init_checkpoint.endswith(".ckpt"):
             model = model.__class__.load_from_checkpoint(cfg.train.init_checkpoint)
 
     if args.eval:

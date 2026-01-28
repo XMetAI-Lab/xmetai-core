@@ -33,11 +33,7 @@ class TrainingSampler(Sampler):
     This note is true for all samplers in detectron2.
     """
 
-    def __init__(
-            self,
-            size: int,
-            shuffle: bool = True,
-            seed: Optional[int] = None):
+    def __init__(self, size: int, shuffle: bool = True, seed: Optional[int] = None):
         """
         Args:
             size (int): the total number of data of the underlying dataset to sample from
@@ -184,8 +180,7 @@ class RepeatFactorTrainingSampler(Sampler):
         # it: f(c)
         category_freq = defaultdict(int)
         for dataset_dict in dataset_dicts:  # For each image (without repeats)
-            cat_ids = {ann["category_id"]
-                       for ann in dataset_dict["annotations"]}
+            cat_ids = {ann["category_id"] for ann in dataset_dict["annotations"]}
             for cat_id in cat_ids:
                 category_freq[cat_id] += 1
         num_images = len(dataset_dicts)
@@ -194,19 +189,14 @@ class RepeatFactorTrainingSampler(Sampler):
 
         # 2. For each category c, compute the category-level repeat factor:
         #    r(c) = max(1, sqrt(t / f(c)))
-        category_rep = {
-            cat_id: max(1.0, math.sqrt(repeat_thresh / cat_freq))
-            for cat_id, cat_freq in category_freq.items()
-        }
+        category_rep = {cat_id: max(1.0, math.sqrt(repeat_thresh / cat_freq)) for cat_id, cat_freq in category_freq.items()}
 
         # 3. For each image I, compute the image-level repeat factor:
         #    r(I) = max_{c in I} r(c)
         rep_factors = []
         for dataset_dict in dataset_dicts:
-            cat_ids = {ann["category_id"]
-                       for ann in dataset_dict["annotations"]}
-            rep_factor = max({category_rep[cat_id]
-                             for cat_id in cat_ids}, default=1.0)
+            cat_ids = {ann["category_id"] for ann in dataset_dict["annotations"]}
+            rep_factor = max({category_rep[cat_id] for cat_id in cat_ids}, default=1.0)
             rep_factors.append(rep_factor)
 
         return torch.tensor(rep_factors, dtype=torch.float32)
@@ -269,8 +259,7 @@ class InferenceSampler(Sampler):
         assert size > 0
         self._rank = comm.get_rank()
         self._world_size = comm.get_world_size()
-        self._local_indices = self._get_local_indices(
-            size, self._world_size, self._rank, drop_last=drop_last)
+        self._local_indices = self._get_local_indices(size, self._world_size, self._rank, drop_last=drop_last)
 
     @staticmethod
     def _get_local_indices(total_size, world_size, rank, drop_last):

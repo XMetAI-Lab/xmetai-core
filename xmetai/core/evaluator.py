@@ -99,9 +99,7 @@ class DatasetEvaluators(DatasetEvaluator):
             result = evaluator.evaluate()
             if is_main_process() and result is not None:
                 for k, v in result.items():
-                    assert (
-                        k not in results
-                    ), "Different evaluators produce results with the same key {}".format(k)
+                    assert k not in results, "Different evaluators produce results with the same key {}".format(k)
                     results[k] = v
         return results
 
@@ -154,7 +152,7 @@ def inference_on_dataset(
     with ExitStack() as stack:
         stack.enter_context(torch.no_grad())
         stack.enter_context(inference_context(model))
-        #if hasattr(model, "sharded_state"):
+        # if hasattr(model, "sharded_state"):
         #    logger.info("Using sharded model state for inference with FSDP.")
         #    stack.enter_context(model.sharded_state())
         start_data_time = time.perf_counter()
@@ -208,11 +206,7 @@ def inference_on_dataset(
     total_time = time.perf_counter() - start_time
     total_time_str = str(datetime.timedelta(seconds=total_time))
     # NOTE this format is parsed by grep
-    logger.info(
-        "Total inference time: {} ({:.6f} s / iter per device, on {} devices)".format(
-            total_time_str, total_time / (total - num_warmup), num_devices
-        )
-    )
+    logger.info("Total inference time: {} ({:.6f} s / iter per device, on {} devices)".format(total_time_str, total_time / (total - num_warmup), num_devices))
     total_compute_time_str = str(datetime.timedelta(seconds=int(total_compute_time)))
     logger.info(
         "Total inference pure compute time: {} ({:.6f} s / iter per device, on {} devices)".format(

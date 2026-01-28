@@ -30,7 +30,10 @@ class TCC(DatasetEvaluator):
         for week in range(self.num_weeks):
             for name in self.test_names:
                 self.weekly_data[f"week_{week}_{name}"] = {
-                    "outputs": [], "targets": [], "times": [], "weights": None
+                    "outputs": [],
+                    "targets": [],
+                    "times": [],
+                    "weights": None,
                 }
 
     def process(self, inputs, outputs):
@@ -109,20 +112,24 @@ class TCC(DatasetEvaluator):
                     raw_results[key] = tcc_score.item()
 
                 # Release memory for this week
-                self.weekly_data[week_key] = {"outputs": [], "targets": [], "times": [], "weights": None}
+                self.weekly_data[week_key] = {
+                    "outputs": [],
+                    "targets": [],
+                    "times": [],
+                    "weights": None,
+                }
 
         if not comm.is_main_process():
             return
 
         # Aggregate to weekly mean
-        week_results = {'Week\\TCC': [f"Week{i+1}" for i in range(self.num_weeks)]}
+        week_results = {"Week\\TCC": [f"Week{i+1}" for i in range(self.num_weeks)]}
         for name in self.test_names:
             week_results[name] = []
             for week in range(self.num_weeks):
                 start_t = min_time + week * self.interval
                 end_t = start_t + self.interval
-                vals = [raw_results[self.get_key(name, t)]
-                        for t in self.test_times if start_t <= t < end_t and self.get_key(name, t) in raw_results]
+                vals = [raw_results[self.get_key(name, t)] for t in self.test_times if start_t <= t < end_t and self.get_key(name, t) in raw_results]
                 avg_tcc = sum(vals) / len(vals) if vals else 0.0
                 week_results[name].append(float(avg_tcc))
 

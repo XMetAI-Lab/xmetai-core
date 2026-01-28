@@ -3,7 +3,7 @@ from xmetai.core import (
     CosineParamScheduler,
     WarmupParamScheduler,
     ConstantParamScheduler,
-    CircularParamScheduler
+    CircularParamScheduler,
 )
 
 const_lr = L(ConstantParamScheduler)(value=1)

@@ -5,7 +5,6 @@ Tests windowed attention, rotary embeddings, and mamba blocks.
 
 import pytest
 import torch
-import torch.nn as nn
 
 # Prefer package exports; otherwise import directly from modules.
 try:
@@ -16,6 +15,7 @@ try:
     )
 except Exception:
     from xmetai.layers.swin import SwinLayer
+
     try:
         from xmetai.layers.mamba_vision import MambaVisionLayer
     except Exception:
@@ -32,10 +32,10 @@ class TestSwinLayer:
         """Test SwinLayer output shape matches input."""
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C)
-        
+
         input_size = (16, 16)  # H, W
         window_size = 8
-        
+
         layer = SwinLayer(
             in_chans=C,
             embed_dim=C,
@@ -44,7 +44,7 @@ class TestSwinLayer:
             depth=2,
             num_heads=8,
         )
-        
+
         output = layer(x)
         assert output.shape == x.shape
 
@@ -53,7 +53,7 @@ class TestSwinLayer:
         """Test gradients flow through SwinLayer."""
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C, requires_grad=True)
-        
+
         layer = SwinLayer(
             in_chans=C,
             embed_dim=C,
@@ -62,11 +62,11 @@ class TestSwinLayer:
             depth=1,
             num_heads=8,
         )
-        
+
         output = layer(x)
         loss = output.sum()
         loss.backward()
-        
+
         assert x.grad is not None
         assert x.grad.abs().sum() > 0
 
@@ -77,7 +77,7 @@ class TestSwinLayer:
         x = torch.randn(B, L, C)
         input_size = (16, 16)
         window_size = 8
-        
+
         for attn_type in ["v1", "v2"]:
             layer = SwinLayer(
                 in_chans=C,
@@ -99,10 +99,10 @@ class TestBlock:
     def test_block_standard_attention(self, torch_seed):
         """Test Block with standard attention."""
         from xmetai.layers.mamba_vision import Block
-        
+
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C)
-        
+
         block = Block(
             dim=C,
             num_heads=8,
@@ -110,7 +110,7 @@ class TestBlock:
             transformer_blocks=[0],
             attn_type="standard",
         )
-        
+
         output = block(x)
         assert output.shape == x.shape
 
@@ -118,11 +118,11 @@ class TestBlock:
     def test_block_rotary_attention(self, torch_seed, sample_freqs_cis):
         """Test Block with rotary attention."""
         from xmetai.layers.mamba_vision import Block
-        
+
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C)
         freqs_cos, freqs_sin = sample_freqs_cis
-        
+
         block = Block(
             dim=C,
             num_heads=8,
@@ -130,7 +130,7 @@ class TestBlock:
             transformer_blocks=[0],
             attn_type="rotary",
         )
-        
+
         output = block(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
         assert output.shape == x.shape
 
@@ -138,17 +138,17 @@ class TestBlock:
     def test_block_windowed_rotary_attention(self, torch_seed, sample_freqs_cis):
         """Test Block with windowed rotary attention."""
         from xmetai.layers.mamba_vision import Block
-        
+
         B, H, W, C = 2, 16, 16, 64
         L = H * W
         x = torch.randn(B, L, C)
-        
+
         window_size = (8, 8)
         input_size = (H, W)
         head_dim = C // 8
         seq_len = window_size[0] * window_size[1]
         freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, seq_len)
-        
+
         block = Block(
             dim=C,
             num_heads=8,
@@ -158,7 +158,7 @@ class TestBlock:
             window_size=window_size,
             input_size=input_size,
         )
-        
+
         try:
             output = block(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
             assert output.shape == x.shape
@@ -168,10 +168,10 @@ class TestBlock:
     def test_block_mamba_mixer(self, torch_seed):
         """Test Block with Mamba mixer."""
         from xmetai.layers.mamba_vision import Block
-        
+
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C)
-        
+
         if not torch.cuda.is_available():
             pytest.skip("Mamba mixer path requires CUDA selective_scan")
 
@@ -183,7 +183,7 @@ class TestBlock:
             transformer_blocks=[0],
             attn_type="standard",
         ).cuda()
-        
+
         output = block(x)
         assert output.shape == x.shape
 
@@ -196,14 +196,14 @@ class TestMambaVisionLayer:
         """Test MambaVisionLayer basic forward pass."""
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C)
-        
+
         layer = MambaVisionLayer(
             dim=C,
             depth=4,
             num_heads=8,
             transformer_blocks=[0, 1, 2, 3],
         )
-        
+
         output = layer(x)
         assert output.shape == x.shape
 
@@ -213,7 +213,7 @@ class TestMambaVisionLayer:
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C)
         freqs_cos, freqs_sin = sample_freqs_cis
-        
+
         head_dim = C // 8
         freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, L)
         layer = MambaVisionLayer(
@@ -223,7 +223,7 @@ class TestMambaVisionLayer:
             transformer_blocks=[0, 1, 2, 3],
             attn_type="rotary",
         )
-        
+
         output = layer(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
         assert output.shape == x.shape
 
@@ -233,13 +233,13 @@ class TestMambaVisionLayer:
         B, H, W, C = 2, 16, 16, 64
         L = H * W
         x = torch.randn(B, L, C)
-        
+
         window_size = (8, 8)
         input_size = (H, W)
         head_dim = C // 8
         seq_len = window_size[0] * window_size[1]
         freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, seq_len)
-        
+
         layer = MambaVisionLayer(
             dim=C,
             depth=4,
@@ -249,7 +249,7 @@ class TestMambaVisionLayer:
             window_size=window_size,
             input_size=input_size,
         )
-        
+
         try:
             output = layer(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
             assert output.shape == x.shape
@@ -261,7 +261,7 @@ class TestMambaVisionLayer:
         """Test MambaVisionLayer with mixed attention and mamba blocks."""
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C)
-        
+
         # First 2 blocks are transformer, rest are mamba
         if not torch.cuda.is_available():
             pytest.skip("Mixed mamba blocks require CUDA selective_scan")
@@ -273,7 +273,7 @@ class TestMambaVisionLayer:
             num_heads=8,
             transformer_blocks=[0, 1],
         ).cuda()
-        
+
         output = layer(x)
         assert output.shape == x.shape
 
@@ -282,7 +282,7 @@ class TestMambaVisionLayer:
         """Test gradients flow through entire layer."""
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C, requires_grad=True)
-        
+
         if not torch.cuda.is_available():
             pytest.skip("Mamba mixer requires CUDA selective_scan")
 
@@ -293,7 +293,7 @@ class TestMambaVisionLayer:
             num_heads=8,
             transformer_blocks=[0],
         ).cuda()
-        
+
         x.retain_grad()
         output = layer(x)
         loss = output.sum()
@@ -307,7 +307,7 @@ class TestMambaVisionLayer:
         """Test that identical inputs produce identical outputs."""
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C)
-        
+
         if not torch.cuda.is_available():
             pytest.skip("Mamba mixer requires CUDA selective_scan")
 
@@ -318,12 +318,12 @@ class TestMambaVisionLayer:
             num_heads=8,
             transformer_blocks=[0],
         ).cuda()
-        
+
         layer.eval()
         with torch.no_grad():
             output1 = layer(x.clone())
             output2 = layer(x.clone())
-        
+
         assert torch.allclose(output1, output2, atol=1e-5)
 
     @pytest.mark.gpu
@@ -331,17 +331,17 @@ class TestMambaVisionLayer:
         """Test MambaVisionLayer on GPU."""
         if device.type == "cpu":
             pytest.skip("GPU test")
-        
+
         B, L, C = 2, 256, 64
         x = torch.randn(B, L, C, device=device)
-        
+
         layer = MambaVisionLayer(
             dim=C,
             depth=2,
             num_heads=8,
             transformer_blocks=[0],
         ).to(device)
-        
+
         output = layer(x)
         assert output.device.type == device.type
 

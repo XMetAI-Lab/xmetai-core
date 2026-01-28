@@ -18,17 +18,14 @@ def dump_dataclass(obj: Any):
     Returns:
         dict
     """
-    assert dataclasses.is_dataclass(obj) and not isinstance(
-        obj, type
-    ), "dump_dataclass() requires an instance of a dataclass."
+    assert dataclasses.is_dataclass(obj) and not isinstance(obj, type), "dump_dataclass() requires an instance of a dataclass."
     ret = {"_target_": _convert_target_to_string(type(obj))}
     for f in dataclasses.fields(obj):
         v = getattr(obj, f.name)
         if dataclasses.is_dataclass(v):
             v = dump_dataclass(v)
         if isinstance(v, (list, tuple)):
-            v = [dump_dataclass(x) if dataclasses.is_dataclass(
-                x) else x for x in v]
+            v = [dump_dataclass(x) if dataclasses.is_dataclass(x) else x for x in v]
         ret[f.name] = v
     return ret
 
@@ -57,9 +54,7 @@ def instantiate(cfg):
 
     # If input is a DictConfig backed by dataclasses (i.e. omegaconf's structured config),
     # instantiate it to the actual dataclass.
-    if isinstance(
-            cfg, DictConfig) and dataclasses.is_dataclass(
-            cfg._metadata.object_type):
+    if isinstance(cfg, DictConfig) and dataclasses.is_dataclass(cfg._metadata.object_type):
         return OmegaConf.to_object(cfg)
 
     if isinstance(cfg, abc.Mapping) and "_target_" in cfg:
@@ -79,8 +74,7 @@ def instantiate(cfg):
             except Exception:
                 # target could be anything, so the above could fail
                 cls_name = str(cls)
-        assert callable(
-            cls), f"_target_ {cls} does not define a callable object"
+        assert callable(cls), f"_target_ {cls} does not define a callable object"
         try:
             return cls(**cfg)
         except TypeError:

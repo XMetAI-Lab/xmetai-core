@@ -24,7 +24,7 @@ export NCCL_IB_MERGE=1  # 可选，默认是 1
 
 # start dataset preparation
 echo "------------------------------------"
-echo "check data from s2s" 
+echo "check data from s2s"
 DATA_DIR="/gpu/COMMONDATA/CMME-S2S/ERA5/s2s.1950_2023.c76"
 ls -l ${DATA_DIR}
 echo "------------------------------------"

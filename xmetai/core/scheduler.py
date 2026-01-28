@@ -22,13 +22,14 @@ __all__ = [
 
 class CosineScheduler(object):
     def __init__(
-            self,
-            base_value,
-            final_value,
-            total_iters,
-            warmup_iters=0,
-            start_value=0,
-            freeze_iters=0):
+        self,
+        base_value,
+        final_value,
+        total_iters,
+        warmup_iters=0,
+        start_value=0,
+        freeze_iters=0,
+    ):
         super().__init__()
         self.final_value = final_value
         self.total_iters = total_iters
@@ -37,10 +38,8 @@ class CosineScheduler(object):
         warmup_schedule = np.linspace(start_value, base_value, warmup_iters)
 
         iters = np.arange(total_iters - warmup_iters - freeze_iters)
-        schedule = final_value + 0.5 * \
-            (base_value - final_value) * (1 + np.cos(np.pi * iters / len(iters)))
-        self.schedule = np.concatenate(
-            (freeze_schedule, warmup_schedule, schedule))
+        schedule = final_value + 0.5 * (base_value - final_value) * (1 + np.cos(np.pi * iters / len(iters)))
+        self.schedule = np.concatenate((freeze_schedule, warmup_schedule, schedule))
 
         assert len(self.schedule) == self.total_iters
 
@@ -80,26 +79,23 @@ class CyclicScheduler(torch.optim.lr_scheduler._LRScheduler):
         base_lr,
         anneal_decay=0.01,
         anneal_iters=10,
-        anneal_strategy='cos',
-        last_epoch=-1
+        anneal_strategy="cos",
+        last_epoch=-1,
     ):
         base_lrs = self._format_param(optimizer, base_lr)
 
         for base_lr, group in zip(base_lrs, optimizer.param_groups):
-            group['start_lr'] = base_lr
-            group['end_lr'] = base_lr * anneal_decay
+            group["start_lr"] = base_lr
+            group["end_lr"] = base_lr * anneal_decay
 
-        if anneal_strategy not in ['cos', 'linear']:
-            raise ValueError(
-                "anneal_strategy must by one of 'cos' or 'linear', "
-                "instead got {}".format(anneal_strategy))
-        elif anneal_strategy == 'cos':
+        if anneal_strategy not in ["cos", "linear"]:
+            raise ValueError("anneal_strategy must by one of 'cos' or 'linear', " "instead got {}".format(anneal_strategy))
+        elif anneal_strategy == "cos":
             self.anneal_func = self._cosine_anneal
-        elif anneal_strategy == 'linear':
+        elif anneal_strategy == "linear":
             self.anneal_func = self._linear_anneal
         if not isinstance(anneal_iters, int) or anneal_iters < 0:
-            raise ValueError(
-                "anneal_iters must be equal or greater than 0, got {}".format(anneal_iters))
+            raise ValueError("anneal_iters must be equal or greater than 0, got {}".format(anneal_iters))
         self.anneal_iters = anneal_iters
         super(CyclicScheduler, self).__init__(optimizer, last_epoch)
 
@@ -107,10 +103,11 @@ class CyclicScheduler(torch.optim.lr_scheduler._LRScheduler):
     def _format_param(optimizer, lrs):
         if isinstance(lrs, (list, tuple)):
             if len(lrs) != len(optimizer.param_groups):
-                raise ValueError("lrs must have the same length as "
-                                 "optimizer.param_groups: lrs has {}, "
-                                 "optimizer.param_groups has {}".format(
-                                     len(lrs), len(optimizer.param_groups)))
+                raise ValueError(
+                    "lrs must have the same length as "
+                    "optimizer.param_groups: lrs has {}, "
+                    "optimizer.param_groups has {}".format(len(lrs), len(optimizer.param_groups))
+                )
             return lrs
         else:
             return [lrs] * len(optimizer.param_groups)
@@ -129,8 +126,7 @@ class CyclicScheduler(torch.optim.lr_scheduler._LRScheduler):
         t = max(0, min(1, progress / max(1, self.anneal_iters)))
         alpha = self.anneal_func(t)
 
-        return [group['end_lr'] * alpha + group["start_lr"] * (1 - alpha)
-                for group in self.optimizer.param_groups]
+        return [group["end_lr"] * alpha + group["start_lr"] * (1 - alpha) for group in self.optimizer.param_groups]
 
 
 class ParamScheduler:
@@ -170,10 +166,9 @@ class ConstantParamScheduler(ParamScheduler):
 
     def __call__(self, where: float) -> float:
         if where >= 1.0:
-            raise RuntimeError(
-                f"where in ParamScheduler must be in [0, 1]: got {where}"
-            )
+            raise RuntimeError(f"where in ParamScheduler must be in [0, 1]: got {where}")
         return self._value
+
 
 class CircularParamScheduler(ParamScheduler):
     """
@@ -201,7 +196,8 @@ class CircularParamScheduler(ParamScheduler):
 
     def __call__(self, where: float) -> float:
         period_start = math.floor(where / self._period) * self._period
-        return self._end_value + 0.5 * (self._start_value - self._end_value) * (1 + math.cos(math.pi * (where - period_start) / self._period) )
+        return self._end_value + 0.5 * (self._start_value - self._end_value) * (1 + math.cos(math.pi * (where - period_start) / self._period))
+
 
 class CosineParamScheduler(ParamScheduler):
     """
@@ -227,9 +223,7 @@ class CosineParamScheduler(ParamScheduler):
         self._end_value = end_value
 
     def __call__(self, where: float) -> float:
-        return self._end_value + 0.5 * (self._start_value - self._end_value) * (
-            1 + math.cos(math.pi * where)
-        )
+        return self._end_value + 0.5 * (self._start_value - self._end_value) * (1 + math.cos(math.pi * where))
 
 
 class ExponentialParamScheduler(ParamScheduler):
@@ -256,7 +250,7 @@ class ExponentialParamScheduler(ParamScheduler):
         self._decay = decay
 
     def __call__(self, where: float) -> float:
-        return self._start_value * (self._decay ** where)
+        return self._start_value * (self._decay**where)
 
 
 class LinearParamScheduler(ParamScheduler):
@@ -335,19 +329,13 @@ class MultiStepParamScheduler(ParamScheduler):
             for idx in range(len(values) - 1):
                 milestones.append(step_width * (idx + 1))
         else:
-            if not (isinstance(milestones, Sequence) and len(milestones)
-                    == len(values) - int(num_updates is not None)):
-                raise ValueError(
-                    "MultiStep scheduler requires a list of %d miletones"
-                    % (len(values) - int(num_updates is not None))
-                )
+            if not (isinstance(milestones, Sequence) and len(milestones) == len(values) - int(num_updates is not None)):
+                raise ValueError("MultiStep scheduler requires a list of %d miletones" % (len(values) - int(num_updates is not None)))
 
         if num_updates is None:
             num_updates, milestones = milestones[-1], milestones[:-1]
         if num_updates < len(values):
-            raise ValueError(
-                "Total num_updates must be greater than length of param schedule"
-            )
+            raise ValueError("Total num_updates must be greater than length of param schedule")
 
         self._param_schedule = values
         self._num_updates = num_updates
@@ -357,25 +345,17 @@ class MultiStepParamScheduler(ParamScheduler):
         for milestone in self._milestones:
             # Do not exceed the total number of epochs
             if milestone >= self._num_updates:
-                raise ValueError(
-                    "Milestone must be smaller than total number of updates: "
-                    "num_updates=%d, milestone=%d" %
-                    (self._num_updates, milestone))
+                raise ValueError("Milestone must be smaller than total number of updates: " "num_updates=%d, milestone=%d" % (self._num_updates, milestone))
             # Must be in ascending order
             if start_epoch >= milestone:
-                raise ValueError(
-                    "Milestone must be smaller than start epoch: start_epoch=%d, milestone=%d" %
-                    (start_epoch, milestone))
+                raise ValueError("Milestone must be smaller than start epoch: start_epoch=%d, milestone=%d" % (start_epoch, milestone))
             start_epoch = milestone
 
     def __call__(self, where: float) -> float:
         if where > 1.0:
-            raise RuntimeError(
-                f"where in ParamScheduler must be in [0, 1]: got {where}"
-            )
+            raise RuntimeError(f"where in ParamScheduler must be in [0, 1]: got {where}")
         epoch_num = int((where + self.WHERE_EPSILON) * self._num_updates)
-        return self._param_schedule[bisect.bisect_right(
-            self._milestones, epoch_num)]
+        return self._param_schedule[bisect.bisect_right(self._milestones, epoch_num)]
 
 
 class PolynomialDecayParamScheduler(ParamScheduler):
@@ -431,9 +411,7 @@ class StepParamScheduler(ParamScheduler):
         if num_updates <= 0:
             raise ValueError("Number of updates must be larger than 0")
         if not (isinstance(values, Sequence) and len(values) > 0):
-            raise ValueError(
-                "Step scheduler requires a list of at least one param value"
-            )
+            raise ValueError("Step scheduler requires a list of at least one param value")
         self._param_schedule = values
 
     def __call__(self, where: float) -> float:
@@ -466,12 +444,10 @@ class StepWithFixedGammaParamScheduler(ParamScheduler):
     ) -> None:
         for k in [base_value, gamma]:
             if not (isinstance(k, (int, float)) and k > 0):
-                raise ValueError(
-                    "base_value and gamma must be positive numbers")
+                raise ValueError("base_value and gamma must be positive numbers")
         for k in [num_decays, num_updates]:
             if not (isinstance(k, int) and k > 0):
-                raise ValueError(
-                    "num_decays and num_updates must be positive integers")
+                raise ValueError("num_decays and num_updates must be positive integers")
 
         self.base_value = base_value
         self.num_decays = num_decays
@@ -481,9 +457,7 @@ class StepWithFixedGammaParamScheduler(ParamScheduler):
         for _ in range(num_decays):
             values.append(values[-1] * gamma)
 
-        self._step_param_scheduler = StepParamScheduler(
-            num_updates=num_updates, values=values
-        )
+        self._step_param_scheduler = StepParamScheduler(num_updates=num_updates, values=values)
 
     def __call__(self, where: float) -> float:
         return self._step_param_scheduler(where)
@@ -529,9 +503,7 @@ class CompositeParamScheduler(ParamScheduler):
         if len(schedulers) != len(lengths):
             raise ValueError("Schedulers and lengths must be same length")
         if len(schedulers) == 0:
-            raise ValueError(
-                "There must be at least one scheduler in the composite scheduler"
-            )
+            raise ValueError("There must be at least one scheduler in the composite scheduler")
         if abs(sum(lengths) - 1.0) >= 1e-3:
             raise ValueError("The sum of all values in lengths must be 1")
         if sum(lengths) != 1.0:
@@ -548,9 +520,7 @@ class CompositeParamScheduler(ParamScheduler):
         # Find scheduler corresponding to where
         i = 0
         running_total = self._lengths[i]
-        while (where + self.WHERE_EPSILON) > running_total and i < len(
-            self._schedulers
-        ) - 1:
+        while (where + self.WHERE_EPSILON) > running_total and i < len(self._schedulers) - 1:
             i += 1
             running_total += self._lengths[i]
         scheduler = self._schedulers[i]
@@ -585,8 +555,7 @@ class WarmupParamScheduler(CompositeParamScheduler):
                 training, e.g. 0.01
             warmup_method: one of "linear" or "constant"
         """
-        end_value = scheduler(
-            warmup_length)  # the value to reach when warmup ends
+        end_value = scheduler(warmup_length)  # the value to reach when warmup ends
         start_value = warmup_factor * scheduler(0.0)
         if warmup_method == "constant":
             warmup = ConstantParamScheduler(start_value)
@@ -629,7 +598,7 @@ class WarmupTeachParamScheduler(CompositeParamScheduler):
         super().__init__(
             [warmup, scheduler, teach],
             interval_scaling=["rescaled", "rescaled", "rescaled"],
-            lengths=[warmup_length, 1 - warmup_length - teach_length, teach_length]
+            lengths=[warmup_length, 1 - warmup_length - teach_length, teach_length],
         )
 
 
@@ -684,10 +653,7 @@ class LRMultiplier(torch.optim.lr_scheduler._LRScheduler):
             max_iter: the total number of training iterations
         """
         if not isinstance(multiplier, ParamScheduler):
-            raise ValueError(
-                "_LRMultiplier(multiplier=) must be an instance of fvcore "
-                f"ParamScheduler. Got {multiplier} instead."
-            )
+            raise ValueError("_LRMultiplier(multiplier=) must be an instance of fvcore " f"ParamScheduler. Got {multiplier} instead.")
         self._multiplier = multiplier
         self._max_iter = max_iter
         super().__init__(optimizer, last_epoch=last_iter)

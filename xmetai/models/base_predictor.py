@@ -1,9 +1,10 @@
-'''
+"""
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-11-05 17:31:46
 Description: Base predictor class for weather/climate models.
 Copyright (c) 2025 by XMetAI/douzsheng, All Rights Reserved.
-'''
+"""
+
 import os
 import logging
 import numpy as np
@@ -49,6 +50,7 @@ class BasePredictor(Meta):
         shifts are handled automatically inside ``process_data`` so masks and
         constant fields stay aligned with each sample.
     """
+
     def __init__(
         self,
         in_chans: int,
@@ -60,7 +62,7 @@ class BasePredictor(Meta):
         start_frames: int = 0,
         test_frames: list[int] = [1],
         test_chans: list[int] = [-1],
-        test_names: list[str] = ["tp","t2m"],
+        test_names: list[str] = ["tp", "t2m"],
         test_rect: list[int] = [],
         freq: int = 24,
         accumid: list[int] = [],
@@ -116,10 +118,10 @@ class BasePredictor(Meta):
 
     def get_timestamp(self, input, times, t):
         times = times + pd.Timedelta(hours=t * self.freq)
-        hour = [p.hour/24 for p in times]
+        hour = [p.hour / 24 for p in times]
         hour = np.array(hour, dtype=np.float32)
         hour = input.new_tensor(hour)
-        doy = [min(365, p.day_of_year)/365 for p in times]
+        doy = [min(365, p.day_of_year) / 365 for p in times]
         doy = np.array(doy, dtype=np.float32)
         doy = input.new_tensor(doy)
         step = input.new_full(input.shape[:1], t)
@@ -209,7 +211,7 @@ class BasePredictor(Meta):
     def process_data(self, data):
         # convert inputs to proper dtype and device
         inputs = data["inputs"]
-        input = inputs[:, -self.in_frames:]
+        input = inputs[:, -self.in_frames :]
         input = input.to(dtype=self.dtype, device=self.device, non_blocking=True)
         # convert times to pandas datetime
         times = data["times"]
@@ -254,7 +256,7 @@ class BasePredictor(Meta):
 
     @torch.no_grad()
     def process_output(self, output, target=None):
-        output = self.inv_normalize(output[:, :, :self.out_chans], self.test_chans)
+        output = self.inv_normalize(output[:, :, : self.out_chans], self.test_chans)
         if target is not None:
             target = self.inv_normalize(target, self.test_chans)
             assert output.shape == target.shape
@@ -312,12 +314,12 @@ class BasePredictor(Meta):
                     "lat": np.linspace(90, -90, results["output"].shape[3]),
                     "lon": np.linspace(0, 360, results["output"].shape[4]),
                 },
-                name="data"
+                name="data",
             )
             xr_output.to_netcdf(save_path)
 
             # save target for comparison if available
-            if 'target' in results:
+            if "target" in results:
                 save_path = os.path.join(self.save_dir, f"obs_{ymd_time}.nc")
                 xr_output = xr.DataArray(
                     results["target"].squeeze().cpu().numpy(),
@@ -328,7 +330,7 @@ class BasePredictor(Meta):
                         "lat": np.linspace(90, -90, results["target"].shape[3]),
                         "lon": np.linspace(0, 360, results["target"].shape[4]),
                     },
-                    name="data"
+                    name="data",
                 )
                 xr_output.to_netcdf(save_path)
         return results

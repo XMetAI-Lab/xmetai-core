@@ -1,14 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-'''
+"""
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-09-09 12:53:45
 Description: Inference config for s2s model with onnx.
-Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
-'''
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
+"""
+
 import logging
 import numpy as np
-from s2s_base import train, optimizer, scheduler, dataloader
+from s2s_base import train, dataloader
 from s2s_base import output_dir, buffers
 from s2s_base import in_chans, out_chans, in_frames, test_chans, test_names, freq
 from s2s_base import logid, maskid, accumid
@@ -31,10 +32,10 @@ train.use_fsdp2 = False  # Disable FSDP2 for ONNX inference
 test_frames = np.arange(1, 15).tolist()  # predict 1-14 days ahead
 step_range = [max(test_frames)]
 members = 8  # for ensemble prediction inference mse calculation.
-zero_accum = True # set accumid to zero every time. For CMA env, some variables are not available in some time steps.
+zero_accum = True  # set accumid to zero every time. For CMA env, some variables are not available in some time steps.
 model = L(MODELS.get("OnnxInferModel"))(
     onnx_path="s2s.onnx",
-    save_dir=output_dir+"/pred/",
+    save_dir=output_dir + "/pred/",
     in_chans=in_chans,
     out_chans=out_chans,
     in_frames=in_frames,

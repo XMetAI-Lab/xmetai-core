@@ -4,12 +4,12 @@ from typing import Optional
 import pandas as pd
 
 
-def convert_time(time, zone='utc2bj', fmt='%Y%m%d%H'):
+def convert_time(time, zone="utc2bj", fmt="%Y%m%d%H"):
     time = pd.to_datetime(str(time), format=fmt)
 
-    if zone == 'utc2bj':
+    if zone == "utc2bj":
         time = time + pd.Timedelta(hours=8)
-    if zone == 'bj2utc':
+    if zone == "bj2utc":
         time = time - pd.Timedelta(hours=8)
 
     return time.strftime(fmt)

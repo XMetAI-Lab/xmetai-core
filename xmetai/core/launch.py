@@ -27,7 +27,7 @@ def launch(
     # Should be num_processes_per_machine, but kept for compatibility.
     num_gpus_per_machine,
     num_machines=1,
-    machine_rank=0, # useless with torchrun
+    machine_rank=0,  # useless with torchrun
     dist_url=None,
     args=(),
     timeout=DEFAULT_TIMEOUT,
@@ -55,9 +55,7 @@ def launch(
         port = _find_free_port()
         dist_url = f"tcp://127.0.0.1:{port}"
     if num_machines > 1 and dist_url.startswith("file://"):
-        logger.warning(
-            "file:// is not a reliable init_method in multi-machine jobs. Prefer tcp://"
-        )
+        logger.warning("file:// is not a reliable init_method in multi-machine jobs. Prefer tcp://")
     has_gpu = torch.cuda.is_available()
     if has_gpu:
         assert num_gpus_per_machine <= torch.cuda.device_count()
@@ -73,7 +71,7 @@ def launch(
     try:
         dist.init_process_group(
             backend="NCCL" if has_gpu else "GLOO",
-            #init_method=dist_url,
+            # init_method=dist_url,
             world_size=world_size,
             rank=global_rank,
             timeout=timeout,

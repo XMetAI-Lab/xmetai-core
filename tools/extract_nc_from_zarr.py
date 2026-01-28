@@ -22,28 +22,32 @@ import pandas as pd
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Extract data from Zarr dataset, process it, and save as NetCDF."
+    parser = argparse.ArgumentParser(description="Extract data from Zarr dataset, process it, and save as NetCDF.")
+    parser.add_argument(
+        "--zarr_path",
+        "-z",
+        default="/home/douzsh/workspace/data/s2s.1950-2024.c76/",
+        help="Path to input Zarr dataset",
     )
     parser.add_argument(
-        "--zarr_path", "-z", default="/home/douzsh/workspace/data/s2s.1950-2024.c76/",
-        help="Path to input Zarr dataset"
+        "--save_path",
+        "-s",
+        default="/workspace/tmp/",
+        help="Path to save the output NetCDF file",
+    )
+    parser.add_argument("--start_date", "-t", required=True, help="Start date in YYYY-MM-DD format")
+    parser.add_argument(
+        "--time_interval",
+        "-i",
+        type=int,
+        default=42,
+        help="Number of days to extract after start date",
     )
     parser.add_argument(
-        "--save_path", "-s", default="/workspace/tmp/",
-        help="Path to save the output NetCDF file"
-    )
-    parser.add_argument(
-        "--start_date", "-t", required=True,
-        help="Start date in YYYY-MM-DD format"
-    )
-    parser.add_argument(
-        "--time_interval", '-i', type=int, default=42,
-        help="Number of days to extract after start date"
-    )
-    parser.add_argument(
-        "--levels", "-l", default="z500,t2m,tp,msl",
-        help="Comma-separated list of level names to extract (e.g., t2m,tp,msl)"
+        "--levels",
+        "-l",
+        default="z500,t2m,tp,msl",
+        help="Comma-separated list of level names to extract (e.g., t2m,tp,msl)",
     )
     return parser.parse_args()
 
@@ -67,7 +71,7 @@ def load_zarr_data(zarr_path, levels_list, stats):
         sys.exit(1)
 
     # Check if dataset has the expected structure
-    if 'data' not in ds.data_vars:
+    if "data" not in ds.data_vars:
         print("Warning: Expected 'data' variable not found in the dataset.")
         print(f"Available variables: {list(ds.data_vars)}")
         sys.exit(1)
@@ -136,20 +140,17 @@ def load_stats(zarr_path):
             std_ds = xr.open_dataarray(std_path)
             # update channel coords to level
             if "channel" in mean_ds.coords:
-                mean_ds = mean_ds.rename({'channel': 'level'})
+                mean_ds = mean_ds.rename({"channel": "level"})
             if "channel" in std_ds.coords:
-                std_ds = std_ds.rename({'channel': 'level'})
-            stats = {
-                'mean': mean_ds,
-                'std': std_ds
-            }
+                std_ds = std_ds.rename({"channel": "level"})
+            stats = {"mean": mean_ds, "std": std_ds}
         elif os.path.exists(os.path.join(zarr_path, "mean.npy")) and os.path.exists(os.path.join(zarr_path, "std.npy")):
             print(f"Loaded statistics from {zarr_path}")
             mean = np.load(os.path.join(zarr_path, "mean.npy")).reshape((-1, 1, 1))
             std = np.load(os.path.join(zarr_path, "std.npy")).reshape((-1, 1, 1))
             stats = {
-                'mean': xr.DataArray(mean, dims=['level', "lat", "lon"]),
-                'std': xr.DataArray(std, dims=['level', "lat", "lon"])
+                "mean": xr.DataArray(mean, dims=["level", "lat", "lon"]),
+                "std": xr.DataArray(std, dims=["level", "lat", "lon"]),
             }
         else:
             print(f"Error: Statistics files not found at {mean_path} or {std_path}")
@@ -218,7 +219,7 @@ def inverse_normalize(ds, stats, levels_list):
     result = ds.copy()
 
     # Get level indices for the selected levels
-    level_coords = ds.coords.get('level', None)
+    level_coords = ds.coords.get("level", None)
     if level_coords is None:
         print("Error: Cannot apply inverse normalization, no level coordinate found")
         return result
@@ -226,7 +227,7 @@ def inverse_normalize(ds, stats, levels_list):
     level_values = level_coords.values.tolist()
 
     # Apply inverse normalization
-    if 'data' in ds.data_vars:
+    if "data" in ds.data_vars:
         print("Applying inverse normalization to data")
 
         # Create a new array for normalized data
@@ -237,27 +238,27 @@ def inverse_normalize(ds, stats, levels_list):
             # Find the corresponding index in the original level list
             try:
                 level_idx = ds.level.values.tolist().index(level)
-                mean_val = stats['mean'].sel(level=level).values
-                std_val = stats['std'].sel(level=level).values
+                mean_val = stats["mean"].sel(level=level).values
+                std_val = stats["std"].sel(level=level).values
 
                 print(f"Applying inverse normalization to level '{level}:{level_idx}' with mean={mean_val}, std={std_val}")
 
                 # Apply inverse normalization: (normalized * std) + mean
-                denorm_data.loc[{'level': level}] = (result.data.sel(level=level) * std_val) + mean_val
+                denorm_data.loc[{"level": level}] = (result.data.sel(level=level) * std_val) + mean_val
             except (ValueError, KeyError, IndexError) as e:
                 print(f"Warning: Error normalizing level '{level}': {e}")
 
         # Assign denormalized data back to result
-        result['data'] = denorm_data
+        result["data"] = denorm_data
     else:
         # Handle case where each level might be its own variable
         for var in result.data_vars:
             if var in levels_list:
                 try:
                     level_idx = levels_list.index(var)
-                    if level_idx < len(stats['mean']) and level_idx < len(stats['std']):
-                        mean_val = stats['mean'][level_idx].item()
-                        std_val = stats['std'][level_idx].item()
+                    if level_idx < len(stats["mean"]) and level_idx < len(stats["std"]):
+                        mean_val = stats["mean"][level_idx].item()
+                        std_val = stats["std"][level_idx].item()
                         print(f"Applying inverse normalization to {var} with mean={mean_val:.6f}, std={std_val:.6f}")
                         result[var] = (result[var] * std_val) + mean_val
                     else:
@@ -284,27 +285,27 @@ def process_tp_data(ds, levels_list):
     result = ds.copy()
 
     # Check if 'tp' is in the levels list
-    if 'tp' in levels_list:
+    if "tp" in levels_list:
         # If data is structured as a single data variable with level dimension
-        if 'data' in ds.data_vars and 'level' in ds.dims:
+        if "data" in ds.data_vars and "level" in ds.dims:
             level_values = ds.level.values.tolist()
-            if 'tp' in level_values:
+            if "tp" in level_values:
                 print("Applying exp() to tp level in data variable (reverting log normalization)")
                 # Get the tp index in the level dimension
-                tp_index = level_values.index('tp')
+                _tp_index = level_values.index("tp")
 
                 # Create a new array for processed data
                 processed_data = result.data.copy(deep=True)
 
                 # Apply exp() to the tp level
-                processed_data.loc[{'level': 'tp'}] = np.exp(result.data.sel(level='tp'))
+                processed_data.loc[{"level": "tp"}] = np.exp(result.data.sel(level="tp"))
 
                 # Assign processed data back to result
-                result['data'] = processed_data
+                result["data"] = processed_data
         # If tp is its own variable
-        elif 'tp' in ds.data_vars:
+        elif "tp" in ds.data_vars:
             print("Applying exp() to tp variable (reverting log normalization)")
-            result['tp'] = np.exp(result['tp'])
+            result["tp"] = np.exp(result["tp"])
 
     return result
 
@@ -338,19 +339,19 @@ def prepare_netcdf_compatible_dataset(ds):
     ds_compat = ds.copy()
 
     # Check if level coordinate exists and contains strings
-    if 'level' in ds_compat.coords and np.issubdtype(ds_compat.level.dtype, np.dtype('O')):
+    if "level" in ds_compat.coords and np.issubdtype(ds_compat.level.dtype, np.dtype("O")):
         level_values = ds_compat.level.values
 
         # Convert string levels to fixed-length character arrays
         try:
             # Try to convert to numeric first if possible
             numeric_levels = pd.to_numeric(level_values)
-            ds_compat.coords['level'] = ('level', numeric_levels)
+            ds_compat.coords["level"] = ("level", numeric_levels)
         except (ValueError, TypeError):
             # If conversion to numeric fails, use character arrays
             max_len = max(len(str(x)) for x in level_values)
-            char_array = np.array([str(x).ljust(max_len) for x in level_values], dtype=f'S{max_len}')
-            ds_compat.coords['level'] = ('level', char_array)
+            char_array = np.array([str(x).ljust(max_len) for x in level_values], dtype=f"S{max_len}")
+            ds_compat.coords["level"] = ("level", char_array)
 
     return ds_compat
 
@@ -363,7 +364,7 @@ def main():
     if len(args.levels.strip()) == 0:
         levels_list = []
     else:
-        levels_list = args.levels.split(',')
+        levels_list = args.levels.split(",")
 
     print(f"Extracting data from: {args.zarr_path}")
     print(f"Start date: {args.start_date}, Time interval: {args.time_interval} days")
@@ -390,7 +391,7 @@ def main():
     ds_denormalized = inverse_normalize(ds_float32, stats, levels_list)
 
     # Process tp data if present
-    if 'tp' in levels_list:
+    if "tp" in levels_list:
         print("Processing total precipitation (tp) data...")
         ds_processed = process_tp_data(ds_denormalized, levels_list)
     else:
@@ -410,12 +411,8 @@ def main():
             os.makedirs(save_dir)
 
         # Save with compression
-        encoding = {var: {'zlib': True, 'complevel': 4} for var in ds_netcdf_compatible.data_vars}
-        ds_netcdf_compatible.to_netcdf(
-            args.save_path,
-            encoding=encoding,
-            format='NETCDF4'
-        )
+        encoding = {var: {"zlib": True, "complevel": 4} for var in ds_netcdf_compatible.data_vars}
+        ds_netcdf_compatible.to_netcdf(args.save_path, encoding=encoding, format="NETCDF4")
         print("Export completed successfully")
     except Exception as e:
         print(f"Error saving NetCDF file: {e}")

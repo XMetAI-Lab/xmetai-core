@@ -1,9 +1,10 @@
-'''
+"""
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-08-18 20:06:02
 Description: Data utility functions for weather datasets.
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
-'''
+"""
+
 import pandas as pd
 import numpy as np
 import os
@@ -13,7 +14,13 @@ import torch
 import xarray as xr
 from xmetai.config import instantiate
 
-__all__ = ["make_seq", "make_seq_inference", "make_onnx", "get_data_info", "get_cra_data_info"]
+__all__ = [
+    "make_seq",
+    "make_seq_inference",
+    "make_onnx",
+    "get_data_info",
+    "get_cra_data_info",
+]
 
 
 def make_seq(times, total_frames, freq=1, interval=1):
@@ -48,18 +55,110 @@ def make_seq_inference(times, total_frames, freq=24):
     """
     # Define the specific days in the year for inference
     specific_dates = [
-        '01-03', '01-06', '01-10', '01-13', '01-17', '01-20', '01-24', '01-27', '01-31',
-        '02-03', '02-07', '02-10', '02-14', '02-17', '02-21', '02-24', '02-28',
-        '03-03', '03-07', '03-10', '03-14', '03-17', '03-21', '03-24', '03-28', '03-31',
-        '04-04', '04-07', '04-11', '04-14', '04-18', '04-21', '04-25', '04-28',
-        '05-02', '05-05', '05-09', '05-12', '05-16', '05-19', '05-23', '05-26', '05-30',
-        '06-02', '06-06', '06-09', '06-13', '06-16', '06-20', '06-23', '06-27', '06-30',
-        '07-04', '07-07', '07-11', '07-14', '07-18', '07-21', '07-25', '07-28',
-        '08-01', '08-04', '08-08', '08-11', '08-15', '08-18', '08-22', '08-25', '08-29',
-        '09-01', '09-05', '09-08', '09-12', '09-15', '09-19', '09-22', '09-26', '09-29',
-        '10-03', '10-06', '10-10', '10-13', '10-17', '10-20', '10-24', '10-27', '10-31',
-        '11-03', '11-07', '11-10', '11-14', '11-17', '11-21', '11-24', '11-28',
-        '12-01', '12-05', '12-08', '12-12', '12-15', '12-19', '12-22', '12-26', '12-29'
+        "01-03",
+        "01-06",
+        "01-10",
+        "01-13",
+        "01-17",
+        "01-20",
+        "01-24",
+        "01-27",
+        "01-31",
+        "02-03",
+        "02-07",
+        "02-10",
+        "02-14",
+        "02-17",
+        "02-21",
+        "02-24",
+        "02-28",
+        "03-03",
+        "03-07",
+        "03-10",
+        "03-14",
+        "03-17",
+        "03-21",
+        "03-24",
+        "03-28",
+        "03-31",
+        "04-04",
+        "04-07",
+        "04-11",
+        "04-14",
+        "04-18",
+        "04-21",
+        "04-25",
+        "04-28",
+        "05-02",
+        "05-05",
+        "05-09",
+        "05-12",
+        "05-16",
+        "05-19",
+        "05-23",
+        "05-26",
+        "05-30",
+        "06-02",
+        "06-06",
+        "06-09",
+        "06-13",
+        "06-16",
+        "06-20",
+        "06-23",
+        "06-27",
+        "06-30",
+        "07-04",
+        "07-07",
+        "07-11",
+        "07-14",
+        "07-18",
+        "07-21",
+        "07-25",
+        "07-28",
+        "08-01",
+        "08-04",
+        "08-08",
+        "08-11",
+        "08-15",
+        "08-18",
+        "08-22",
+        "08-25",
+        "08-29",
+        "09-01",
+        "09-05",
+        "09-08",
+        "09-12",
+        "09-15",
+        "09-19",
+        "09-22",
+        "09-26",
+        "09-29",
+        "10-03",
+        "10-06",
+        "10-10",
+        "10-13",
+        "10-17",
+        "10-20",
+        "10-24",
+        "10-27",
+        "10-31",
+        "11-03",
+        "11-07",
+        "11-10",
+        "11-14",
+        "11-17",
+        "11-21",
+        "11-24",
+        "11-28",
+        "12-01",
+        "12-05",
+        "12-08",
+        "12-12",
+        "12-15",
+        "12-19",
+        "12-22",
+        "12-26",
+        "12-29",
     ]
 
     inds = []
@@ -68,7 +167,7 @@ def make_seq_inference(times, total_frames, freq=24):
     for i in range(len(times) - total_frames):
         # Extract the date parts from the current timestamp
         current_date = pd.Timestamp(times[i + 1])
-        month_day = current_date.strftime('%m-%d')
+        month_day = current_date.strftime("%m-%d")
         hour = current_date.hour
 
         # If the current date is one of our specific dates, check if we have enough consecutive frames
@@ -110,7 +209,7 @@ def make_input(
 ):
     # fetch one batch of data
     batch = next(iter(dataloader))
-    input_data = batch['inputs']  # (b, t, c, h, w)
+    input_data = batch["inputs"]  # (b, t, c, h, w)
     print(f"input_data: {input_data.shape}, {input_data.min()} ~ {input_data.max()}")
 
     if mean is not None and std is not None:
@@ -169,17 +268,63 @@ def make_onnx(
 
 def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
     LEVELS_13 = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
-    LEVELS_37 = [1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175, 200, 225, 250, 300, 350,
-                 400, 450, 500, 550, 600, 650, 700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000]
+    _LEVELS_37 = [
+        1,
+        2,
+        3,
+        5,
+        7,
+        10,
+        20,
+        30,
+        50,
+        70,
+        100,
+        125,
+        150,
+        175,
+        200,
+        225,
+        250,
+        300,
+        350,
+        400,
+        450,
+        500,
+        550,
+        600,
+        650,
+        700,
+        750,
+        775,
+        800,
+        825,
+        850,
+        875,
+        900,
+        925,
+        950,
+        975,
+        1000,
+    ]
     # z: geopotential
     # t: temperature
     # u: zonal wind
     # v: meridional wind
     # q: specific humidity
-    pl_names = ['z', 't', 'u', 'v', 'q']  # with 5 upper-air atmospheric variables
-    accum_name = ['ssr', 'ssrd', 'fdir', 'ttr', 'tp']
+    pl_names = ["z", "t", "u", "v", "q"]  # with 5 upper-air atmospheric variables
+    accum_name = ["ssr", "ssrd", "fdir", "ttr", "tp"]
     ocean_name = ["sst", "mdts", "mdww", "mpts", "mpww", "shts", "shww"]
-    land_name = ["stl1", "stl2", "stl3", "stl4", "swvl1", "swvl2", "swvl3", "swvl4"]  # soil temperature and water
+    land_name = [
+        "stl1",
+        "stl2",
+        "stl3",
+        "stl4",
+        "swvl1",
+        "swvl2",
+        "swvl3",
+        "swvl4",
+    ]  # soil temperature and water
 
     logid = [in_names.index(n) for n in ["tp"] if n in in_names]
     accumid = [in_names.index(n) for n in accum_name if n in in_names]
@@ -217,7 +362,7 @@ def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
                 continue
             if k == "weight":
                 v = v.reshape(1, -1, 1)
-            elif k in ['mean', 'std']:
+            elif k in ["mean", "std"]:
                 v = v.reshape(-1, 1, 1)
                 if k not in buffers:
                     buffers[k] = v
@@ -230,7 +375,7 @@ def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
 
     # update mean/std for ignored variables.
     if len(ignore_names) > 0:
-        for k in ['mean', 'std']:
+        for k in ["mean", "std"]:
             if k in buffers:
                 buffers[k] = buffers[k][~np.isin(ori_in_names, ignore_names)]
 
@@ -256,7 +401,7 @@ def get_data_info(data_dirs, ignore_names=[]):
 
 def get_cra_data_info(data_dir, in_names=["tp"]):
     # get all grib2 files and sort by datetime(*yyyymmddhh.grib2)
-    pattern = re.compile(r'(\d{10})\.grib2$')
+    pattern = re.compile(r"(\d{10})\.grib2$")
     file_list = glob.glob(os.path.join(data_dir, "**", "*.grib2"), recursive=True)
     file_map = {}
     for file_path in file_list:

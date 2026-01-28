@@ -1,0 +1,64 @@
+# pyproject.toml
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xmetai-core"
+version = "0.1.0"
+description = "气象人工智能训练与推理基础框架"
+authors = [
+  { name = "XMetAI Lab", email = "contact@xmetai.org" }
+]
+readme = "README.md"
+license = { file = "LICENSE" }
+keywords = ["meteorology", "AI", "deep learning", "weather", "climate"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent"
+]
+requires-python = ">=3.8"
+
+dependencies = [
+  "torch>=2.0",
+  "xarray",
+  "numpy",
+  "hydra-core",
+  "pytest"
+]
+
+[project.optional-dependencies]
+dev = [
+  "black",
+  "ruff",
+  "pytest-cov",
+  "mypy",
+  "pre-commit",
+  "build"
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["xmetai*"]
+
+[tool.black]
+line-length = 160
+
+[tool.ruff]
+line-length = 160
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90"]
+ignore = ["C901"]
+per-file-ignores = {"**/__init__.py" = ["F401", "F403"], "tests/**" = ["F401", "F403", "F841"], "xmetai/builder.py" = ["E402", "F403"]}
+
+[tool.mypy]
+ignore_missing_imports = true
+warn_unused_configs = true
+strict_optional = true
+check_untyped_defs = true
+exclude = "(^tools/train\\.py$)"

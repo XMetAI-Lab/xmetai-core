@@ -54,18 +54,18 @@ function setup_environment() {
     # Create temporary config file
     CONFIG_FILE_TMP="${ROOT_DIR}/configs/tmp_config.py"
     cp "${CONFIG_FILE}" "${CONFIG_FILE_TMP}"
-    
+
     # Format depth list for directory naming
     export DEPTH_LIST="${DEPTH_LIST}"
     export LR="${LR}"
     local temp_list=$(echo "${DEPTH_LIST}" | sed 's/,/_/g')  # replace , with _ in depth_list
-    
+
     # Extract config file name without path and extension
     local config_file_name=$(basename "${CONFIG_FILE}" .py)
-    
+
     # Set output directories
     export OUTPUT_DIR="${ROOT_DIR}/output/${temp_list}-${config_file_name}-${LR}/"
-    
+
     # Set data directory and base config based on model type
     data_linux="/workspace/data/"
     data_mac="/Users/douzsh/Desktop/workspace/data/"
@@ -121,7 +121,7 @@ function setup_environment() {
         echo "Error: Unsupported model type in config file name: ${config_file_name}"
         exit 1
     fi
-    
+
     # Set logging level based on verbose mode
     if [[ $VERBOSE_MODE -eq 1 ]]; then
         sed -i "s/logging.INFO/logging.DEBUG/g" "${CONFIG_FILE_TMP}"
@@ -130,7 +130,7 @@ function setup_environment() {
         sed -i "s/logging.DEBUG/logging.INFO/g" "${CONFIG_FILE_TMP}"
         sed -i "s/logging.DEBUG/logging.INFO/g" "${BASE_CONFIG}"
     fi
-    
+
     # Handle save mode
     if [[ $SAVE_MODE -eq 1 ]]; then
         echo "Saving member average results to ${OUTPUT_DIR}"
@@ -139,7 +139,7 @@ function setup_environment() {
         sed -i "/save_dir/d" "${CONFIG_FILE_TMP}"
         echo "Disable saving results."
     fi
-    
+
     # Update batch size based on GPU count
     echo "Update total_batch_size to $((NNODES * BATCH_PER_GPU * NUM_GPUS)) with ${BASE_CONFIG}."
     sed -i "s/^total_batch_size.*/total_batch_size = $((NNODES * BATCH_PER_GPU * NUM_GPUS))/g" "${BASE_CONFIG}"

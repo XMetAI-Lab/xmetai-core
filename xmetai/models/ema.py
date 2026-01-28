@@ -1,17 +1,18 @@
-'''
+"""
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-07-14 17:32:55
 Description: EMA (Exponential Moving Average) for model parameters.
-Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved. 
-'''
+Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
+"""
+
 import logging
 import contextlib
 import torch
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import fully_shard
 
 __all__ = ["EMA"]
+
 
 def is_model_fsdp(model: torch.nn.Module) -> bool:
     if isinstance(model, FSDP):
@@ -21,11 +22,13 @@ def is_model_fsdp(model: torch.nn.Module) -> bool:
             return True
     return False
 
+
 def _get_fsdp_context(model):
     if is_model_fsdp(model):
         return FSDP.summon_full_params(model)
     else:
         return contextlib.nullcontext()
+
 
 class EMA(nn.Module):
     def __init__(self, model, decay=0.9999):
@@ -68,7 +71,7 @@ class EMA(nn.Module):
             for name, param in model.named_parameters():
                 if name in self.ema_params:
                     full_param = param.clone()
-                    self.ema_params[name].mul_(decay).add_(full_param, alpha=(1. - decay))
+                    self.ema_params[name].mul_(decay).add_(full_param, alpha=(1.0 - decay))
 
     @torch.no_grad()
     def reverse(self, model: torch.nn.Module):
