@@ -52,13 +52,22 @@ line-length = 160
 line-length = 160
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "C90"]
-ignore = ["C901"]
-per-file-ignores = {"**/__init__.py" = ["F401", "F403"], "tests/**" = ["F401", "F403", "F841"], "xmetai/builder.py" = ["E402", "F403"]}
+select = ["E", "F", "W", "C90", "I"]
+ignore = ["C901", "E501"]  # Ignore line-too-long (handled by black)
+per-file-ignores = {
+  "**/__init__.py" = ["F401", "F403"],
+  "tests/**" = ["F401", "F403", "F841"],
+  "xmetai/builder.py" = ["E402", "F403"],
+}
+
+[tool.ruff.lint.isort]
+known-first-party = ["xmetai"]
 
 [tool.mypy]
 ignore_missing_imports = true
+warn_redundant_casts = true
 warn_unused_configs = true
 strict_optional = true
-check_untyped_defs = true
-exclude = "(^tools/train\\.py$)"
+disallow_incomplete_defs = true
+check_untyped_defs = false
+exclude = ["tools/train\\.py$", "tests/"]

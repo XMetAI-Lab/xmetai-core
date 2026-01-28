@@ -1,5 +1,5 @@
 # Requirements for project
-# Python 3.11 with PyTorch 2.7+
+# Python 3.8 with PyTorch 2.7+
 
 torch>=2.7.0
 torchvision>=0.19.0
@@ -13,6 +13,9 @@ tqdm>=4.65.0
 pandas>=1.5.0
 omegaconf>=2.3.0
 yacs>=0.1.8
+tabulate>=0.9.0
+termcolor>=2.0.0
+cloudpickle>=2.0.0
 
 # PyTorch Lightning
 pytorch-lightning>=2.0.0
