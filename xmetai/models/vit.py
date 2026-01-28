@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.builder import MODELS
-from xmetai.layers import CubeEmbed, HAS_MAMBA, TimestepEmbed
+from xmetai.layers import HAS_MAMBA, CubeEmbed, TimestepEmbed
 from xmetai.loss import charbonnier_loss
 
 if HAS_MAMBA:
@@ -67,10 +67,7 @@ class ViTModel(BasePredictor):
         # 定义一个标准 TransformerEncoderLayer
         if layer_type.lower() == "mamba":
             if not HAS_MAMBA:
-                raise ImportError(
-                    "MambaVisionLayer requires mamba-ssm. "
-                    "Install it with: pip install '.[gpu]' or pip install mamba-ssm"
-                )
+                raise ImportError("MambaVisionLayer requires mamba-ssm. " "Install it with: pip install '.[gpu]' or pip install mamba-ssm")
             self.logger.info("Using Mamba style transformer blocks.")
             for _, depth in enumerate(depths):
                 block = MambaVisionLayer(

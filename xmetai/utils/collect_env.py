@@ -1,5 +1,4 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
-import importlib
 import os
 import re
 import subprocess
@@ -9,7 +8,6 @@ from collections import defaultdict
 import numpy as np
 import PIL
 import torch
-import torchvision
 from tabulate import tabulate
 
 __all__ = ["collect_env_info"]
@@ -62,7 +60,6 @@ def collect_env_info():
     has_rocm = False
     if (getattr(torch.version, "hip", None) is not None) and (ROCM_HOME is not None):
         has_rocm = True
-    has_cuda = has_gpu and (not has_rocm)
 
     data = []
     # check-template.yml depends on it
@@ -98,23 +95,6 @@ def collect_env_info():
             if cuda_arch_list:
                 data.append(("TORCH_CUDA_ARCH_LIST", cuda_arch_list))
     data.append(("Pillow", PIL.__version__))
-
-    try:
-        data.append(
-            (
-                "torchvision",
-                str(torchvision.__version__) + " @" + os.path.dirname(torchvision.__file__),
-            )
-        )
-        if has_cuda:
-            try:
-                torchvision_C = importlib.util.find_spec("torchvision._C").origin
-                msg = detect_compute_compatibility(CUDA_HOME, torchvision_C)
-                data.append(("torchvision arch flags", msg))
-            except (ImportError, AttributeError):
-                data.append(("torchvision._C", "Not found"))
-    except AttributeError:
-        data.append(("torchvision", "unknown"))
 
     try:
         import fvcore

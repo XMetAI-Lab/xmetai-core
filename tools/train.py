@@ -34,6 +34,7 @@ try:
         launch,
     )
     from xmetai.layers import HAS_MAMBA, SwinLayer
+
     if HAS_MAMBA:
         from xmetai.layers import MambaVisionLayer
     from xmetai.utils import comm

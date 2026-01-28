@@ -20,6 +20,7 @@ except Exception:
 
     try:
         from xmetai.layers.mamba_vision import MambaVisionLayer
+
         HAS_MAMBA = True
     except Exception:
         # leave MambaVisionLayer undefined; tests that require it should handle ImportError/skip
@@ -197,6 +198,7 @@ class TestBlock:
 
 class TestMambaVisionLayer:
     """Test complete MambaVisionLayer with depth > 1."""
+
     @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
     @pytest.mark.gpu
     def test_mamba_vision_layer_basic(self, torch_seed):

@@ -14,6 +14,7 @@ from .wrappers import *
 HAS_MAMBA = False
 try:
     from .mamba_vision import *
+
     HAS_MAMBA = True
 except ImportError:
     pass  # Silently skip if mamba-ssm not installed

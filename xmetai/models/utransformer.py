@@ -7,8 +7,8 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.layers import (
-    CubeEmbed,
     HAS_MAMBA,
+    CubeEmbed,
     LayerNorm,
     MCDropout,
     SwinLayer,
@@ -150,10 +150,7 @@ class UTransformer(nn.Module):
         for i in range(self.num_layers):
             if layer_type.lower().find("mamba") > -1:
                 if not HAS_MAMBA:
-                    raise ImportError(
-                        "MambaVisionLayer requires mamba-ssm. "
-                        "Install it with: pip install '.[gpu]' or pip install mamba-ssm"
-                    )
+                    raise ImportError("MambaVisionLayer requires mamba-ssm. " "Install it with: pip install '.[gpu]' or pip install mamba-ssm")
                 with_embedding = True if layer_type.lower().find("embed") > -1 else False
                 self.logger.info(f"Using Mamba style transformer blocks with embedding={with_embedding}.")
                 layer = MambaVisionLayer(
