@@ -33,7 +33,9 @@ try:
         inference_on_dataset,
         launch,
     )
-    from xmetai.layers import MambaVisionLayer, SwinLayer
+    from xmetai.layers import HAS_MAMBA, SwinLayer
+    if HAS_MAMBA:
+        from xmetai.layers import MambaVisionLayer
     from xmetai.utils import comm
 except ImportError as e:
     print(f"ImportError: {e}. You can do this by running `pip install -e .` in the root directory.")
@@ -48,8 +50,10 @@ def build_model(cfg):
         logger.info("Model parameters: {:.3f}M".format(model.params() / 1e6))
     model.freeze(cfg.train.freeze)
     model.to(cfg.train.device_type)
-    mods = (SwinLayer, torch.nn.TransformerEncoderLayer, MambaVisionLayer)
-    cfg.train.fsdp.mods = mods
+    mods = [SwinLayer, torch.nn.TransformerEncoderLayer]
+    if HAS_MAMBA:
+        mods.append(MambaVisionLayer)
+    cfg.train.fsdp.mods = tuple(mods)
     # Apply activation checkpointing
     if cfg.train.activation_checkpointing:
 

@@ -8,13 +8,16 @@ from einops import rearrange
 
 from xmetai.layers import (
     CubeEmbed,
+    HAS_MAMBA,
     LayerNorm,
-    MambaVisionLayer,
     MCDropout,
     SwinLayer,
     TimestepEmbed,
     precompute_freqs_cis,
 )
+
+if HAS_MAMBA:
+    from xmetai.layers import MambaVisionLayer
 
 from .pred_head import PLSFHead
 
@@ -146,6 +149,11 @@ class UTransformer(nn.Module):
         layers = []
         for i in range(self.num_layers):
             if layer_type.lower().find("mamba") > -1:
+                if not HAS_MAMBA:
+                    raise ImportError(
+                        "MambaVisionLayer requires mamba-ssm. "
+                        "Install it with: pip install '.[gpu]' or pip install mamba-ssm"
+                    )
                 with_embedding = True if layer_type.lower().find("embed") > -1 else False
                 self.logger.info(f"Using Mamba style transformer blocks with embedding={with_embedding}.")
                 layer = MambaVisionLayer(

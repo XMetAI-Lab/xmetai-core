@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 import torch
 
+from xmetai.layers import HAS_MAMBA
+
 
 class TestForwardPass:
     """Test complete forward pass through models."""
@@ -43,6 +45,7 @@ class TestForwardPass:
             except NotImplementedError:
                 pytest.skip("Model forward not fully implemented")
 
+    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
     def test_utransformer_mamba_forward(self, sample_input_4d, torch_seed):
         """Test UTransformer with Mamba layers."""
         from xmetai.models.utransformer import UTransformer
@@ -70,6 +73,7 @@ class TestForwardPass:
             output = model.patch_embed(sample_input_4d)
             assert output.shape[0] == B
 
+    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
     def test_utransformer_rotary_forward(self, sample_input_4d, torch_seed):
         """Test UTransformer with rotary attention."""
         from xmetai.models.utransformer import UTransformer
@@ -294,12 +298,10 @@ class TestONNXExport:
 
             assert onnx_path.exists()
 
+    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
     def test_onnx_export_selective_scan(self):
         """Test ONNX export with custom selective scan op."""
-        try:
-            from xmetai.layers.mamba_vision import MambaMixer
-        except ImportError:
-            pytest.skip("MambaMixer not available")
+        from xmetai.layers.mamba_vision import MambaMixer
 
         # Test that mamba blocks have symbolic export
         mixer = MambaMixer(d_model=64)

@@ -10,9 +10,12 @@ from .swin import *
 from .weight_init import *
 from .wrappers import *
 
+# Optional: Mamba SSM (requires CUDA)
+HAS_MAMBA = False
 try:
     from .mamba_vision import *
-except ImportError as e:
-    print(f"Mamba SSM is not installed, pip install it via `pip install mamba_ssm` to use related features. Error: {e}")
+    HAS_MAMBA = True
+except ImportError:
+    pass  # Silently skip if mamba-ssm not installed
 
 __all__ = [k for k in globals().keys() if not k.startswith("_")]

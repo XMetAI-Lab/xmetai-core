@@ -21,14 +21,35 @@ classifiers = [
 requires-python = ">=3.8"
 
 dependencies = [
-  "torch>=2.0",
-  "xarray",
-  "numpy",
-  "hydra-core",
-  "pytest"
+  "torch>=2.7.0",
+  "torchvision>=0.19.0",
+  "numpy>=1.24.0",
+  "einops>=0.7.0",
+  "packaging>=21.0",
+  "PyYAML>=6.0",
+  "tqdm>=4.65.0",
+  "pandas>=1.5.0",
+  "omegaconf>=2.3.0",
+  "yacs>=0.1.8",
+  "tabulate>=0.9.0",
+  "termcolor>=2.0.0",
+  "cloudpickle>=2.0.0",
+  "pytorch-lightning>=2.0.0",
+  "iopath>=0.1.9",
+  "timm>=0.9.0",
+  "tensorboard>=2.14.0",
+  "h5py>=3.8.0",
+  "zarr>=2.15.0",
+  "xarray>=2023.0.0",
+  "onnx>=1.14.0",
+  "onnxruntime>=1.15.0",
+  "onnxruntime-extensions>=0.7.0",
 ]
 
 [project.optional-dependencies]
+gpu = [
+  "mamba-ssm>=2.2.0",
+]
 lint = [
   "black>=23.0",
   "ruff>=0.1.0",
@@ -38,15 +59,21 @@ lint = [
 test = [
   "pytest>=7.0",
   "pytest-cov>=4.0",
+  "pytest-mock>=3.10.0",
 ]
 dev = [
   "black>=23.0",
   "ruff>=0.1.0",
+  "pytest>=7.0",
   "pytest-cov>=4.0",
+  "pytest-mock>=3.10.0",
   "mypy>=1.0",
   "isort>=5.12",
   "pre-commit>=3.0",
   "build>=0.10",
+]
+all = [
+  "mamba-ssm>=2.2.0",
 ]
 
 [tool.setuptools]
