@@ -1,8 +1,10 @@
-import os
 import logging
+import os
 from datetime import timedelta
+
 import torch
 import torch.distributed as dist
+
 from xmetai.utils import comm
 
 __all__ = ["DEFAULT_TIMEOUT", "launch"]

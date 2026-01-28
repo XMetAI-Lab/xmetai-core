@@ -4,11 +4,13 @@ import time
 from collections import OrderedDict, abc
 from contextlib import ExitStack, contextmanager
 from typing import List, Union
+
 import torch
-from xmetai.utils.comm import get_world_size, is_main_process
-from xmetai.utils.logger import log_every_n_seconds
 from tabulate import tabulate
 from termcolor import colored
+
+from xmetai.utils.comm import get_world_size, is_main_process
+from xmetai.utils.logger import log_every_n_seconds
 
 
 class DatasetEvaluator:

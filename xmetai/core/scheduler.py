@@ -1,6 +1,7 @@
-import math
 import bisect
+import math
 from typing import List, Optional, Sequence, Union
+
 import numpy as np
 import torch
 

@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import is_dataclass
 from typing import List, Tuple, Union
+
 import cloudpickle
 import yaml
 from omegaconf import DictConfig, ListConfig, OmegaConf, SCMode

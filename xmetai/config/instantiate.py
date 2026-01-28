@@ -42,7 +42,7 @@ def instantiate(cfg):
     Returns:
         object instantiated by cfg
     """
-    from omegaconf import ListConfig, DictConfig, OmegaConf
+    from omegaconf import DictConfig, ListConfig, OmegaConf
 
     if isinstance(cfg, ListConfig):
         lst = [instantiate(x) for x in cfg]

@@ -3,9 +3,9 @@ Unit tests for data loading and preprocessing.
 Tests: DataLoader, Sampler, Weather data utilities.
 """
 
+import numpy as np
 import pytest
 import torch
-import numpy as np
 
 
 class TestDataUtils:
@@ -15,7 +15,7 @@ class TestDataUtils:
     def test_normalize_denormalize(self, sample_weather_data):
         """Test data normalization and denormalization."""
         try:
-            from xmetai.data.weather_util import normalize, denormalize
+            from xmetai.data.weather_util import denormalize, normalize
         except ImportError:
             pytest.skip("Weather utilities not available")
 
@@ -240,7 +240,7 @@ class TestWeatherUtilXarray:
     def test_update_dims_and_coords(self):
         """Ensure coords are renamed and level dimension is added."""
         xr = pytest.importorskip("xarray")
-        from xmetai.data.weather.weather_util import update_dims, update_coords
+        from xmetai.data.weather.weather_util import update_coords, update_dims
 
         data = xr.DataArray(
             np.zeros((3, 3), dtype=np.float32),
@@ -261,7 +261,7 @@ class TestWeatherUtilXarray:
         """Normalize then invert with log channel handling."""
         xr = pytest.importorskip("xarray")
         pytest.importorskip("dask")
-        from xmetai.data.weather.weather_util import normalize, inv_normalize
+        from xmetai.data.weather.weather_util import inv_normalize, normalize
 
         base = xr.DataArray(
             np.array([[[1.0]], [[2.0]]], dtype=np.float32),
@@ -308,7 +308,7 @@ class TestWeatherUtilXarray:
 
     def test_compute_level_weight_properties(self):
         """Level weights should be positive and sum to one."""
-        from xmetai.data.weather.weather_util import compute_level_weight, LEVELS_13
+        from xmetai.data.weather.weather_util import LEVELS_13, compute_level_weight
 
         weights = compute_level_weight()
 

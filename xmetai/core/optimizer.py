@@ -3,12 +3,13 @@ import copy
 import itertools
 import logging
 from collections import defaultdict
-
 from enum import Enum
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Type, Union
 
 import torch
+
 from xmetai.config import CfgNode
+
 from .scheduler import (
     CosineParamScheduler,
     CyclicScheduler,

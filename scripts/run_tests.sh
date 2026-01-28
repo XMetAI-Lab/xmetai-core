@@ -73,14 +73,14 @@ case "$TARGET" in
         ;;
     lint)
         echo_info "Running linters..."
-        
+
         if command -v flake8 &> /dev/null; then
             echo_info "Running flake8..."
             flake8 xmetai --count --select=E9,F63,F7,F82 --show-source --statistics
         else
             echo_warn "flake8 not installed"
         fi
-        
+
         if command -v pylint &> /dev/null; then
             echo_info "Running pylint..."
             pylint xmetai --disable=all --enable=E,F,W

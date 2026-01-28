@@ -3,10 +3,11 @@ Integration tests for end-to-end model workflows.
 Tests: Forward passes, gradient flow, ONNX export, model save/load.
 """
 
-import pytest
-import torch
 import tempfile
 from pathlib import Path
+
+import pytest
+import torch
 
 
 class TestForwardPass:
@@ -318,10 +319,10 @@ class TestMixedPrecision:
         if device.type == "cpu":
             pytest.skip("GPU test")
 
-        from xmetai.models.utransformer import UTransformer
-
         # Use new torch.amp autocast API for CUDA
         from torch.amp import autocast
+
+        from xmetai.models.utransformer import UTransformer
 
         model = UTransformer(
             in_chans=65,
@@ -349,8 +350,9 @@ class TestMixedPrecision:
         if device.type == "cpu":
             pytest.skip("GPU test")
 
+        from torch.amp import GradScaler, autocast
+
         from xmetai.models.utransformer import UTransformer
-        from torch.amp import autocast, GradScaler
 
         model = UTransformer(
             in_chans=65,

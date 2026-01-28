@@ -10,12 +10,12 @@ import torch
 try:
     from xmetai.layers import (
         Attention,
-        RotaryAttention,
         CubeEmbed,
+        LayerNorm,
+        RotaryAttention,
         TimestepEmbed,
         precompute_freqs_cis,
         precompute_freqs_cis_2d,
-        LayerNorm,
     )
 except Exception:
     # Some projects expose fewer symbols from package __init__.
@@ -41,13 +41,13 @@ except Exception:
         # Last resort: try to import a named symbol if available
         from xmetai.layers.attention import AttentionBlock as Attention
 
+    from xmetai.layers.embed import CubeEmbed, TimestepEmbed
+    from xmetai.layers.norm import LayerNorm
     from xmetai.layers.rotary_attention import (
         RotaryAttention,
         precompute_freqs_cis,
         precompute_freqs_cis_2d,
     )
-    from xmetai.layers.embed import CubeEmbed, TimestepEmbed
-    from xmetai.layers.norm import LayerNorm
 
 
 class TestAttention:

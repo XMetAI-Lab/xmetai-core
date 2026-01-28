@@ -24,7 +24,7 @@ pytorch-lightning>=2.0.0
 iopath>=0.1.9
 
 # Mamba State Space Model
-mamba-ssm>=1.0.0
+mamba-ssm>=2.2.0
 
 # TIMM (for layers)
 timm>=0.9.0

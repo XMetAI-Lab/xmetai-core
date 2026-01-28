@@ -5,8 +5,9 @@ Description: EMA (Exponential Moving Average) for model parameters.
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
-import logging
 import contextlib
+import logging
+
 import torch
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP

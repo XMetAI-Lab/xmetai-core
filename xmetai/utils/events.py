@@ -8,9 +8,10 @@ from collections import defaultdict
 from contextlib import contextmanager
 from functools import cached_property
 from typing import List, Optional, Tuple
-import torch
 
 import numpy as np
+import torch
+
 from xmetai.utils.file_io import PathManager
 
 __all__ = [

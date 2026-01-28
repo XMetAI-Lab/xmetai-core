@@ -12,14 +12,15 @@ Usage:
 """
 
 import argparse
-import numpy as np
-import xarray as xr
-import sys
-from tqdm import tqdm
-import os
-import dask
 import concurrent.futures
 import multiprocessing
+import os
+import sys
+
+import dask
+import numpy as np
+import xarray as xr
+from tqdm import tqdm
 
 
 def parse_args():

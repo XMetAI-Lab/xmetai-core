@@ -21,8 +21,9 @@ from s2s_base import (
     test_frames,
     test_names,
 )
-from xmetai import LazyCall as L
+
 from xmetai import MODELS
+from xmetai import LazyCall as L
 
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)

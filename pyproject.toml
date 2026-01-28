@@ -29,13 +29,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+lint = [
+  "black>=23.0",
+  "ruff>=0.1.0",
+  "mypy>=1.0",
+  "isort>=5.12",
+]
+test = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
 dev = [
-  "black",
-  "ruff",
-  "pytest-cov",
-  "mypy",
-  "pre-commit",
-  "build"
+  "black>=23.0",
+  "ruff>=0.1.0",
+  "pytest-cov>=4.0",
+  "mypy>=1.0",
+  "isort>=5.12",
+  "pre-commit>=3.0",
+  "build>=0.10",
 ]
 
 [tool.setuptools]

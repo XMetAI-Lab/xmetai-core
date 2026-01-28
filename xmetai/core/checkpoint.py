@@ -6,21 +6,21 @@
 import logging
 import os
 from collections import defaultdict
-from typing import Any, cast, Dict, IO, Iterable, List, NamedTuple, Optional, Tuple
+from typing import IO, Any, Dict, Iterable, List, NamedTuple, Optional, Tuple, cast
 
 import numpy as np
 import torch
 import torch.nn as nn
 from iopath.common.file_io import HTTPURLHandler, PathManager
 from termcolor import colored
-from torch.nn.parallel import DataParallel, DistributedDataParallel
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, FSDPModule
-from torch.distributed.tensor import DTensor
 from torch.distributed.checkpoint.state_dict import (
-    set_model_state_dict,
     StateDictOptions,
+    set_model_state_dict,
 )
-
+from torch.distributed.fsdp import FSDPModule
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.tensor import DTensor
+from torch.nn.parallel import DataParallel, DistributedDataParallel
 
 from xmetai.utils.comm import is_main_process
 

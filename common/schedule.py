@@ -1,9 +1,9 @@
 from xmetai.config import LazyCall as L
 from xmetai.core import (
+    CircularParamScheduler,
+    ConstantParamScheduler,
     CosineParamScheduler,
     WarmupParamScheduler,
-    ConstantParamScheduler,
-    CircularParamScheduler,
 )
 
 const_lr = L(ConstantParamScheduler)(value=1)

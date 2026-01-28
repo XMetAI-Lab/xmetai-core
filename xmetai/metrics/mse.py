@@ -1,10 +1,12 @@
 import itertools
+
 import numpy as np
 import torch.nn.functional as F
+
 from xmetai.builder import METRICS
 from xmetai.core import DatasetEvaluator
-from xmetai.utils import comm
 from xmetai.layers import to_1tuple
+from xmetai.utils import comm
 
 
 @METRICS.register()

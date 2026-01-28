@@ -7,22 +7,29 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-import os
 import logging
-from xmetai.config import LazyCall as L
-from xmetai import MODELS
-from iwc_base import train, dataloader, load_from_pretrain
-from iwc_base import output_dir, buffers
+import os
+
 from iwc_base import (
-    in_chans,
-    out_chans,
+    buffers,
+    dataloader,
     depths,
+    in_chans,
     in_frames,
-    test_frames,
+    load_from_pretrain,
+    logid,
+    maskid,
+    out_chans,
+    output_dir,
+    step_range,
     test_chans,
+    test_frames,
     test_names,
+    train,
 )
-from iwc_base import step_range, logid, maskid
+
+from xmetai import MODELS
+from xmetai.config import LazyCall as L
 
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)

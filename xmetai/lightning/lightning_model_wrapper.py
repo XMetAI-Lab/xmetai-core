@@ -5,13 +5,15 @@ Description: PyTorch Lightning Module for model wrapper
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
-from typing import Mapping, Iterable
 import math
+from typing import Iterable, Mapping
+
 import numpy as np
-import torch
 import pytorch_lightning as pl
+import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
+
 from xmetai.config import LazyConfig, instantiate
 from xmetai.core.evaluator import DatasetEvaluators
 

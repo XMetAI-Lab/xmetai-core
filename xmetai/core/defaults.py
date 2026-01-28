@@ -107,12 +107,12 @@ def create_fsdp2_model(model, **kwargs):
     """
     create FSDP2 model
     """
-    from torch.distributed.fsdp import (
-        fully_shard,
-        MixedPrecisionPolicy,
-        CPUOffloadPolicy,
-    )
     from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.fsdp import (
+        CPUOffloadPolicy,
+        MixedPrecisionPolicy,
+        fully_shard,
+    )
 
     # device mesh
     world_size = comm.get_world_size()

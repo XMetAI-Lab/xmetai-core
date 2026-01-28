@@ -3,7 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from xmetai.layers import LayerNorm, DropPath, to_2tuple
+from xmetai.layers import DropPath, LayerNorm, to_2tuple
+
 from .rotary_attention import RotaryAttention
 
 __all__ = ["SwinLayer"]

@@ -16,11 +16,14 @@ Design goals:
 """
 
 from typing import Tuple
+
 import einops
 import numpy as np
 import torch
 import torch.nn.functional as F
+
 from xmetai.builder import MODELS
+
 from .base_predictor import BasePredictor
 
 
@@ -56,7 +59,7 @@ class DiffusionForecast(BasePredictor):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        from diffusers import DDPMScheduler, DDIMScheduler, UNet2DModel
+        from diffusers import DDIMScheduler, DDPMScheduler, UNet2DModel
 
         self.logger.name = __name__
         self.predict_type = predict_type

@@ -10,9 +10,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+
 from xmetai.builder import MODELS
-from xmetai.loss import charbonnier_loss, afcrps_loss_lite
 from xmetai.layers import DropPath
+from xmetai.loss import afcrps_loss_lite, charbonnier_loss
+
 from .vit import ViTModel
 
 

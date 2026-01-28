@@ -6,12 +6,15 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import os
-import torch
+
 import numpy as np
-from .base_predictor import BasePredictor
-from xmetai.utils.comm import get_local_rank
-from xmetai.builder import MODELS
 import onnxruntime as ort
+import torch
+
+from xmetai.builder import MODELS
+from xmetai.utils.comm import get_local_rank
+
+from .base_predictor import BasePredictor
 
 CUSTOM_OPS_LIB_PATH = "/workspace/cma/xmetai_onnx_plugins.cpython-311-x86_64-linux-gnu.so"
 if os.path.exists(CUSTOM_OPS_LIB_PATH):
@@ -22,8 +25,8 @@ if os.path.exists(CUSTOM_OPS_LIB_PATH):
 else:
     # use mamba_ssm ops only when onnxruntime-extensions is installed.
     try:
-        from onnxruntime_extensions import onnx_op, PyOp, get_library_path
         from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
+        from onnxruntime_extensions import PyOp, get_library_path, onnx_op
 
         @onnx_op(
             op_type="SelectiveScanFn",

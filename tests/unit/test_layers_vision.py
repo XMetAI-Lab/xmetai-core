@@ -9,8 +9,8 @@ import torch
 # Prefer package exports; otherwise import directly from modules.
 try:
     from xmetai.layers import (
-        SwinLayer,
         MambaVisionLayer,
+        SwinLayer,
         precompute_freqs_cis,
     )
 except Exception:

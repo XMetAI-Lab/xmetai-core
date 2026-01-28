@@ -2,16 +2,17 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 
 import functools
+import importlib.util
 import inspect
 import logging
 import os
 from typing import IO, Any, Callable, Dict, List, Union
 
 import yaml
-import importlib.util
-from xmetai.utils.file_io import PathManager
 from iopath.common.file_io import g_pathmgr
 from yacs.config import CfgNode as __CfgNode
+
+from xmetai.utils.file_io import PathManager
 
 BASE_KEY = "_BASE_"
 

@@ -2,16 +2,17 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 import concurrent.futures
 import logging
-import numpy as np
 import time
 import weakref
 from contextlib import contextmanager
 from typing import List, Mapping, Optional
+
+import numpy as np
 import torch
 
-from xmetai.utils.comm import get_rank, gather, is_main_process
-from xmetai.utils.events import EventStorage, get_event_storage
 from xmetai.models import EMA
+from xmetai.utils.comm import gather, get_rank, is_main_process
+from xmetai.utils.events import EventStorage, get_event_storage
 
 __all__ = ["HookBase", "TrainerBase", "SimpleTrainer", "ExpandTrainer"]
 

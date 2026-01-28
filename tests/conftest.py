@@ -3,9 +3,9 @@ Pytest configuration and shared fixtures for xmetai tests.
 Provides device management, data generation, and model initialization utilities.
 """
 
+import numpy as np
 import pytest
 import torch
-import numpy as np
 
 
 @pytest.fixture(scope="session")

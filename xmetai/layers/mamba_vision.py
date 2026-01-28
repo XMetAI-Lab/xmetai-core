@@ -6,13 +6,15 @@ Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange, repeat
+from mamba_ssm.ops.selective_scan_interface import SelectiveScanFn, selective_scan_fn
 from timm.layers.drop import DropPath
 from timm.layers.mlp import Mlp
-from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, SelectiveScanFn
-from einops import rearrange, repeat
+
 from xmetai.layers.rotary_attention import RotaryAttention
 from xmetai.layers.swin import window_partition, window_reverse
 

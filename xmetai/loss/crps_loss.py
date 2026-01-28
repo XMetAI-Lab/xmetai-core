@@ -1,7 +1,8 @@
+from typing import Optional
+
 import einops
 import torch
 import torch.distributed as dist
-from typing import Optional
 
 __all__ = [
     "fcrps_loss_lite",

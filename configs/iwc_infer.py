@@ -8,13 +8,12 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import logging
+
 import numpy as np
-from iwc_base import train, dataloader
-from iwc_base import output_dir, buffers
-from iwc_base import in_chans, out_chans, in_frames, test_chans, test_names
-from iwc_base import logid, maskid, accumid
-from xmetai import LazyCall as L
+from iwc_base import accumid, buffers, dataloader, in_chans, in_frames, logid, maskid, out_chans, output_dir, test_chans, test_names, train
+
 from xmetai import MODELS
+from xmetai import LazyCall as L
 
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)

@@ -7,12 +7,11 @@ TwoAttentionBlock context usage, and TransformerBlock conv2d branch.
 import pytest
 import torch
 
-
 from xmetai.layers.attention import (
     CrossAttention,
     NewCrossAttention,
-    TwoAttentionBlock,
     TransformerBlock,
+    TwoAttentionBlock,
 )
 
 

@@ -6,8 +6,8 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import torch
-from torch.distributions import kl_divergence
 import torch.nn.functional as F
+from torch.distributions import kl_divergence
 
 __all__ = ["kl_loss", "kl_entropy_loss"]
 

@@ -15,9 +15,10 @@ Usage:
 import argparse
 import os
 import sys
+
 import numpy as np
-import xarray as xr
 import pandas as pd
+import xarray as xr
 
 
 def parse_args():

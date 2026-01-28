@@ -6,17 +6,19 @@ This configuration file is designed to be used with the FanJiang framework.
 """
 
 import os
+
 import numpy as np
 from omegaconf import OmegaConf
-from xmetai import LazyCall as L
+
 from xmetai import (
-    METRICS,
     DATASETS,
+    METRICS,
     LazyConfig,
     build_test_loader,
     build_train_loader,
     get_data_info,
 )
+from xmetai import LazyCall as L
 
 ######################################################################
 # Global settings

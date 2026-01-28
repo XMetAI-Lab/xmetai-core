@@ -19,7 +19,7 @@
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .[dev]
+pip install -e '.[dev]'
 ```
 
 或使用 Conda：
@@ -27,7 +27,7 @@ pip install -e .[dev]
 ```bash
 conda create -n xmetai python=3.10 -y
 conda activate xmetai
-pip install -e .[dev]
+pip install -e '.[dev]'
 ```
 
 ## 代码风格与预提交钩子

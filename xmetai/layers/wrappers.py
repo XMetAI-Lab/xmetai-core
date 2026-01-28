@@ -1,8 +1,8 @@
 import math
 from typing import List
-from einops import rearrange
 
 import torch
+from einops import rearrange
 from torch import nn
 from torch.nn import functional as F
 

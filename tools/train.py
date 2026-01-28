@@ -1,8 +1,9 @@
+import logging
 import os
 import sys
-import logging
 from functools import partial
-from typing import Dict, Any
+from typing import Any, Dict
+
 import torch
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -17,22 +18,22 @@ sys.path.append(CUR_PATH + "/../configs/")
 
 try:
     from xmetai.config import LazyConfig, instantiate
-    from xmetai.layers import SwinLayer, MambaVisionLayer
     from xmetai.core import (
-        LRMultiplier,
-        FSDPCheckpointer,
-        SimpleTrainer,
         ExpandTrainer,
+        FSDPCheckpointer,
+        LRMultiplier,
+        SimpleTrainer,
+        create_ddp_model,
+        create_fsdp2_model,
+        create_fsdp_model,
         default_argument_parser,
         default_setup,
         default_writers,
         hooks,
-        launch,
         inference_on_dataset,
-        create_ddp_model,
-        create_fsdp_model,
-        create_fsdp2_model,
+        launch,
     )
+    from xmetai.layers import MambaVisionLayer, SwinLayer
     from xmetai.utils import comm
 except ImportError as e:
     print(f"ImportError: {e}. You can do this by running `pip install -e .` in the root directory.")

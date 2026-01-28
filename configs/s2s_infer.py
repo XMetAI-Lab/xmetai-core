@@ -8,13 +8,12 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import logging
+
 import numpy as np
-from s2s_base import train, dataloader
-from s2s_base import output_dir, buffers
-from s2s_base import in_chans, out_chans, in_frames, test_chans, test_names, freq
-from s2s_base import logid, maskid, accumid
-from xmetai import LazyCall as L
+from s2s_base import accumid, buffers, dataloader, freq, in_chans, in_frames, logid, maskid, out_chans, output_dir, test_chans, test_names, train
+
 from xmetai import MODELS
+from xmetai import LazyCall as L
 
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)

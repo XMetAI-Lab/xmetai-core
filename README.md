@@ -33,7 +33,7 @@
 
 ```bash
 # 安装开发依赖（含 lint/test 工具）
-pip install -e .[dev]
+pip install -e '.[dev]'
 ```
 
 ### 数据准备

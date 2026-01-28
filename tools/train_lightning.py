@@ -8,18 +8,19 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 import os
 import sys
 from typing import Any
-from typing_extensions import override
-import torch
+
 import pytorch_lightning as pl
-from torch.distributed.fsdp import MixedPrecision
-from pytorch_lightning.strategies import FSDPStrategy
+import torch
 from pytorch_lightning.callbacks import (
-    ModelCheckpoint,
-    LearningRateMonitor,
-    TQDMProgressBar,
     Callback,
     DeviceStatsMonitor,
+    LearningRateMonitor,
+    ModelCheckpoint,
+    TQDMProgressBar,
 )
+from pytorch_lightning.strategies import FSDPStrategy
+from torch.distributed.fsdp import MixedPrecision
+from typing_extensions import override
 
 # set python path from ../
 CUR_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -27,11 +28,11 @@ sys.path.append(CUR_PATH + "/../")
 sys.path.append(CUR_PATH + "/../configs/")
 
 try:
-    from xmetai.lightning import Lightning_Model_Wrapper
-    from xmetai.core import default_argument_parser, default_setup
     from xmetai.config import LazyConfig, instantiate
-    from xmetai.models.transformer import SwinBlock
+    from xmetai.core import default_argument_parser, default_setup
     from xmetai.layers import MambaVisionLayer
+    from xmetai.lightning import Lightning_Model_Wrapper
+    from xmetai.models.transformer import SwinBlock
 except ImportError as e:
     print(f"ImportError: {e}. You can do this by running `pip install -e .` in the root directory.")
     sys.exit(1)
