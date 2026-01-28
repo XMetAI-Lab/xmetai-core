@@ -54,7 +54,8 @@ def build_model(cfg):
     mods = [SwinLayer, torch.nn.TransformerEncoderLayer]
     if HAS_MAMBA:
         mods.append(MambaVisionLayer)
-    cfg.train.fsdp.mods = tuple(mods)
+    mods = tuple(mods)
+    cfg.train.fsdp.mods = mods
     # Apply activation checkpointing
     if cfg.train.activation_checkpointing:
 
