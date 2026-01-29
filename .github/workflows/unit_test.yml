@@ -41,7 +41,7 @@ jobs:
         run: |
           pytest tests -q --maxfail=1 --disable-warnings
   gpu-tests:
-    runs-on: ThinkVision-4080
+    runs-on: [self-hosted, gpu]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
