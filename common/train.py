@@ -51,5 +51,6 @@ train = dict(
         exclude_modules=[],  # Regex patterns for modules to exclude from LoRA
         modules_to_save=[],  # Additional modules to keep trainable (even if frozen)
         merge_weights=False,  # Whether to merge LoRA weights into base (for export)
+        num_steps=1,  # Number of LoRA steps for rollout training. Each step has independent LoRA params
     ),
 )

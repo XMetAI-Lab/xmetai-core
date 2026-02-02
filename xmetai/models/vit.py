@@ -142,6 +142,16 @@ class ViTModel(BasePredictor):
         return loss_dict
 
     def forward_step(self, input, times=None, step=None, timestamp=None):
+        # Setup LoRA step for multi-step LoRA (cascade mode)
+        if step is not None:
+            try:
+                from xmetai.layers.lora import set_lora_step
+
+                set_lora_step(self.encoder, step)
+            except (ImportError, AttributeError):
+                # LoRA not enabled, skip
+                pass
+
         # time embeddings.
         if timestamp is None:
             timestamp = self.get_timestamp(input, times, step)

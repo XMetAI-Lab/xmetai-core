@@ -8,7 +8,7 @@ LoRA parameters, drastically reducing memory usage and training time.
 Usage:
     # Fine-tune with LoRA
     bash scripts/train.bash -m configs/s2s_vit_lora.py
-    
+
     # Evaluate
     bash scripts/train.bash -m configs/s2s_vit_lora.py --eval
 
@@ -16,10 +16,44 @@ Author: XMetAI Team
 Date: 2026-02-02
 """
 
-from s2s_vit import *  # Import base config
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import logging
 
-# Override training settings for LoRA fine-tuning
-train.init_checkpoint = f"{output_dir}/../model_best.pth"  # Load pretrained model
+from s2s_base import (  # noqa: F401
+    ROOT_PATH,
+    buffers,
+    dataloader,
+    depths,
+    in_chans,
+    in_frames,
+    load_from_pretrain,
+    logid,
+    maskid,
+    optimizer,
+    out_chans,
+    output_dir,
+    scheduler,
+    step_range,
+    test_chans,
+    test_frames,
+    test_names,
+    train,
+)
+
+from xmetai import MODELS
+from xmetai import LazyCall as L
+
+# set logging to debug level if needed
+logging.basicConfig(level=logging.INFO)
+
+#####################################################################
+# Training settings for LoRA fine-tuning
+#####################################################################
+model_name = "ViTModel"
+
+# Load pretrained model
+train.init_checkpoint = f"{output_dir}/model_best.pth"  # Adjust path as needed
 train.max_iter = 10000  # Reduce iterations for fine-tuning
 train.eval_period = 1000
 train.checkpointer.period = 500
@@ -30,38 +64,62 @@ train.lora.r = 16  # LoRA rank
 train.lora.alpha = 32  # LoRA scaling (alpha/r = 2.0)
 train.lora.dropout = 0.05
 
-# Target attention layers in the encoder
+# Target attention and Mamba mixer layers in the encoder
+# Based on actual weight names with activation checkpointing:
+# encoder.X._checkpoint_wrapped_module.blocks.Y.mixer.{in_proj,out_proj,qkv,proj}
 train.lora.target_modules = [
-    # Mamba/Transformer attention layers
-    r"encoder.*\.qkv$",  # QKV projection in WindowAttention
-    r"encoder.*\.proj$",  # Output projection in WindowAttention
-    r"encoder.*\.to_(q|k|v)$",  # Q/K/V in CrossAttention
-    r"encoder.*\.to_out\.0$",  # Output in CrossAttention
-    # Optionally include MLP layers for deeper fine-tuning
-    # r"encoder.*\.mlp\.fc[12]$",
+    # Attention layers (transformer blocks): qkv and proj
+    r"encoder\.\d+\.(_checkpoint_wrapped_module\.)?blocks\.\d+\.mixer\.qkv$",
+    r"encoder\.\d+\.(_checkpoint_wrapped_module\.)?blocks\.\d+\.mixer\.proj$",
+    # Mamba layers: in_proj and out_proj
+    r"encoder\.\d+\.(_checkpoint_wrapped_module\.)?blocks\.\d+\.mixer\.in_proj$",
+    r"encoder\.\d+\.(_checkpoint_wrapped_module\.)?blocks\.\d+\.mixer\.out_proj$",
+    # Optionally add MLP layers for deeper fine-tuning
+    # r"encoder\.\d+\.(_checkpoint_wrapped_module\.)?blocks\.\d+\.mlp\.fc[12]$",
 ]
-
-# Optionally keep some modules trainable even if frozen
-# train.lora.modules_to_save = ["head.2"]  # Keep final prediction layer trainable
 
 # Reduce learning rate for fine-tuning (LoRA params will use 2x this rate automatically)
 optimizer.lr = 5e-5
 optimizer.weight_decay = 0.01
+######################################################################
+# Model settings (same as s2s_vit.py)
+######################################################################
+zero_accum = True  # whether to zero the accumulation variables after each optimization step.
+freq = 24  # 24 hours for 1 day
+# model setting
+patch_size = 2
+embed_dim = 1536
+num_heads = 24
+image_size = (120, 240)  # resize from 121x240->120x240 with input data
+members = 8
 
-# Use cosine annealing for fine-tuning
-scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).cosine_lr
-scheduler.warmup_iters = 500
-scheduler.end_value = 1e-7
+model = L(MODELS.get(model_name))(
+    embed_dim=embed_dim,
+    depths=depths,
+    num_heads=num_heads,
+    patch_size=patch_size,
+    image_size=image_size,
+    drop_rate=0.1,
+    in_chans=in_chans,
+    out_chans=out_chans,
+    in_frames=in_frames,
+    out_frames=1,
+    freq=freq,
+    accumid=logid,
+    logid=logid,
+    maskid=maskid,
+    zero_accum=zero_accum,
+    test_frames=test_frames,
+    test_chans=test_chans,
+    test_names=test_names,
+    step_range=step_range,
+    members=members,
+    save_dir=output_dir + "/pred/",
+    layer_type="mamba",  # Enable Mamba for better sequence modeling
+)
 
-# Adjust batch size if needed (LoRA saves memory, so you might be able to use larger batch)
-# total_batch_size = 2
+model.buffers = buffers
+model.precision = "bf16"
 
-# Log more frequently for monitoring fine-tuning
-train.log_period = 10
-
-print(f"LoRA Fine-tuning Config:")
-print(f"  Pretrained checkpoint: {train.init_checkpoint}")
-print(f"  LoRA rank: {train.lora.r}, alpha: {train.lora.alpha}")
-print(f"  Target modules: {len(train.lora.target_modules)} patterns")
-print(f"  Max iterations: {train.max_iter}")
-print(f"  Learning rate: {optimizer.lr}")
+if load_from_pretrain:
+    dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps

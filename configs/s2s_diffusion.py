@@ -7,19 +7,23 @@ This configuration file is designed to be used for s2s deterministic training.
 
 import logging
 
-from s2s_base import (
+from s2s_base import (  # noqa: F401
     buffers,
+    dataloader,
     freq,
     in_chans,
     in_frames,
     logid,
     maskid,
+    optimizer,
     out_chans,
     output_dir,
+    scheduler,
     step_range,
     test_chans,
     test_frames,
     test_names,
+    train,
 )
 
 from xmetai import MODELS

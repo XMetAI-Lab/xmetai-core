@@ -10,7 +10,7 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 import logging
 import os
 
-from s2s_base import (
+from s2s_base import (  # noqa: F401
     buffers,
     dataloader,
     depths,
@@ -19,8 +19,10 @@ from s2s_base import (
     load_from_pretrain,
     logid,
     maskid,
+    optimizer,
     out_chans,
     output_dir,
+    scheduler,
     step_range,
     test_chans,
     test_frames,
@@ -87,7 +89,7 @@ model = L(MODELS.get(model_name))(
     layer_type="mamba",  # Enable Mamba for better sequence modeling
 )
 if load_from_pretrain:
-    model.alpha = 1.1  # sequence loss exponential weight factor
+    model.alpha = 0.9  # sequence loss exponential weight factor
 
 model.buffers = buffers
 model.precision = "bf16"

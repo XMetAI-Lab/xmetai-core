@@ -70,7 +70,22 @@ def build_model(cfg):
             return isinstance(submodule, mods)
 
         apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap_f1, check_fn=check_fn)
-    # load checkpoint before distribute and update buffers from model config.
+
+    # Apply LoRA if enabled (BEFORE checkpoint loading so LoRA params can be loaded)
+    if hasattr(cfg.train, "lora") and cfg.train.lora.get("enabled", False):
+        from xmetai.layers.lora import apply_lora_to_model
+
+        num_steps = cfg.train.lora.get("num_steps", 1)
+        logger.info(f"Applying LoRA to model with {num_steps} steps (before checkpoint load)...")
+        model = apply_lora_to_model(model, cfg.train.lora, verbose=comm.is_main_process(), num_steps=num_steps)
+        # Move LoRA parameters to the correct device
+        model.to(cfg.train.device_type)
+        if comm.is_main_process():
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in model.parameters())
+            logger.info(f"LoRA structure applied: {trainable_params / 1e6:.3f}M trainable / {total_params / 1e6:.3f}M total parameters")
+
+    # load checkpoint after LoRA is applied (so LoRA weights can be restored)
     reload_buffers = ["channel_weights", "weight"]
     model_buffers = {k: v for k, v in model.named_buffers() if any(rb in k for rb in reload_buffers)}
     FSDPCheckpointer(model).load(cfg.train.init_checkpoint)
@@ -83,16 +98,6 @@ def build_model(cfg):
         else:
             if comm.is_main_process():
                 logger.warning(f"Buffer shape mismatch for {k}: checkpoint {v.shape} vs model {buf.shape}, skipping restore.")
-
-    # Apply LoRA if enabled (after checkpoint loading, before DDP/FSDP)
-    if hasattr(cfg.train, "lora") and cfg.train.lora.get("enabled", False):
-        from xmetai.layers.lora import apply_lora_to_model
-
-        logger.info("Applying LoRA to model...")
-        model = apply_lora_to_model(model, cfg.train.lora, verbose=comm.is_main_process())
-        if comm.is_main_process():
-            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            logger.info(f"LoRA enabled: {trainable_params / 1e6:.3f}M trainable parameters")
 
     # clear freezed parameters grad
     def clear_grad(module):
