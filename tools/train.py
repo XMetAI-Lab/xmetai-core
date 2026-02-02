@@ -84,6 +84,16 @@ def build_model(cfg):
             if comm.is_main_process():
                 logger.warning(f"Buffer shape mismatch for {k}: checkpoint {v.shape} vs model {buf.shape}, skipping restore.")
 
+    # Apply LoRA if enabled (after checkpoint loading, before DDP/FSDP)
+    if hasattr(cfg.train, "lora") and cfg.train.lora.get("enabled", False):
+        from xmetai.layers.lora import apply_lora_to_model
+
+        logger.info("Applying LoRA to model...")
+        model = apply_lora_to_model(model, cfg.train.lora, verbose=comm.is_main_process())
+        if comm.is_main_process():
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            logger.info(f"LoRA enabled: {trainable_params / 1e6:.3f}M trainable parameters")
+
     # clear freezed parameters grad
     def clear_grad(module):
         for param in module.parameters():
@@ -216,6 +226,16 @@ def do_export(
     opset_version: int = 17,
 ) -> None:
     model.eval()
+
+    # Merge LoRA weights before export if LoRA is used
+    try:
+        from xmetai.layers.lora import merge_lora_weights
+
+        model = merge_lora_weights(model, verbose=comm.is_main_process())
+    except Exception:
+        # No LoRA layers or already merged
+        pass
+
     if model.dtype != torch.float32:
         convert_model(model, dtype=model.dtype)  # convert model to float16 by default
     model.forward = partial(getattr(model, forward_name))

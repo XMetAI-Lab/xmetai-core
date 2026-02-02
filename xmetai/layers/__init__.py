@@ -4,6 +4,7 @@ from .drop import *
 from .embed import *
 from .encoding import *
 from .helpers import *
+from .lora import *
 from .norm import *
 from .rotary_attention import *
 from .swin import *
