@@ -10,7 +10,7 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 import logging
 import os
 
-from s2s_base import (
+from s2s_base import (  # noqa: F401
     buffers,
     dataloader,
     depths,
@@ -19,8 +19,10 @@ from s2s_base import (
     load_from_pretrain,
     logid,
     maskid,
+    optimizer,
     out_chans,
     output_dir,
+    scheduler,
     step_range,
     test_chans,
     test_frames,
