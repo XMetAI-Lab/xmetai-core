@@ -110,7 +110,7 @@ class LinearLoRA(nn.Module):
         Useful for setting a default step for multiple forward passes.
         """
         if step >= self.num_steps:
-            logger.warning(f"Step {step} exceeds num_steps {self.num_steps}, clamping to {self.num_steps-1}")
+            logger.debug(f"Step {step} exceeds num_steps {self.num_steps}, clamping to {self.num_steps-1}")
             step = self.num_steps - 1
         self.current_step = step
 
@@ -162,7 +162,7 @@ class LinearLoRA(nn.Module):
             # Use provided step or current step
             if step is not None:
                 if step >= self.num_steps:
-                    logger.warning(f"Step {step} exceeds num_steps {self.num_steps}, clamping to {self.num_steps-1}")
+                    logger.debug(f"Step {step} exceeds num_steps {self.num_steps}, clamping to {self.num_steps-1}")
                     step = self.num_steps - 1
             else:
                 step = self.current_step
@@ -273,7 +273,7 @@ def apply_lora_to_model(
     if not targets:
         logger.warning(
             f"No modules matched the target patterns: {target_modules}. "
-            f"Available Linear modules: {[n for n, m in model.named_modules() if isinstance(m, nn.Linear)][:5]}..."
+            f"Available Linear modules: {[n for n, m in model.named_modules() if isinstance(m, nn.Linear)]}..."
         )
         return model
 

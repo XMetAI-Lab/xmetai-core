@@ -19,6 +19,7 @@ Date: 2026-02-02
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import logging
+import os
 
 from s2s_base import (  # noqa: F401
     ROOT_PATH,
@@ -51,19 +52,25 @@ logging.basicConfig(level=logging.INFO)
 # Training settings for LoRA fine-tuning
 #####################################################################
 model_name = "ViTModel"
+if load_from_pretrain:  # check if original model exists, start stage 2: ensemble
+    train.ens_train = True
+    train.init_checkpoint = f"{output_dir}/../model_best.pth"
+    model_name = "ViTEnsModel"
+    output_dir += "/../ens/"
+    train.teacher_forcing.teach_iters = 100
+    train.teacher_forcing.teach_steps = 5  # teach for 5 steps with 80GB GPU memory
+    if os.path.exists(f"{output_dir}/model_final.pth"):  # check if ensemble model exists, start stage 3: rollout
+        train.init_checkpoint = f"{output_dir}/model_best.pth"
+        output_dir += "/mstep/"
+        train.teacher_forcing.teach_steps = 20  # teach for 20 steps with 80GB GPU memory
+    train.max_iter = 50000  # Reduce iterations for fine-tuning
 
-# Load pretrained model
-train.init_checkpoint = f"{output_dir}/model_best.pth"  # Adjust path as needed
-train.max_iter = 10000  # Reduce iterations for fine-tuning
-train.eval_period = 1000
-train.checkpointer.period = 500
-
+train.output_dir = output_dir
 # Enable LoRA
 train.lora.enabled = True
 train.lora.r = 16  # LoRA rank
 train.lora.alpha = 32  # LoRA scaling (alpha/r = 2.0)
 train.lora.dropout = 0.05
-
 # Target attention and Mamba mixer layers in the encoder
 # Based on actual weight names with activation checkpointing:
 # encoder.X._checkpoint_wrapped_module.blocks.Y.mixer.{in_proj,out_proj,qkv,proj}
@@ -77,9 +84,10 @@ train.lora.target_modules = [
     # Optionally add MLP layers for deeper fine-tuning
     # r"encoder\.\d+\.(_checkpoint_wrapped_module\.)?blocks\.\d+\.mlp\.fc[12]$",
 ]
+train.lora.num_steps = train.teacher_forcing.teach_steps
 
 # Reduce learning rate for fine-tuning (LoRA params will use 2x this rate automatically)
-optimizer.lr = 5e-5
+optimizer.lr = 1e-5
 optimizer.weight_decay = 0.01
 ######################################################################
 # Model settings (same as s2s_vit.py)
@@ -123,3 +131,4 @@ model.precision = "bf16"
 
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
+    model.alpha = 0.9  # for exponential weights of future frames

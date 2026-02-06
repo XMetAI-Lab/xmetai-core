@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.builder import MODELS
-from xmetai.layers import HAS_MAMBA, CubeEmbed, TimestepEmbed
+from xmetai.layers import HAS_MAMBA, CubeEmbed, TimestepEmbed, set_lora_step
 from xmetai.loss import charbonnier_loss
 
 if HAS_MAMBA:
@@ -144,13 +144,7 @@ class ViTModel(BasePredictor):
     def forward_step(self, input, times=None, step=None, timestamp=None):
         # Setup LoRA step for multi-step LoRA (cascade mode)
         if step is not None:
-            try:
-                from xmetai.layers.lora import set_lora_step
-
-                set_lora_step(self.encoder, step)
-            except (ImportError, AttributeError):
-                # LoRA not enabled, skip
-                pass
+            set_lora_step(self.encoder, step)
 
         # time embeddings.
         if timestamp is None:
