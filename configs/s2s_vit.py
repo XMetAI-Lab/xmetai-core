@@ -89,7 +89,7 @@ model = L(MODELS.get(model_name))(
     layer_type="mamba",  # Enable Mamba for better sequence modeling
 )
 if load_from_pretrain:
-    model.alpha = 1.1  # sequence loss exponential weight factor
+    model.alpha = 0.9  # sequence loss exponential weight factor
 
 model.buffers = buffers
 model.precision = "bf16"

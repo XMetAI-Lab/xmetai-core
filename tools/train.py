@@ -33,7 +33,7 @@ try:
         inference_on_dataset,
         launch,
     )
-    from xmetai.layers import HAS_MAMBA, SwinLayer
+    from xmetai.layers import HAS_MAMBA, SwinLayer, apply_lora_to_model, merge_lora_weights
 
     if HAS_MAMBA:
         from xmetai.layers import MambaVisionLayer
@@ -70,7 +70,20 @@ def build_model(cfg):
             return isinstance(submodule, mods)
 
         apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap_f1, check_fn=check_fn)
-    # load checkpoint before distribute and update buffers from model config.
+
+    # Apply LoRA if enabled (BEFORE checkpoint loading so LoRA params can be loaded)
+    if hasattr(cfg.train, "lora") and cfg.train.lora.get("enabled", False):
+        num_steps = cfg.train.lora.get("num_steps", 1)
+        logger.info(f"Applying LoRA to model with {num_steps} steps (before checkpoint load)...")
+        model = apply_lora_to_model(model, cfg.train.lora, verbose=comm.is_main_process(), num_steps=num_steps)
+        # Move LoRA parameters to the correct device
+        model.to(cfg.train.device_type)
+        if comm.is_main_process():
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in model.parameters())
+            logger.info(f"LoRA structure applied: {trainable_params / 1e6:.3f}M trainable / {total_params / 1e6:.3f}M total parameters")
+
+    # load checkpoint after LoRA is applied (so LoRA weights can be restored)
     reload_buffers = ["channel_weights", "weight"]
     model_buffers = {k: v for k, v in model.named_buffers() if any(rb in k for rb in reload_buffers)}
     FSDPCheckpointer(model).load(cfg.train.init_checkpoint)
@@ -216,6 +229,9 @@ def do_export(
     opset_version: int = 17,
 ) -> None:
     model.eval()
+
+    # Merge LoRA weights before export if LoRA is used
+    model = merge_lora_weights(model, verbose=comm.is_main_process())
     if model.dtype != torch.float32:
         convert_model(model, dtype=model.dtype)  # convert model to float16 by default
     model.forward = partial(getattr(model, forward_name))

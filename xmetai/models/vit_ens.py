@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.builder import MODELS
-from xmetai.layers import DropPath
+from xmetai.layers import DropPath, set_lora_step
 from xmetai.loss import afcrps_loss_lite, charbonnier_loss
 
 from .vit import ViTModel
@@ -119,6 +119,9 @@ class ViTEnsModel(ViTModel):
         return loss_dict
 
     def forward_step(self, input, times=None, step=None, timestamp=None):
+        # Setup LoRA step for multi-step LoRA (cascade mode)
+        if step is not None:
+            set_lora_step(self.encoder, step)
         # time embeddings.
         if timestamp is None:
             timestamp = self.get_timestamp(input, times, step)

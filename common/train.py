@@ -36,4 +36,21 @@ train = dict(
         teach_iters=-1,  # -1 means no teacher forcing
         teach_steps=10,  # maximum number of steps for teacher forcing
     ),
+    lora=dict(  # LoRA (Low-Rank Adaptation) for parameter-efficient fine-tuning
+        enabled=False,  # Whether to enable LoRA
+        r=16,  # LoRA rank (dimension of low-rank matrices)
+        alpha=32,  # LoRA scaling factor (effective scale = alpha/r)
+        dropout=0.05,  # Dropout probability for LoRA path
+        target_modules=[  # Regex patterns for modules to apply LoRA
+            # Default: attention layers in encoder
+            r"encoder.*\.qkv$",  # Swin-style attention QKV projection
+            r"encoder.*\.proj$",  # Swin-style attention output projection
+            r"encoder.*\.to_(q|k|v)$",  # CrossAttention Q/K/V projections
+            r"encoder.*\.to_out\.0$",  # CrossAttention output projection
+        ],
+        exclude_modules=[],  # Regex patterns for modules to exclude from LoRA
+        modules_to_save=[],  # Additional modules to keep trainable (even if frozen)
+        merge_weights=False,  # Whether to merge LoRA weights into base (for export)
+        num_steps=1,  # Number of LoRA steps for rollout training. Each step has independent LoRA params
+    ),
 )

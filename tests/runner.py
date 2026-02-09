@@ -42,11 +42,12 @@ def run_unit_tests():
             "-v",
             "-m",
             "not slow",
-            "tests/test_layers_basic.py",
-            "tests/test_layers_vision.py",
-            "tests/test_models.py",
-            "tests/test_loss_metrics.py",
-            "tests/test_data.py",
+            "tests/unit/test_layers_basic.py",
+            "tests/unit/test_layers_vision.py",
+            "tests/unit/test_models.py",
+            "tests/unit/test_loss_metrics.py",
+            "tests/unit/test_data.py",
+            "tests/unit/test_lora.py",
         ]
     )
 
@@ -54,7 +55,7 @@ def run_unit_tests():
 def run_integration_tests():
     """Run integration tests."""
     print("Running integration tests...")
-    return run_tests(["-v", "tests/test_integration.py"])
+    return run_tests(["-v", "tests/integration/test_integration.py"])
 
 
 def run_numerical_tests():

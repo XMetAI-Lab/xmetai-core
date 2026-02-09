@@ -251,7 +251,7 @@ def get_default_optimizer_params(
         for param_name, value in module.named_parameters(recurse=False):
 
             if not value.requires_grad:
-                logger.info(f"freeze {module_name}")
+                logger.info(f"freeze {module_name}.{param_name}")
                 continue
 
             # Avoid duplicating parameters
@@ -260,7 +260,18 @@ def get_default_optimizer_params(
             memo.add(value)
 
             hyperparams = copy.copy(defaults)
-            if isinstance(module, norm_module_types) and weight_decay_norm is not None:
+
+            # Special handling for LoRA parameters
+            # LoRA layers can typically use higher learning rates
+            if "lora_" in param_name:
+                # LoRA parameters can use 2x learning rate for faster adaptation
+                if base_lr is not None:
+                    hyperparams["lr"] = base_lr * 2.0
+                # LoRA parameters typically benefit from less weight decay
+                if weight_decay is not None:
+                    hyperparams["weight_decay"] = weight_decay * 0.1
+                logger.debug(f"LoRA param {module_name}.{param_name}: lr={hyperparams.get('lr', 'N/A')}, wd={hyperparams.get('weight_decay', 'N/A')}")
+            elif isinstance(module, norm_module_types) and weight_decay_norm is not None:
                 hyperparams["weight_decay"] = weight_decay_norm
 
             params.append({"params": [value], **hyperparams})
