@@ -47,6 +47,9 @@ def run_unit_tests():
             "tests/unit/test_models.py",
             "tests/unit/test_loss_metrics.py",
             "tests/unit/test_data.py",
+            "tests/unit/test_graphcast_grid.py",
+            "tests/unit/test_graphcast_dataset.py",
+            "tests/unit/test_graphcast_model.py",
             "tests/unit/test_lora.py",
         ]
     )
