@@ -241,7 +241,7 @@ else
     export NODE_RANK=$(( $(hostname -I | awk '{print $1}' | awk -F. '{print $4}') - 1 ))
 fi
 export HOSTNAME=node${NODE_RANK}
-export MASTER_PORT=29500           # 推荐固定
+export MASTER_PORT=${MASTER_PORT:-29500}
 
 # NCCL 设置
 #export NCCL_DEBUG=INFO

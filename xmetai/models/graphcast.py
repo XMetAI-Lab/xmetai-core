@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 from xmetai.builder import MODELS
+from xmetai.data.weather.graphcast_grid import build_edge_attr, build_grid_edges, build_node_static
 from xmetai.layers import TimestepEmbed
 from xmetai.layers.graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
 from xmetai.loss import charbonnier_loss
@@ -44,6 +45,7 @@ class GraphCastPredictor(BasePredictor):
         self.time_embed = time_embed
         self.num_pre_layers = num_pre_layers
         self.num_post_layers = num_post_layers
+        self._graph_cache = {}
 
         in_dim = self.in_chans * self.in_frames
         self.encoder = GraphCastEncoder(in_dim, embed_dim, static_dim=static_dim)
@@ -89,6 +91,49 @@ class GraphCastPredictor(BasePredictor):
             grid_shape = grid_shape.to(device=self.device)
         return edge_index, edge_attr, node_static, grid_shape
 
+    def _build_graph_from_shape(self, height: int, width: int, device):
+        cache_key = (height, width, self.edge_dim, self.static_dim)
+        if cache_key in self._graph_cache:
+            edge_index, edge_attr, node_static, grid_shape = self._graph_cache[cache_key]
+            return (
+                edge_index.to(device=device),
+                edge_attr.to(device=device, dtype=self.dtype),
+                node_static.to(device=device, dtype=self.dtype),
+                grid_shape.to(device=device),
+            )
+
+        if hasattr(self, "lat") and hasattr(self, "lon"):
+            lat_value = getattr(self, "lat")
+            lon_value = getattr(self, "lon")
+            lat_tensor = torch.as_tensor(lat_value).detach().cpu()
+            lon_tensor = torch.as_tensor(lon_value).detach().cpu()
+            lat = np.asarray(lat_tensor.to(torch.float32).numpy(), dtype=np.float32)
+            lon = np.asarray(lon_tensor.to(torch.float32).numpy(), dtype=np.float32)
+        else:
+            lat = np.linspace(90, -90, height, dtype=np.float32)
+            lon = np.linspace(0, 360, width, dtype=np.float32, endpoint=False)
+
+        lat_rad = np.deg2rad(lat)
+        lon_rad = np.deg2rad(lon)
+
+        edge_index = build_grid_edges(height, width, neighbors=self.neighbors, periodic_lon=True)
+        include_trig = self.edge_dim == 7
+        edge_attr = build_edge_attr(lat_rad, lon_rad, edge_index, include_trig=include_trig)
+        node_static = build_node_static(lat_rad, lon_rad)
+
+        if node_static.size(-1) < self.static_dim:
+            pad = self.static_dim - node_static.size(-1)
+            node_static = torch.cat([node_static, torch.zeros(node_static.size(0), pad)], dim=-1)
+
+        grid_shape = torch.tensor([height, width], dtype=torch.long)
+        self._graph_cache[cache_key] = (edge_index, edge_attr, node_static, grid_shape)
+        return (
+            edge_index.to(device=device),
+            edge_attr.to(device=device, dtype=self.dtype),
+            node_static.to(device=device, dtype=self.dtype),
+            grid_shape.to(device=device),
+        )
+
     def process_data(self, data):
         batch = super().process_data(data)
         for key in ("edge_index", "edge_attr", "node_static", "grid_shape"):
@@ -115,13 +160,13 @@ class GraphCastPredictor(BasePredictor):
             target = targets[:, k : k + self.out_frames]
             self.reset_input(inputs)
             output = self.forward_step(inputs, times, graph, step=t)
-            loss_rec += charbonnier_loss(output, target)
+            loss_rec += charbonnier_loss(output, target, weight=getattr(self, "weight", None))
             inputs = torch.cat([inputs, output], dim=1)[:, -self.in_frames :]
 
         loss_dict = dict(loss_rec=loss_rec / future_frames)
         return loss_dict
 
-    def forward_step(self, inputs, times, graph, step: int):
+    def forward_step(self, inputs, times, graph, step: int, timestamp: dict | None = None):
         edge_index, edge_attr, node_static, grid_shape = graph
         bsz, _, _, height, width = inputs.shape
         if grid_shape is not None:
@@ -136,7 +181,8 @@ class GraphCastPredictor(BasePredictor):
             node_static = node_static.unsqueeze(0).expand(bsz, -1, -1)
         h = self.encoder(x, node_static)
         if self.time_embed:
-            timestamp = self.get_timestamp(inputs, times, step)
+            if timestamp is None:
+                timestamp = self.get_timestamp(inputs, times, step)
             time_token = self.step_embed(timestamp["step"]) + self.hour_embed(timestamp["hour"]) + self.doy_embed(timestamp["doy"])
             h = h + self.time_mlp(time_token).unsqueeze(1)
         for layer in self.pre_layers:
@@ -176,3 +222,26 @@ class GraphCastPredictor(BasePredictor):
                     curr_step += 1
 
         return outputs
+
+    @torch.no_grad()
+    def export_onnx(self, inputs, step, hour, doy):
+        normed_input = self.normalize(inputs)
+        normed_input = normed_input.to(dtype=self.dtype)
+        step = step.to(dtype=self.dtype)
+        hour = hour.to(dtype=self.dtype)
+        doy = doy.to(dtype=self.dtype)
+
+        self.reset_input(normed_input)
+        batch_size = inputs.shape[0]
+        timestamp = {
+            "step": step.repeat(batch_size),
+            "hour": hour.repeat(batch_size),
+            "doy": doy.repeat(batch_size),
+        }
+
+        height = normed_input.shape[-2]
+        width = normed_input.shape[-1]
+        graph = self._build_graph_from_shape(height, width, normed_input.device)
+        output = self.forward_step(normed_input, None, graph, step=0, timestamp=timestamp)
+        output = self.inv_normalize(output)
+        return output

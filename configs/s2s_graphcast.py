@@ -7,6 +7,8 @@ import logging
 from s2s_base import (  # noqa: F401
     buffers,
     dataloader,
+    depths,
+    freq,
     in_chans,
     in_frames,
     load_from_pretrain,
@@ -31,11 +33,10 @@ logging.basicConfig(level=logging.INFO)
 train.output_dir = output_dir
 
 # Model settings (maximize within 16GB)
-freq = 24
 embed_dim = 384
-num_layers = 6
-num_pre_layers = 1
-num_post_layers = 1
+num_pre_layers = depths[0]
+num_layers = depths[1]
+num_post_layers = depths[2]
 image_size = (121, 240)
 
 edge_trig = True

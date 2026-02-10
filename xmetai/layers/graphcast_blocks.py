@@ -68,11 +68,14 @@ class GraphCastLayer(nn.Module):
 
         agg = x.new_zeros(bsz, num_nodes, hidden_dim, dtype=msg.dtype)
         deg = x.new_zeros(num_nodes, dtype=msg.dtype)
-        deg.index_add_(0, dst, torch.ones_like(dst, dtype=deg.dtype))
+
+        ones = torch.ones_like(dst, dtype=deg.dtype)
+        deg = deg.scatter_add(0, dst, ones)
         deg = deg.clamp(min=1.0)
-        for b in range(bsz):
-            agg[b].index_add_(0, dst, msg[b])
-            agg[b] = agg[b] / deg.unsqueeze(-1)
+
+        idx = dst.unsqueeze(0).unsqueeze(-1).expand(bsz, -1, hidden_dim)
+        agg = agg.scatter_add(1, idx, msg)
+        agg = agg / deg.unsqueeze(0).unsqueeze(-1)
 
         update = self.node_mlp(torch.cat([x, agg], dim=-1))
         update = self.node_norm(update)

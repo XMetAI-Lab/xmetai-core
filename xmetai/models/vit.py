@@ -133,7 +133,7 @@ class ViTModel(BasePredictor):
             target = targets[:, k : k + self.out_frames]
             self.reset_input(input)
             output = self.forward_step(input, times, step=t)
-            loss_rec += charbonnier_loss(output, target)
+            loss_rec += charbonnier_loss(output, target, weight=getattr(self, "weight", None))
             self.logger.debug(f"loss_rec: {loss_rec.item()} with future frames {future_frames}.")
             # prepare next input with current output
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
