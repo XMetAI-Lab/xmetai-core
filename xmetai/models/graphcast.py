@@ -224,9 +224,14 @@ class GraphCastPredictor(BasePredictor):
 
     def process_data(self, data):
         batch = super().process_data(data)
-        for key in ("edge_index", "edge_attr", "node_static", "grid_shape"):
-            if key in data:
-                batch[key] = data[key]
+        if "edge_index" in data:
+            batch["edge_index"] = data["edge_index"].to(device=self.device, non_blocking=True)
+        if "edge_attr" in data:
+            batch["edge_attr"] = data["edge_attr"].to(dtype=self.dtype, device=self.device, non_blocking=True)
+        if "node_static" in data:
+            batch["node_static"] = data["node_static"].to(dtype=self.dtype, device=self.device, non_blocking=True)
+        if "grid_shape" in data:
+            batch["grid_shape"] = data["grid_shape"].to(device=self.device, non_blocking=True)
         return batch
 
     def forward(self, data):
