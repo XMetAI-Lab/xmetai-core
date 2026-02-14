@@ -13,6 +13,8 @@ import pandas as pd
 import torch
 import xarray as xr
 
+from xmetai.loss.pinn_loss import ChannelRegistry, pinn_loss
+
 from .meta import Meta
 
 __all__ = ["BasePredictor"]
@@ -79,12 +81,9 @@ class BasePredictor(Meta):
         **kwargs,
     ):
         # Extract PINN configuration from kwargs before passing remaining args to Meta
-        pinn_cfg = kwargs.pop("pinn", None)
-        pinn_enable = kwargs.pop("pinn_enable", False)
-        pinn_coeffs = kwargs.pop("pinn_coeffs", None)
-        pinn_channel_auto = kwargs.pop("pinn_channel_auto", True)
-        # in_names may be provided by configs for channel auto-detection
-        in_names = kwargs.pop("in_names", None)
+        self.pinn_enable = kwargs.pop("pinn_enable", False)
+        self.pinn_coeffs = kwargs.pop("pinn_coeffs", None)
+        self.in_names = kwargs.pop("in_names", None)
 
         super().__init__(*args, **kwargs)
 
@@ -123,24 +122,14 @@ class BasePredictor(Meta):
         self.logger.info(f"using log norm id: {self.logid}")
         self.logger.info(f"accumulate id: {self.accumid}. Do zero accumulate: {self.zero_accum}")
 
-        # PINN integration (lazy registration)
-        self.pinn_enabled = pinn_enable or (isinstance(pinn_cfg, dict) and pinn_cfg.get("enable", False))
-        self.pinn_coeffs = pinn_coeffs or (pinn_cfg.get("coeffs") if isinstance(pinn_cfg, dict) else None) or {}
-        self.pinn_channel_auto = pinn_channel_auto
-        self.pinn_reduction = "mean"
-        self.pinn_registry = None
-
-        # If config provided channel names at construction time, build registry now
-        if in_names is not None:
-            try:
-                # Lazy import to avoid heavy dependencies during early import
-                from xmetai.loss.pinn_loss import ChannelRegistry
-
-                if isinstance(in_names, (list, tuple)):
-                    self.pinn_registry = ChannelRegistry(list(in_names))
-            except Exception:
-                # Non-fatal: PINN will be initialized later when required
-                self.logger.debug("ChannelRegistry initialization deferred or failed; will try later.")
+        if self.pinn_enable and self.in_names is not None:
+            self.pinn_registry = ChannelRegistry(list(self.in_names))
+        else:
+            self.logger.error(
+                "pinn_enable=True but `in_names` was not provided to the model config. "
+                "PINN registry will be constructed lazily when compute_pinn_losses is invoked; "
+                "ensure `in_names` or model.buffers with channel metadata are supplied to avoid runtime errors."
+            )
 
     def train(self, mode=True):
         super().train(mode=mode)
@@ -330,35 +319,11 @@ class BasePredictor(Meta):
         Concrete subclasses may call self.compute_pinn_losses(output, target) after
         producing their standard loss_dict and merge the returned dict into it.
         """
-        if not self.pinn_enabled:
+        if not self.pinn_enable:
             return {}
 
-        # Ensure registry exists: try to build from buffers or available metadata
-        if self.pinn_registry is None:
-            try:
-                in_names = getattr(self, "in_names", None)
-                if in_names is None and hasattr(self, "_buffers") and "const" in self._buffers:
-                    # fall back to buffer names if available
-                    in_names = list(self._buffers.get("const").coords["channel"].values) if hasattr(self._buffers.get("const"), "coords") else None
-                if in_names is not None:
-                    from xmetai.loss.pinn_loss import ChannelRegistry
-
-                    self.pinn_registry = ChannelRegistry(list(in_names))
-            except Exception:
-                self.logger.debug("Could not initialize ChannelRegistry; PINN losses skipped for this call.")
-                return {}
-
-        from xmetai.loss.pinn_loss import pinn_loss as _pinn_loss
-
-        try:
-            pinn_dict = _pinn_loss(
-                output, target, self.pinn_registry, weight=getattr(self, "weight", None), coefficients=self.pinn_coeffs, reduction=self.pinn_reduction
-            )
-            # prefix keys with pinn_ to avoid collision with model losses
-            return {f"pinn_{k}": v for k, v in pinn_dict.items()}
-        except Exception:
-            self.logger.exception("pinn_loss computation failed")
-            return {}
+        pinn_dict = pinn_loss(output, target, self.pinn_registry, weight=getattr(self, "weight", None), coefficients=self.pinn_coeffs, reduction="mean")
+        return {f"pinn_{k}": v for k, v in pinn_dict.items()}
 
     @torch.no_grad()
     def test(self, data):

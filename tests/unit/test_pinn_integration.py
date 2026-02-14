@@ -1,5 +1,14 @@
-import torch
+"""
+Author: DouZesheng && douzsh@gmail.com
+Date: 2026-02-14 20:49:05
+LastEditTime: 2026-02-14 21:40:45
+Description:
+Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
+"""
+
 import math
+
+import torch
 
 from xmetai.models.base_predictor import BasePredictor
 
@@ -16,7 +25,7 @@ class DummyPredictor(BasePredictor):
         output = input[:, -1:]
         loss_rec = torch.nn.functional.mse_loss(output, target)
         loss_dict = {"loss_rec": loss_rec}
-        if self.pinn_enabled:
+        if self.pinn_enable:
             loss_dict.update(self.compute_pinn_losses(output, target))
         return loss_dict
 
@@ -30,7 +39,7 @@ def _make_channel_names():
     return names
 
 
-def test_pinn_enabled_and_grad_flow():
+def test_pinn_enable_and_grad_flow():
     torch.manual_seed(0)
     names = _make_channel_names()
     C = len(names)

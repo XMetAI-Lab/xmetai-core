@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Dict
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -103,7 +105,7 @@ class GraphCastPredictor(BasePredictor):
             ms_graph = None
             if self.use_multiscale:
                 ms_graph = [self._build_multiscale_from_shape(height, width, factor, inputs.device) for factor in self.coarse_factors]
-            return (*base_graph, ms_graph)
+            return (base_graph[0], base_graph[1], base_graph[2], base_graph[3], ms_graph)
 
         if edge_index.dim() == 3:
             edge_index = edge_index[0]
@@ -250,6 +252,7 @@ class GraphCastPredictor(BasePredictor):
         future_frames = targets.size(1)
         total_frames = self.start_frames + future_frames
         loss_rec = 0
+        pinn_acc: Dict[str, torch.Tensor] = {}
 
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
@@ -257,9 +260,16 @@ class GraphCastPredictor(BasePredictor):
             self.reset_input(inputs)
             output = self.forward_step(inputs, times, graph, step=t)
             loss_rec += charbonnier_loss(output, target, weight=getattr(self, "weight", None))
+            if self.pinn_enable:
+                pinn_losses = self.compute_pinn_losses(output, target)
+                for k, v in pinn_losses.items():
+                    pinn_acc[k] = pinn_acc.get(k, 0) + v
             inputs = torch.cat([inputs, output], dim=1)[:, -self.in_frames :]
 
         loss_dict = dict(loss_rec=loss_rec / future_frames)
+        if len(pinn_acc) > 0:
+            for k, v in pinn_acc.items():
+                loss_dict[k] = v / future_frames
         return loss_dict
 
     def forward_step(self, inputs, times, graph, step: int, timestamp: dict | None = None):
@@ -288,7 +298,7 @@ class GraphCastPredictor(BasePredictor):
         for layer in self.pre_layers:
             h = layer(h, edge_index, edge_attr)
         if ms_graph is not None and len(self.coarse_layers) > 0:
-            for level, coarse_layers in enumerate(self.coarse_layers):
+            for level, coarse_layers in enumerate(list(self.coarse_layers)):
                 if level >= len(ms_graph):
                     break
                 level_graph = ms_graph[level]

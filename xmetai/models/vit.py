@@ -6,6 +6,7 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 from functools import partial
+from typing import Dict
 
 import numpy as np
 import torch
@@ -16,7 +17,6 @@ from einops import rearrange
 from xmetai.builder import MODELS
 from xmetai.layers import HAS_MAMBA, CubeEmbed, TimestepEmbed, set_lora_step
 from xmetai.loss import charbonnier_loss
-from typing import Dict
 
 if HAS_MAMBA:
     from xmetai.layers import MambaVisionLayer
@@ -137,14 +137,11 @@ class ViTModel(BasePredictor):
             output = self.forward_step(input, times, step=t)
             loss_rec += charbonnier_loss(output, target, weight=getattr(self, "weight", None))
             # accumulate PINN losses per-step when enabled
-            if getattr(self, "pinn_enabled", False):
+            if self.pinn_enable:
                 # Defer to BasePredictor helper to compute pinn losses; only compute when enabled
-                try:
-                    pinn_losses = getattr(self, "compute_pinn_losses", lambda o, t: {})(output, target)
-                    for k, v in pinn_losses.items():
-                        pinn_acc[k] = pinn_acc.get(k, 0) + v
-                except Exception:
-                    self.logger.exception("Error computing PINN losses")
+                pinn_losses = self.compute_pinn_losses(output, target)
+                for k, v in pinn_losses.items():
+                    pinn_acc[k] = pinn_acc.get(k, 0) + v
             self.logger.debug(f"loss_rec: {loss_rec.item()} with future frames {future_frames}.")
             # prepare next input with current output
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]

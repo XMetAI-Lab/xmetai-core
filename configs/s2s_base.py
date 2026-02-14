@@ -87,12 +87,14 @@ freq = 24  # 24 hours for 1 day
 pinn_enable = False
 # coefficients for pinn losses (override in experiment configs)
 pinn_coeffs = {
-    "mass": 1e-4,
-    "geo": 1e-4,
-    "hydro": 1e-4,
-    "energy": 1e-4,
-    "moisture": 1e-4,
-    "thermal": 1e-4,
+    # mass continuity (disabled by default; enable explicitly if desired)
+    "mass": 0.0,
+    # geostrophic balance (disabled by default; currently very small magnitude)
+    "geo": 0.0,
+    "hydro": 1e-04,
+    "energy": 1e-06,
+    "moisture": 1.0,
+    "thermal": 1e-3,
 }
 
 depth_list = os.environ.get("DEPTH_LIST", "6,6,12,12")  # default depth list

@@ -16,21 +16,21 @@ from s2s_base import (  # noqa: F401
     depths,
     in_chans,
     in_frames,
+    in_names,
     load_from_pretrain,
     logid,
     maskid,
     optimizer,
     out_chans,
     output_dir,
+    pinn_coeffs,
+    pinn_enable,
     scheduler,
     step_range,
     test_chans,
     test_frames,
     test_names,
     train,
-    pinn_enable,
-    pinn_coeffs,
-    in_names,
 )
 
 from xmetai import MODELS
@@ -90,13 +90,12 @@ model = L(MODELS.get(model_name))(
     members=members,
     save_dir=output_dir + "/pred/",
     layer_type="mamba",  # Enable Mamba for better sequence modeling
+    # alpha=0.9 if load_from_pretrain else 1.0,
     # PINN integration: enable physics-informed losses for ViT experiments by default
     pinn_enable=True,
     pinn_coeffs=pinn_coeffs,
     in_names=in_names,
 )
-if load_from_pretrain:
-    model.alpha = 0.9  # sequence loss exponential weight factor
 
 model.buffers = buffers
 model.precision = "bf16"

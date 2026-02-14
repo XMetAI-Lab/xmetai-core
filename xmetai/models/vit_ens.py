@@ -112,13 +112,10 @@ class ViTEnsModel(ViTModel):
                 loss_rec += rolling_weights[k] * charbonnier_loss(output, target, weight=self.weight)
             loss_crps += rolling_weights[k] * afcrps_loss_lite(output, target, weight=self.weight)
             loss_noise += noise_magnitude_loss(delta_h)
-            if getattr(self, "pinn_enabled", False):
-                try:
-                    pinn_losses = getattr(self, "compute_pinn_losses", lambda o, t: {})(output, target)
-                    for k, v in pinn_losses.items():
-                        pinn_acc[k] = pinn_acc.get(k, 0) + v
-                except Exception:
-                    self.logger.exception("Error computing PINN losses")
+            if self.pinn_enable:
+                pinn_losses = self.compute_pinn_losses(output, target)
+                for k, v in pinn_losses.items():
+                    pinn_acc[k] = pinn_acc.get(k, 0) + v
 
             # prepare next input with current output
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
