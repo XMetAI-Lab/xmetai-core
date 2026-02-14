@@ -182,3 +182,6 @@ imagenet/data
 inference/data
 inference/model
 *tmp*
+
+# Agent instructions (local only)
+AGENTS.md
