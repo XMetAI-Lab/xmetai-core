@@ -300,7 +300,7 @@ class GraphCastPredictor(BasePredictor):
                 coarse_nodes.scatter_add_(1, idx, h)
                 coarse_nodes = coarse_nodes / coarse_counts.unsqueeze(0).unsqueeze(-1)
 
-                for layer in coarse_layers.children():
+                for layer in coarse_layers:
                     coarse_nodes = layer(coarse_nodes, coarse_edge_index, coarse_edge_attr)
 
                 h = h + coarse_nodes[:, fine_to_coarse]
