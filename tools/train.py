@@ -34,6 +34,7 @@ try:
         launch,
     )
     from xmetai.layers import HAS_MAMBA, SwinLayer, apply_lora_to_model, merge_lora_weights
+    from xmetai.layers.graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
 
     if HAS_MAMBA:
         from xmetai.layers import MambaVisionLayer
@@ -51,7 +52,7 @@ def build_model(cfg):
         logger.info("Model parameters: {:.3f}M".format(model.params() / 1e6))
     model.freeze(cfg.train.freeze)
     model.to(cfg.train.device_type)
-    mods = [SwinLayer, torch.nn.TransformerEncoderLayer]
+    mods = [SwinLayer, torch.nn.TransformerEncoderLayer, GraphCastLayer, GraphCastEncoder, GraphCastDecoder]
     if HAS_MAMBA:
         mods.append(MambaVisionLayer)
     mods = tuple(mods)

@@ -12,6 +12,8 @@ __all__ = [
     "build_grid_edges",
     "build_edge_attr",
     "build_node_static",
+    "build_coarse_mapping",
+    "downsample_lat_lon",
     "grid_latlon",
 ]
 
@@ -124,3 +126,62 @@ def build_node_static(lat: np.ndarray, lon: np.ndarray) -> torch.Tensor:
     ]
     node_static = np.stack(feats, axis=-1).astype(np.float32)
     return torch.from_numpy(node_static)
+
+
+def downsample_lat_lon(lat: np.ndarray, lon: np.ndarray, factor: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Downsample lat/lon by averaging blocks of size factor."""
+
+    if factor <= 1:
+        return lat, lon
+    height = len(lat)
+    width = len(lon)
+    coarse_h = math.ceil(height / factor)
+    coarse_w = math.ceil(width / factor)
+
+    coarse_lat = np.zeros(coarse_h, dtype=np.float32)
+    coarse_lon = np.zeros(coarse_w, dtype=np.float32)
+
+    for i in range(coarse_h):
+        start = i * factor
+        end = min((i + 1) * factor, height)
+        coarse_lat[i] = lat[start:end].mean()
+
+    for j in range(coarse_w):
+        start = j * factor
+        end = min((j + 1) * factor, width)
+        # Circular mean to handle 0/360 wrap-around correctly
+        block = lon[start:end]
+        sin_mean = np.sin(np.deg2rad(block)).mean()
+        cos_mean = np.cos(np.deg2rad(block)).mean()
+        coarse_lon[j] = np.rad2deg(np.arctan2(sin_mean, cos_mean)) % 360.0
+
+    return coarse_lat, coarse_lon
+
+
+def build_coarse_mapping(height: int, width: int, factor: int) -> Tuple[torch.Tensor, torch.Tensor, int, int]:
+    """Map fine grid nodes to coarse grid indices.
+
+    Returns:
+        fine_to_coarse: (N_f,) long tensor
+        coarse_counts: (N_c,) float tensor
+        coarse_h: int
+        coarse_w: int
+    """
+
+    if factor <= 1:
+        coarse_h = height
+        coarse_w = width
+    else:
+        coarse_h = math.ceil(height / factor)
+        coarse_w = math.ceil(width / factor)
+
+    fine_to_coarse = torch.zeros(height * width, dtype=torch.long)
+    for i in range(height):
+        for j in range(width):
+            ch = min(i // factor, coarse_h - 1)
+            cw = min(j // factor, coarse_w - 1)
+            fine_to_coarse[i * width + j] = ch * coarse_w + cw
+
+    coarse_counts = torch.bincount(fine_to_coarse, minlength=coarse_h * coarse_w).float()
+    coarse_counts = coarse_counts.clamp(min=1.0)
+    return fine_to_coarse, coarse_counts, coarse_h, coarse_w

@@ -13,23 +13,24 @@ on:
       - 'tests/**'
       - '.pre-commit-config.yaml'
       - 'pyproject.toml'
-  pull_request_target:
-    types: [opened, synchronize, reopened, edited]
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**/*.py'
+      - 'xmetai/**'
+      - 'configs/**'
+      - 'common/**'
+      - 'tools/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '.pre-commit-config.yaml'
+      - 'pyproject.toml'
 
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (PR)
-        if: github.event_name == 'pull_request_target'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Checkout (push)
-        if: github.event_name != 'pull_request_target'
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0

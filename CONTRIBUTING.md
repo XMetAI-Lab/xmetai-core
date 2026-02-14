@@ -70,12 +70,6 @@ pytest tests -q
 bash scripts/train.bash -m configs/s2s_vit.py train.max_iter=20000
 ```
 
-- Slurm/HPC：使用 [scripts/slurm_train.bash](scripts/slurm_train.bash)。示例：
-
-```bash
-bash scripts/slurm_train.bash -n 4 -g 8 -p gpu --script configs/iwc_mamba.py -- --eval
-```
-
 注意：不要直接编辑自动生成的 [configs/tmp_config.py](configs/tmp_config.py)。
 
 ## 提交流程

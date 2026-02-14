@@ -7,7 +7,13 @@ import torch
 import torch.nn as nn
 
 from xmetai.builder import MODELS
-from xmetai.data.weather.graphcast_grid import build_edge_attr, build_grid_edges, build_node_static
+from xmetai.data.weather.graphcast_grid import (
+    build_coarse_mapping,
+    build_edge_attr,
+    build_grid_edges,
+    build_node_static,
+    downsample_lat_lon,
+)
 from xmetai.layers import TimestepEmbed
 from xmetai.layers.graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
 from xmetai.loss import charbonnier_loss
@@ -32,6 +38,9 @@ class GraphCastPredictor(BasePredictor):
         time_embed: bool = True,
         num_pre_layers: int = 0,
         num_post_layers: int = 0,
+        use_multiscale: bool = False,
+        coarse_factors: list[int] | None = None,
+        num_coarse_layers: int | list[int] = 2,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -45,13 +54,28 @@ class GraphCastPredictor(BasePredictor):
         self.time_embed = time_embed
         self.num_pre_layers = num_pre_layers
         self.num_post_layers = num_post_layers
+        self.use_multiscale = use_multiscale
+        self.coarse_factors = coarse_factors
+        self.num_coarse_layers = num_coarse_layers
         self._graph_cache = {}
+        self._multiscale_cache = {}
 
         in_dim = self.in_chans * self.in_frames
         self.encoder = GraphCastEncoder(in_dim, embed_dim, static_dim=static_dim)
         self.pre_layers = nn.ModuleList([GraphCastLayer(embed_dim, edge_dim, dropout=dropout) for _ in range(num_pre_layers)])
         self.layers = nn.ModuleList([GraphCastLayer(embed_dim, edge_dim, dropout=dropout) for _ in range(num_layers)])
         self.post_layers = nn.ModuleList([GraphCastLayer(embed_dim, edge_dim, dropout=dropout) for _ in range(num_post_layers)])
+        if self.coarse_factors is None:
+            self.coarse_factors = [2]
+
+        if isinstance(self.num_coarse_layers, int):
+            layer_counts = [self.num_coarse_layers for _ in self.coarse_factors]
+        else:
+            if len(self.num_coarse_layers) != len(self.coarse_factors):
+                raise ValueError("num_coarse_layers must match coarse_factors length")
+            layer_counts = self.num_coarse_layers
+
+        self.coarse_layers = nn.ModuleList([nn.ModuleList([GraphCastLayer(embed_dim, edge_dim, dropout=dropout) for _ in range(n)]) for n in layer_counts])
         self.decoder = GraphCastDecoder(embed_dim, self.out_chans)
         if self.time_embed:
             self.step_embed = TimestepEmbed(embed_dim)
@@ -63,14 +87,20 @@ class GraphCastPredictor(BasePredictor):
                 nn.Linear(embed_dim * 2, embed_dim),
             )
 
-    def _extract_graph(self, data):
+    def _extract_graph(self, data, inputs):
         edge_index = data.get("edge_index")
         edge_attr = data.get("edge_attr")
         node_static = data.get("node_static")
         grid_shape = data.get("grid_shape")
 
         if edge_index is None or edge_attr is None:
-            raise ValueError("GraphCastPredictor requires edge_index and edge_attr in batch data.")
+            height = inputs.shape[-2]
+            width = inputs.shape[-1]
+            base_graph = self._build_graph_from_shape(height, width, inputs.device)
+            ms_graph = None
+            if self.use_multiscale:
+                ms_graph = [self._build_multiscale_from_shape(height, width, factor, inputs.device) for factor in self.coarse_factors]
+            return (*base_graph, ms_graph)
 
         if edge_index.dim() == 3:
             edge_index = edge_index[0]
@@ -89,10 +119,19 @@ class GraphCastPredictor(BasePredictor):
             node_static = node_static.to(device=self.device, dtype=self.dtype)
         if grid_shape is not None:
             grid_shape = grid_shape.to(device=self.device)
-        return edge_index, edge_attr, node_static, grid_shape
+        ms_graph = None
+        if self.use_multiscale:
+            height = inputs.shape[-2]
+            width = inputs.shape[-1]
+            if grid_shape is not None:
+                height = int(grid_shape[0].item())
+                width = int(grid_shape[1].item())
+            factors = self.coarse_factors or [2]
+            ms_graph = [self._build_multiscale_from_shape(height, width, factor, inputs.device) for factor in factors]
+        return edge_index, edge_attr, node_static, grid_shape, ms_graph
 
     def _build_graph_from_shape(self, height: int, width: int, device):
-        cache_key = (height, width, self.edge_dim, self.static_dim)
+        cache_key = (height, width, self.edge_dim, self.static_dim, self.neighbors)
         if cache_key in self._graph_cache:
             edge_index, edge_attr, node_static, grid_shape = self._graph_cache[cache_key]
             return (
@@ -134,11 +173,65 @@ class GraphCastPredictor(BasePredictor):
             grid_shape.to(device=device),
         )
 
+    def _build_multiscale_from_shape(self, height: int, width: int, factor: int, device):
+        cache_key = (height, width, self.edge_dim, factor, self.neighbors)
+        if cache_key in self._multiscale_cache:
+            cached = self._multiscale_cache[cache_key]
+            return {
+                "edge_index": cached["edge_index"].to(device=device),
+                "edge_attr": cached["edge_attr"].to(device=device, dtype=self.dtype),
+                "fine_to_coarse": cached["fine_to_coarse"].to(device=device),
+                "coarse_counts": cached["coarse_counts"].to(device=device, dtype=self.dtype),
+                "coarse_shape": cached["coarse_shape"].to(device=device),
+            }
+
+        if hasattr(self, "lat") and hasattr(self, "lon"):
+            lat_value = getattr(self, "lat")
+            lon_value = getattr(self, "lon")
+            lat_tensor = torch.as_tensor(lat_value).detach().cpu()
+            lon_tensor = torch.as_tensor(lon_value).detach().cpu()
+            lat = np.asarray(lat_tensor.to(torch.float32).numpy(), dtype=np.float32)
+            lon = np.asarray(lon_tensor.to(torch.float32).numpy(), dtype=np.float32)
+        else:
+            lat = np.linspace(90, -90, height, dtype=np.float32)
+            lon = np.linspace(0, 360, width, dtype=np.float32, endpoint=False)
+
+        fine_to_coarse, coarse_counts, coarse_h, coarse_w = build_coarse_mapping(height, width, factor)
+        coarse_lat, coarse_lon = downsample_lat_lon(lat, lon, factor)
+        coarse_lat_rad = np.deg2rad(coarse_lat)
+        coarse_lon_rad = np.deg2rad(coarse_lon)
+
+        coarse_edge_index = build_grid_edges(coarse_h, coarse_w, neighbors=self.neighbors, periodic_lon=True)
+        include_trig = self.edge_dim == 7
+        coarse_edge_attr = build_edge_attr(coarse_lat_rad, coarse_lon_rad, coarse_edge_index, include_trig=include_trig)
+        coarse_shape = torch.tensor([coarse_h, coarse_w], dtype=torch.long)
+
+        ms_graph = {
+            "edge_index": coarse_edge_index,
+            "edge_attr": coarse_edge_attr,
+            "fine_to_coarse": fine_to_coarse,
+            "coarse_counts": coarse_counts,
+            "coarse_shape": coarse_shape,
+        }
+        self._multiscale_cache[cache_key] = ms_graph
+        return {
+            "edge_index": coarse_edge_index.to(device=device),
+            "edge_attr": coarse_edge_attr.to(device=device, dtype=self.dtype),
+            "fine_to_coarse": fine_to_coarse.to(device=device),
+            "coarse_counts": coarse_counts.to(device=device, dtype=self.dtype),
+            "coarse_shape": coarse_shape.to(device=device),
+        }
+
     def process_data(self, data):
         batch = super().process_data(data)
-        for key in ("edge_index", "edge_attr", "node_static", "grid_shape"):
-            if key in data:
-                batch[key] = data[key]
+        if "edge_index" in data:
+            batch["edge_index"] = data["edge_index"].to(device=self.device, non_blocking=True)
+        if "edge_attr" in data:
+            batch["edge_attr"] = data["edge_attr"].to(dtype=self.dtype, device=self.device, non_blocking=True)
+        if "node_static" in data:
+            batch["node_static"] = data["node_static"].to(dtype=self.dtype, device=self.device, non_blocking=True)
+        if "grid_shape" in data:
+            batch["grid_shape"] = data["grid_shape"].to(device=self.device, non_blocking=True)
         return batch
 
     def forward(self, data):
@@ -149,7 +242,7 @@ class GraphCastPredictor(BasePredictor):
         inputs = data["input"]
         times = data["times"]
         targets = data["targets"]
-        graph = self._extract_graph(data)
+        graph = self._extract_graph(data, inputs)
 
         future_frames = targets.size(1)
         total_frames = self.start_frames + future_frames
@@ -167,7 +260,11 @@ class GraphCastPredictor(BasePredictor):
         return loss_dict
 
     def forward_step(self, inputs, times, graph, step: int, timestamp: dict | None = None):
-        edge_index, edge_attr, node_static, grid_shape = graph
+        if len(graph) == 4:
+            edge_index, edge_attr, node_static, grid_shape = graph
+            ms_graph = None
+        else:
+            edge_index, edge_attr, node_static, grid_shape, ms_graph = graph
         bsz, _, _, height, width = inputs.shape
         if grid_shape is not None:
             height = int(grid_shape[0].item())
@@ -187,6 +284,26 @@ class GraphCastPredictor(BasePredictor):
             h = h + self.time_mlp(time_token).unsqueeze(1)
         for layer in self.pre_layers:
             h = layer(h, edge_index, edge_attr)
+        if ms_graph is not None and len(self.coarse_layers) > 0:
+            for level, coarse_layers in enumerate(self.coarse_layers):
+                if level >= len(ms_graph):
+                    break
+                level_graph = ms_graph[level]
+                fine_to_coarse = level_graph["fine_to_coarse"]
+                coarse_counts = level_graph["coarse_counts"]
+                coarse_edge_index = level_graph["edge_index"]
+                coarse_edge_attr = level_graph["edge_attr"]
+
+                num_coarse = coarse_counts.size(0)
+                idx = fine_to_coarse.unsqueeze(0).unsqueeze(-1).expand(h.size(0), -1, h.size(-1))
+                coarse_nodes = h.new_zeros(h.size(0), num_coarse, h.size(-1))
+                coarse_nodes.scatter_add_(1, idx, h)
+                coarse_nodes = coarse_nodes / coarse_counts.unsqueeze(0).unsqueeze(-1)
+
+                for layer in coarse_layers:
+                    coarse_nodes = layer(coarse_nodes, coarse_edge_index, coarse_edge_attr)
+
+                h = h + coarse_nodes[:, fine_to_coarse]
         for layer in self.layers:
             h = layer(h, edge_index, edge_attr)
         for layer in self.post_layers:
@@ -210,7 +327,7 @@ class GraphCastPredictor(BasePredictor):
         chw = list(inputs.shape[-3:])
         outputs = inputs.new_zeros(inputs.shape[0], len(steps), *chw)
 
-        graph = self._extract_graph(data)
+        graph = self._extract_graph(data, inputs)
         for num_step in self.step_range:
             curr_step = 0
             for step in range(num_step):
@@ -242,6 +359,10 @@ class GraphCastPredictor(BasePredictor):
         height = normed_input.shape[-2]
         width = normed_input.shape[-1]
         graph = self._build_graph_from_shape(height, width, normed_input.device)
+        if self.use_multiscale:
+            factors = self.coarse_factors or [2]
+            ms_graph = [self._build_multiscale_from_shape(height, width, factor, normed_input.device) for factor in factors]
+            graph = (*graph, ms_graph)
         output = self.forward_step(normed_input, None, graph, step=0, timestamp=timestamp)
         output = self.inv_normalize(output)
         return output
