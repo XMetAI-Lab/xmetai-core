@@ -131,7 +131,7 @@ class GraphCastPredictor(BasePredictor):
         return edge_index, edge_attr, node_static, grid_shape, ms_graph
 
     def _build_graph_from_shape(self, height: int, width: int, device):
-        cache_key = (height, width, self.edge_dim, self.static_dim)
+        cache_key = (height, width, self.edge_dim, self.static_dim, self.neighbors)
         if cache_key in self._graph_cache:
             edge_index, edge_attr, node_static, grid_shape = self._graph_cache[cache_key]
             return (
@@ -174,7 +174,7 @@ class GraphCastPredictor(BasePredictor):
         )
 
     def _build_multiscale_from_shape(self, height: int, width: int, factor: int, device):
-        cache_key = (height, width, self.edge_dim, factor)
+        cache_key = (height, width, self.edge_dim, factor, self.neighbors)
         if cache_key in self._multiscale_cache:
             cached = self._multiscale_cache[cache_key]
             return {
@@ -294,10 +294,11 @@ class GraphCastPredictor(BasePredictor):
                 coarse_edge_index = level_graph["edge_index"]
                 coarse_edge_attr = level_graph["edge_attr"]
 
-                coarse_nodes = h.new_zeros(h.size(0), coarse_counts.size(0), h.size(-1))
-                for b in range(h.size(0)):
-                    coarse_nodes[b].index_add_(0, fine_to_coarse, h[b])
-                    coarse_nodes[b] = coarse_nodes[b] / coarse_counts.unsqueeze(-1)
+                num_coarse = coarse_counts.size(0)
+                idx = fine_to_coarse.unsqueeze(0).unsqueeze(-1).expand(h.size(0), -1, h.size(-1))
+                coarse_nodes = h.new_zeros(h.size(0), num_coarse, h.size(-1))
+                coarse_nodes.scatter_add_(1, idx, h)
+                coarse_nodes = coarse_nodes / coarse_counts.unsqueeze(0).unsqueeze(-1)
 
                 for layer in coarse_layers.children():
                     coarse_nodes = layer(coarse_nodes, coarse_edge_index, coarse_edge_attr)

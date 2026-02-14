@@ -149,7 +149,11 @@ def downsample_lat_lon(lat: np.ndarray, lon: np.ndarray, factor: int) -> Tuple[n
     for j in range(coarse_w):
         start = j * factor
         end = min((j + 1) * factor, width)
-        coarse_lon[j] = lon[start:end].mean()
+        # Circular mean to handle 0/360 wrap-around correctly
+        block = lon[start:end]
+        sin_mean = np.sin(np.deg2rad(block)).mean()
+        cos_mean = np.cos(np.deg2rad(block)).mean()
+        coarse_lon[j] = np.rad2deg(np.arctan2(sin_mean, cos_mean)) % 360.0
 
     return coarse_lat, coarse_lon
 
