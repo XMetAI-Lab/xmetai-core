@@ -78,6 +78,14 @@ class BasePredictor(Meta):
         *args,
         **kwargs,
     ):
+        # Extract PINN configuration from kwargs before passing remaining args to Meta
+        pinn_cfg = kwargs.pop("pinn", None)
+        pinn_enable = kwargs.pop("pinn_enable", False)
+        pinn_coeffs = kwargs.pop("pinn_coeffs", None)
+        pinn_channel_auto = kwargs.pop("pinn_channel_auto", True)
+        # in_names may be provided by configs for channel auto-detection
+        in_names = kwargs.pop("in_names", None)
+
         super().__init__(*args, **kwargs)
 
         self.in_chans = in_chans
@@ -114,6 +122,25 @@ class BasePredictor(Meta):
         self.logger.info(f"using mask(ocean) id: {self.maskid}, land mask id: {self.landid}")
         self.logger.info(f"using log norm id: {self.logid}")
         self.logger.info(f"accumulate id: {self.accumid}. Do zero accumulate: {self.zero_accum}")
+
+        # PINN integration (lazy registration)
+        self.pinn_enabled = pinn_enable or (isinstance(pinn_cfg, dict) and pinn_cfg.get("enable", False))
+        self.pinn_coeffs = pinn_coeffs or (pinn_cfg.get("coeffs") if isinstance(pinn_cfg, dict) else None) or {}
+        self.pinn_channel_auto = pinn_channel_auto
+        self.pinn_reduction = "mean"
+        self.pinn_registry = None
+
+        # If config provided channel names at construction time, build registry now
+        if in_names is not None:
+            try:
+                # Lazy import to avoid heavy dependencies during early import
+                from xmetai.loss.pinn_loss import ChannelRegistry
+
+                if isinstance(in_names, (list, tuple)):
+                    self.pinn_registry = ChannelRegistry(list(in_names))
+            except Exception:
+                # Non-fatal: PINN will be initialized later when required
+                self.logger.debug("ChannelRegistry initialization deferred or failed; will try later.")
 
     def train(self, mode=True):
         super().train(mode=mode)

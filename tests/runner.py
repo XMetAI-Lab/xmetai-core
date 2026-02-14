@@ -13,7 +13,9 @@ def run_tests(args=None):
     cmd = ["python", "-m", "pytest"]
     if args:
         cmd.extend(args)
-    return subprocess.run(cmd, cwd=Path(__file__).parent)
+    # Run pytest from repository root so test paths like "tests/unit" resolve
+    repo_root = Path(__file__).parent.parent
+    return subprocess.run(cmd, cwd=repo_root)
 
 
 def run_all_tests():
@@ -37,22 +39,9 @@ def run_gpu_tests():
 def run_unit_tests():
     """Run unit tests (exclude slow/integration tests)."""
     print("Running unit tests...")
-    return run_tests(
-        [
-            "-v",
-            "-m",
-            "not slow",
-            "tests/unit/test_layers_basic.py",
-            "tests/unit/test_layers_vision.py",
-            "tests/unit/test_models.py",
-            "tests/unit/test_loss_metrics.py",
-            "tests/unit/test_data.py",
-            "tests/unit/test_graphcast_grid.py",
-            "tests/unit/test_graphcast_dataset.py",
-            "tests/unit/test_graphcast_model.py",
-            "tests/unit/test_lora.py",
-        ]
-    )
+    # Discover and run all tests under tests/unit so new tests are picked up
+    # automatically without editing this list.
+    return run_tests(["-v", "-m", "not slow", "tests/unit"])
 
 
 def run_integration_tests():
