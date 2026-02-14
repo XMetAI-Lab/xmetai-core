@@ -319,7 +319,46 @@ class BasePredictor(Meta):
         return result
 
     def forward(self, data):
-        return NotImplemented
+        # Concrete predictors return a dict of losses during training. BasePredictor
+        # itself does not implement forward; concrete subclasses should override.
+        raise NotImplementedError
+
+    def compute_pinn_losses(self, output: torch.Tensor, target: torch.Tensor) -> dict:
+        """Helper that computes PINN losses when enabled.
+
+        Returns a mapping of pinn loss key -> scalar tensor (already scaled by coeffs).
+        Concrete subclasses may call self.compute_pinn_losses(output, target) after
+        producing their standard loss_dict and merge the returned dict into it.
+        """
+        if not self.pinn_enabled:
+            return {}
+
+        # Ensure registry exists: try to build from buffers or available metadata
+        if self.pinn_registry is None:
+            try:
+                in_names = getattr(self, "in_names", None)
+                if in_names is None and hasattr(self, "_buffers") and "const" in self._buffers:
+                    # fall back to buffer names if available
+                    in_names = list(self._buffers.get("const").coords["channel"].values) if hasattr(self._buffers.get("const"), "coords") else None
+                if in_names is not None:
+                    from xmetai.loss.pinn_loss import ChannelRegistry
+
+                    self.pinn_registry = ChannelRegistry(list(in_names))
+            except Exception:
+                self.logger.debug("Could not initialize ChannelRegistry; PINN losses skipped for this call.")
+                return {}
+
+        from xmetai.loss.pinn_loss import pinn_loss as _pinn_loss
+
+        try:
+            pinn_dict = _pinn_loss(
+                output, target, self.pinn_registry, weight=getattr(self, "weight", None), coefficients=self.pinn_coeffs, reduction=self.pinn_reduction
+            )
+            # prefix keys with pinn_ to avoid collision with model losses
+            return {f"pinn_{k}": v for k, v in pinn_dict.items()}
+        except Exception:
+            self.logger.exception("pinn_loss computation failed")
+            return {}
 
     @torch.no_grad()
     def test(self, data):

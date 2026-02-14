@@ -83,6 +83,18 @@ in_frames = 2
 out_chans = len(out_names)
 freq = 24  # 24 hours for 1 day
 
+# PINN defaults (disabled by default; enable in experiment configs)
+pinn_enable = False
+# coefficients for pinn losses (override in experiment configs)
+pinn_coeffs = {
+    "mass": 1e-4,
+    "geo": 1e-4,
+    "hydro": 1e-4,
+    "energy": 1e-4,
+    "moisture": 1e-4,
+    "thermal": 1e-4,
+}
+
 depth_list = os.environ.get("DEPTH_LIST", "6,6,12,12")  # default depth list
 depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 

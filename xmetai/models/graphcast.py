@@ -87,6 +87,9 @@ class GraphCastPredictor(BasePredictor):
                 nn.Linear(embed_dim * 2, embed_dim),
             )
 
+        # PINN accumulator placeholder
+        self._pinn_acc = {}
+
     def _extract_graph(self, data, inputs):
         edge_index = data.get("edge_index")
         edge_attr = data.get("edge_attr")

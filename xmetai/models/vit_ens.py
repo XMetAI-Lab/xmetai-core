@@ -99,6 +99,7 @@ class ViTEnsModel(ViTModel):
         loss_rec = 0
         loss_crps = 0
         loss_noise = 0
+        pinn_acc: dict[str, torch.Tensor] = {}
 
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
@@ -111,11 +112,21 @@ class ViTEnsModel(ViTModel):
                 loss_rec += rolling_weights[k] * charbonnier_loss(output, target, weight=self.weight)
             loss_crps += rolling_weights[k] * afcrps_loss_lite(output, target, weight=self.weight)
             loss_noise += noise_magnitude_loss(delta_h)
+            if getattr(self, "pinn_enabled", False):
+                try:
+                    pinn_losses = getattr(self, "compute_pinn_losses", lambda o, t: {})(output, target)
+                    for k, v in pinn_losses.items():
+                        pinn_acc[k] = pinn_acc.get(k, 0) + v
+                except Exception:
+                    self.logger.exception("Error computing PINN losses")
 
             # prepare next input with current output
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
 
         loss_dict = dict(loss_rec=loss_rec, loss_crps=loss_crps, loss_noise=loss_noise)
+        if len(pinn_acc) > 0:
+            for k, v in pinn_acc.items():
+                loss_dict[k] = v
         return loss_dict
 
     def forward_step(self, input, times=None, step=None, timestamp=None):
