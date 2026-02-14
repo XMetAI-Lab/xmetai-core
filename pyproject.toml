@@ -11,11 +11,11 @@ authors = [
   { name = "XMetAI Lab", email = "contact@xmetai.org" }
 ]
 readme = "README.md"
-license = { file = "LICENSE" }
+license = { text = "GPL-3.0-or-later" }
 keywords = ["meteorology", "AI", "deep learning", "weather", "climate"]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: Apache Software License",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
   "Operating System :: OS Independent"
 ]
 requires-python = ">=3.8"
