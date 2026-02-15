@@ -83,18 +83,16 @@ in_frames = 2
 out_chans = len(out_names)
 freq = 24  # 24 hours for 1 day
 
-# PINN defaults (disabled by default; enable in experiment configs)
-pinn_enable = False
 # coefficients for pinn losses (override in experiment configs)
 pinn_coeffs = {
     # mass continuity (disabled by default; enable explicitly if desired)
     "mass": 0.0,
     # geostrophic balance (disabled by default; currently very small magnitude)
     "geo": 0.0,
-    "hydro": 1e-04,
-    "energy": 1e-06,
-    "moisture": 1.0,
-    "thermal": 1e-3,
+    "hydro": 1e-05,
+    "energy": 1e-07,
+    "moisture": 0.05,
+    "thermal": 5e-4,
 }
 
 depth_list = os.environ.get("DEPTH_LIST", "6,6,12,12")  # default depth list

@@ -24,7 +24,6 @@ from s2s_base import (  # noqa: F401
     out_chans,
     output_dir,
     pinn_coeffs,
-    pinn_enable,
     scheduler,
     step_range,
     test_chans,
