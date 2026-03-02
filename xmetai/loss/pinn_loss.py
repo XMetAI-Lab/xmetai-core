@@ -36,6 +36,7 @@ __all__ = [
     "moisture_conservation_loss",
     "thermal_wind_loss",
     "pinn_loss",
+    "potential_vorticity_loss",
 ]
 
 logger = logging.getLogger(__name__)
@@ -526,6 +527,85 @@ def thermal_wind_loss(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 7. Potential Vorticity (PV) structure constraint
+# ---------------------------------------------------------------------------
+def potential_vorticity_loss(
+    output: torch.Tensor,
+    registry: ChannelRegistry,
+    weight: Optional[torch.Tensor] = None,
+    reduction: str = "mean",
+) -> torch.Tensor:
+    r"""Penalise deviation from potential vorticity (PV) structure.
+
+    PV (Ertel) for pressure coordinates (approximate):
+        PV = (f + ζ) * (∂θ/∂p)
+    其中ζ为相对涡度，θ为位温。
+    这里只做简化：
+        ζ ≈ dv/dx - du/dy
+        θ = T * (p0/p)^(R_d/c_p)
+
+    Args:
+        output: (B, T, C, H, W)
+        registry: ChannelRegistry
+        weight: Optional latitude weight
+        reduction: "mean" or "sum"
+    """
+    B, T, C, H, W = output.shape
+    lat_rad, _ = _make_lat_lon(H, W, output.device, output.dtype)
+    dlat = math.pi / (H - 1)
+    dlon = 2.0 * math.pi / W
+
+    u = _extract_var(output, registry, "u")  # (B,T,L,H,W)
+    v = _extract_var(output, registry, "v")
+    t = _extract_var(output, registry, "t")
+    p = registry.pressure_pa(device=output.device, dtype=output.dtype)  # (L,)
+    p0 = 100000.0  # 1000 hPa in Pa
+
+    # 1. 计算ζ (相对涡度)
+    dv_dx = _dfdx(v, lat_rad, dlon)  # (B,T,L,H,W)
+    du_dy = _dfdy(u, dlat)  # (B,T,L,H-2,W)
+    # 对齐纬度
+    dv_dx = dv_dx[..., 1:-1, :]
+    zeta = dv_dx - du_dy  # (B,T,L,H-2,W)
+
+    # 2. 计算θ (位温)
+    # θ = T * (p0/p)^(R_d/c_p)
+    exponent = R_D / C_P
+    theta = t * (p0 / p.view(1, 1, -1, 1, 1)) ** exponent  # (B,T,L,H,W)
+    # 对齐纬度
+    theta = theta[..., 1:-1, :]
+
+    # 3. 计算∂θ/∂p (用有限差分)
+    # 先对p轴做差分
+    dtheta_dp = (theta[:, :, 1:] - theta[:, :, :-1]) / (p[1:].view(1, 1, -1, 1, 1) - p[:-1].view(1, 1, -1, 1, 1))
+    # 取中间层的ζ和f
+    zeta_mid = 0.5 * (zeta[:, :, 1:] + zeta[:, :, :-1])  # (B,T,L-1,H-2,W)
+    f = _coriolis(lat_rad[1:-1])  # (H-2,)
+    f = f.view(1, 1, 1, -1, 1)
+
+    # 4. PV = (f + ζ) * ∂θ/∂p
+    pv = (f + zeta_mid) * dtheta_dp  # (B,T,L-1,H-2,W)
+
+    # 5. 约束目标：PV结构平滑或接近某个climatology（这里只做平滑约束）
+    # 例如：鼓励PV在空间上平滑
+    dpv_dx = _dfdx(pv, lat_rad[1:-1], dlon)
+    dpv_dy = _dfdy(pv, dlat)
+    # 对齐纬度
+    dpv_dx = dpv_dx[..., 1:-1, :]
+    smoothness = dpv_dx**2 + dpv_dy**2
+
+    loss = smoothness
+    if weight is not None:
+        w = weight
+        if w.ndim == 3 and w.shape[1] == H:
+            w = w[:, 2:-2, :]  # 因为纬度两次裁剪
+        loss = loss * w
+    if reduction == "mean":
+        return loss.mean()
+    return loss.sum()
+
+
 def pinn_loss(
     output: torch.Tensor,
     target: torch.Tensor,
@@ -578,5 +658,9 @@ def pinn_loss(
     c = coeff.get("thermal", default_coeff)
     if c > 0 and registry.has_var("u") and registry.has_var("t"):
         loss_dict["loss_thermal"] = c * thermal_wind_loss(output, registry, weight, reduction)
+
+    c = coeff.get("pv", default_coeff)
+    if c > 0 and registry.has_var("u") and registry.has_var("v") and registry.has_var("t"):
+        loss_dict["loss_pv"] = c * potential_vorticity_loss(output, registry, weight, reduction)
 
     return loss_dict

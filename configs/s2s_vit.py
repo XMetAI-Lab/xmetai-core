@@ -94,6 +94,7 @@ model = L(MODELS.get(model_name))(
     pinn_enable=True,
     pinn_coeffs=pinn_coeffs,
     in_names=in_names,
+    pinn_use_denorm=True,  # whether to denormalize the inputs before computing PINN losses; typically improves PINN performance
 )
 
 model.buffers = buffers

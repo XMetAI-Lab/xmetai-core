@@ -85,6 +85,12 @@ class BasePredictor(Meta):
         self.pinn_coeffs = kwargs.pop("pinn_coeffs", None)
         self.in_names = kwargs.pop("in_names", None)
 
+        # If True, convert normalized model outputs/targets back to physical
+        # units before evaluating PINN losses. This preserves gradients
+        # (we implement denorm inline below) so PINN losses remain
+        # differentiable when used during training.
+        self.pinn_use_denorm = kwargs.pop("pinn_use_denorm", False)
+
         super().__init__(*args, **kwargs)
 
         self.in_chans = in_chans
@@ -124,6 +130,8 @@ class BasePredictor(Meta):
 
         if self.pinn_enable and self.in_names is not None:
             self.pinn_registry = ChannelRegistry(list(self.in_names))
+            self.logger.info(f"enabling PINN losses with coefficients: {self.pinn_coeffs}")
+            self.logger.info(f"PINN loss use denormalized inputs: {self.pinn_use_denorm}")
         else:
             self.logger.error(
                 "pinn_enable=True but `in_names` was not provided to the model config. "
@@ -322,7 +330,20 @@ class BasePredictor(Meta):
         if not self.pinn_enable:
             return {}
 
-        pinn_dict = pinn_loss(output, target, self.pinn_registry, weight=getattr(self, "weight", None), coefficients=self.pinn_coeffs, reduction="mean")
+        # Optionally evaluate PINN losses in denormalized (physical) units.
+        # We avoid calling `inv_normalize` here because that helper is
+        # decorated with `@torch.no_grad()` and would break gradient flow.
+        weight = getattr(self, "weight", None)
+
+        if self.pinn_use_denorm:
+            # Require mean/std buffers to be present
+            out_for_pinn = self.inv_normalize(output)
+            tgt_for_pinn = self.inv_normalize(target)
+        else:
+            out_for_pinn = output
+            tgt_for_pinn = target
+
+        pinn_dict = pinn_loss(out_for_pinn, tgt_for_pinn, self.pinn_registry, weight=weight, coefficients=self.pinn_coeffs, reduction="mean")
         return {f"pinn_{k}": v for k, v in pinn_dict.items()}
 
     @torch.no_grad()
