@@ -86,8 +86,8 @@ freq = 24  # 24 hours for 1 day
 # coefficients for pinn losses (override in experiment configs)
 pinn_coeffs = {
     # mass continuity (disabled by default; enable explicitly if desired)
-    "mass": 1e9,
-    # geostrophic balance (disabled by default; currently very small magnitude)
+    "mass": 0.0,
+    # geostrophic balance (enabled by default; adjust or disable in experiment configs if needed)
     "geo": 1e2,
     "hydro": 0.0,  # 2e-7
     "energy": 0.0,  # 1e-08

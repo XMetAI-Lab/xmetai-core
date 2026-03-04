@@ -156,7 +156,8 @@ def _dfdy(f: torch.Tensor, dlat: float) -> torch.Tensor:
 def _coriolis(lat_rad: torch.Tensor) -> torch.Tensor:
     """Coriolis parameter ``f = 2 Ω sin(φ)`` with latitude clamp to avoid div-by-zero at equator."""
     f = 2.0 * OMEGA * lat_rad.sin()
-    return f.clamp(min=1e-5)  # avoid zero near equator
+    # Clamp the magnitude while preserving sign to avoid div-by-zero near the equator.
+    return f.sign() * f.abs().clamp(min=1e-5)
 
 
 def _extract_var(
@@ -659,7 +660,7 @@ def pinn_loss(
     if c > 0 and registry.has_var("u") and registry.has_var("t"):
         loss_dict["loss_thermal"] = c * thermal_wind_loss(output, registry, weight, reduction)
 
-    c = coeff.get("pv", default_coeff)
+    c = coeff.get("pv", 0.0)  # PV loss is opt-in (default disabled)
     if c > 0 and registry.has_var("u") and registry.has_var("v") and registry.has_var("t"):
         loss_dict["loss_pv"] = c * potential_vorticity_loss(output, registry, weight, reduction)
 

@@ -133,6 +133,7 @@ class BasePredictor(Meta):
             self.logger.info(f"enabling PINN losses with coefficients: {self.pinn_coeffs}")
             self.logger.info(f"PINN loss use denormalized inputs: {self.pinn_use_denorm}")
         else:
+            self.pinn_enable = False  # disable PINN if we don't have channel names to construct the registry
             self.logger.error(
                 "pinn_enable=True but `in_names` was not provided to the model config. "
                 "PINN registry will be constructed lazily when compute_pinn_losses is invoked; "
@@ -336,9 +337,10 @@ class BasePredictor(Meta):
         weight = getattr(self, "weight", None)
 
         if self.pinn_use_denorm:
-            # Require mean/std buffers to be present
-            out_for_pinn = self.inv_normalize(output)
-            tgt_for_pinn = self.inv_normalize(target)
+            # Enable gradients for denormalization to preserve gradient flow
+            with torch.enable_grad():
+                out_for_pinn = self.inv_normalize(output)
+                tgt_for_pinn = self.inv_normalize(target)
         else:
             out_for_pinn = output
             tgt_for_pinn = target
