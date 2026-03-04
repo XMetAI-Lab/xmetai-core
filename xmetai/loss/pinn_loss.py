@@ -157,7 +157,7 @@ def _coriolis(lat_rad: torch.Tensor) -> torch.Tensor:
     """Coriolis parameter ``f = 2 Ω sin(φ)`` with latitude clamp to avoid div-by-zero at equator."""
     f = 2.0 * OMEGA * lat_rad.sin()
     # Clamp the magnitude while preserving sign to avoid div-by-zero near the equator.
-    return f.sign() * f.abs().clamp(min=1e-5)
+    return torch.copysign(f.abs().clamp(min=1e-5), f + 1e-10)
 
 
 def _extract_var(
