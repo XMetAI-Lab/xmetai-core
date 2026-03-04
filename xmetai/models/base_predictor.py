@@ -13,6 +13,8 @@ import pandas as pd
 import torch
 import xarray as xr
 
+from xmetai.loss.pinn_loss import ChannelRegistry, pinn_loss
+
 from .meta import Meta
 
 __all__ = ["BasePredictor"]
@@ -78,6 +80,17 @@ class BasePredictor(Meta):
         *args,
         **kwargs,
     ):
+        # Extract PINN configuration from kwargs before passing remaining args to Meta
+        self.pinn_enable = kwargs.pop("pinn_enable", False)
+        self.pinn_coeffs = kwargs.pop("pinn_coeffs", None)
+        self.in_names = kwargs.pop("in_names", None)
+
+        # If True, convert normalized model outputs/targets back to physical
+        # units before evaluating PINN losses. This preserves gradients
+        # (we implement denorm inline below) so PINN losses remain
+        # differentiable when used during training.
+        self.pinn_use_denorm = kwargs.pop("pinn_use_denorm", False)
+
         super().__init__(*args, **kwargs)
 
         self.in_chans = in_chans
@@ -114,6 +127,18 @@ class BasePredictor(Meta):
         self.logger.info(f"using mask(ocean) id: {self.maskid}, land mask id: {self.landid}")
         self.logger.info(f"using log norm id: {self.logid}")
         self.logger.info(f"accumulate id: {self.accumid}. Do zero accumulate: {self.zero_accum}")
+
+        if self.pinn_enable and self.in_names is not None:
+            self.pinn_registry = ChannelRegistry(list(self.in_names))
+            self.logger.info(f"enabling PINN losses with coefficients: {self.pinn_coeffs}")
+            self.logger.info(f"PINN loss use denormalized inputs: {self.pinn_use_denorm}")
+        else:
+            self.pinn_enable = False  # disable PINN if we don't have channel names to construct the registry
+            self.logger.error(
+                "pinn_enable=True but `in_names` was not provided to the model config. "
+                "PINN registry will be constructed lazily when compute_pinn_losses is invoked; "
+                "ensure `in_names` or model.buffers with channel metadata are supplied to avoid runtime errors."
+            )
 
     def train(self, mode=True):
         super().train(mode=mode)
@@ -292,7 +317,36 @@ class BasePredictor(Meta):
         return result
 
     def forward(self, data):
-        return NotImplemented
+        # Concrete predictors return a dict of losses during training. BasePredictor
+        # itself does not implement forward; concrete subclasses should override.
+        raise NotImplementedError
+
+    def compute_pinn_losses(self, output: torch.Tensor, target: torch.Tensor) -> dict:
+        """Helper that computes PINN losses when enabled.
+
+        Returns a mapping of pinn loss key -> scalar tensor (already scaled by coeffs).
+        Concrete subclasses may call self.compute_pinn_losses(output, target) after
+        producing their standard loss_dict and merge the returned dict into it.
+        """
+        if not self.pinn_enable:
+            return {}
+
+        # Optionally evaluate PINN losses in denormalized (physical) units.
+        # We avoid calling `inv_normalize` here because that helper is
+        # decorated with `@torch.no_grad()` and would break gradient flow.
+        weight = getattr(self, "weight", None)
+
+        if self.pinn_use_denorm:
+            # Enable gradients for denormalization to preserve gradient flow
+            with torch.enable_grad():
+                out_for_pinn = self.inv_normalize(output)
+                tgt_for_pinn = self.inv_normalize(target)
+        else:
+            out_for_pinn = output
+            tgt_for_pinn = target
+
+        pinn_dict = pinn_loss(out_for_pinn, tgt_for_pinn, self.pinn_registry, weight=weight, coefficients=self.pinn_coeffs, reduction="mean")
+        return {f"pinn_{k}": v for k, v in pinn_dict.items()}
 
     @torch.no_grad()
     def test(self, data):

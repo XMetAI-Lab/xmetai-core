@@ -6,6 +6,7 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 from functools import partial
+from typing import Dict
 
 import numpy as np
 import torch
@@ -67,7 +68,7 @@ class ViTModel(BasePredictor):
         # 定义一个标准 TransformerEncoderLayer
         if layer_type.lower() == "mamba":
             if not HAS_MAMBA:
-                raise ImportError("MambaVisionLayer requires mamba-ssm. " "Install it with: pip install '.[gpu]' or pip install mamba-ssm")
+                raise ImportError("MambaVisionLayer requires mamba-ssm. Install it with: pip install '.[gpu]' or pip install mamba-ssm")
             self.logger.info("Using Mamba style transformer blocks.")
             for _, depth in enumerate(depths):
                 block = MambaVisionLayer(
@@ -127,6 +128,7 @@ class ViTModel(BasePredictor):
         total_frames = self.start_frames + future_frames
 
         loss_rec = 0
+        pinn_acc: Dict[str, torch.Tensor] = {}
 
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
@@ -134,11 +136,21 @@ class ViTModel(BasePredictor):
             self.reset_input(input)
             output = self.forward_step(input, times, step=t)
             loss_rec += charbonnier_loss(output, target, weight=getattr(self, "weight", None))
+            # accumulate PINN losses per-step when enabled
+            if self.pinn_enable:
+                # Defer to BasePredictor helper to compute pinn losses; only compute when enabled
+                pinn_losses = self.compute_pinn_losses(output, target)
+                for k, v in pinn_losses.items():
+                    pinn_acc[k] = pinn_acc.get(k, 0) + v
             self.logger.debug(f"loss_rec: {loss_rec.item()} with future frames {future_frames}.")
             # prepare next input with current output
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
 
         loss_dict = dict(loss_rec=loss_rec / future_frames)
+        # finalize pinn accumulators (average across frames)
+        if len(pinn_acc) > 0:
+            for k, v in pinn_acc.items():
+                loss_dict[k] = v / future_frames
         return loss_dict
 
     def forward_step(self, input, times=None, step=None, timestamp=None):

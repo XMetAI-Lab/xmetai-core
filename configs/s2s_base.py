@@ -83,6 +83,19 @@ in_frames = 2
 out_chans = len(out_names)
 freq = 24  # 24 hours for 1 day
 
+# coefficients for pinn losses (override in experiment configs)
+pinn_coeffs = {
+    # mass continuity (disabled by default; enable explicitly if desired)
+    "mass": 0.0,
+    # geostrophic balance (enabled by default; adjust or disable in experiment configs if needed)
+    "geo": 1e2,
+    "hydro": 0.0,  # 2e-7
+    "energy": 0.0,  # 1e-08
+    "moisture": 1e6,
+    "thermal": 0.0,
+    "pv": 1e10,
+}
+
 depth_list = os.environ.get("DEPTH_LIST", "6,6,12,12")  # default depth list
 depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 

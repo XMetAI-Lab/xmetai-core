@@ -116,9 +116,3 @@ case "$TARGET" in
 esac
 
 echo_success "Tests completed!"
-
-        echo_error "Unknown command: $COMMAND"
-        $0 help
-        exit 1
-        ;;
-esac

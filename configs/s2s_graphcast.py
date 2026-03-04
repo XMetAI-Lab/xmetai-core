@@ -11,12 +11,14 @@ from s2s_base import (  # noqa: F401
     freq,
     in_chans,
     in_frames,
+    in_names,
     load_from_pretrain,
     logid,
     maskid,
     optimizer,
     out_chans,
     output_dir,
+    pinn_coeffs,
     scheduler,
     step_range,
     test_chans,
@@ -71,6 +73,9 @@ model = L(MODELS.get("GraphCastPredictor"))(
     step_range=step_range,
     members=1,
     save_dir=output_dir + "/pred/",
+    pinn_enable=True,
+    pinn_coeffs=pinn_coeffs,
+    in_names=in_names,
 )
 
 model.buffers = buffers
