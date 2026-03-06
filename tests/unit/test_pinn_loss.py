@@ -267,35 +267,43 @@ class TestThermalWindLoss:
 
 
 class TestCombinedPinnLoss:
-    def test_returns_all_keys(self, tensors, registry):
+    ALL_COEFF = {"mass": 1e-4, "geo": 1e-4, "hydro": 1e-4, "energy": 1e-4, "moisture": 1e-4, "thermal": 1e-4, "pv": 1e-4}
+
+    def test_no_loss_without_coefficients(self, tensors, registry):
+        """Default coefficients are 0 — no losses returned unless explicitly enabled."""
         output, target = tensors
         losses = pinn_loss(output, target, registry)
-        expected_keys = {"loss_mass", "loss_geo", "loss_hydro", "loss_energy", "loss_moisture", "loss_thermal"}
+        assert losses == {}
+
+    def test_returns_all_keys(self, tensors, registry):
+        output, target = tensors
+        losses = pinn_loss(output, target, registry, coefficients=self.ALL_COEFF)
+        expected_keys = {"loss_mass", "loss_geo", "loss_hydro", "loss_energy", "loss_moisture", "loss_thermal", "loss_pv"}
         assert set(losses.keys()) == expected_keys
 
     def test_all_values_finite(self, tensors, registry):
         output, target = tensors
-        losses = pinn_loss(output, target, registry)
+        losses = pinn_loss(output, target, registry, coefficients=self.ALL_COEFF)
         for k, v in losses.items():
             assert not torch.isnan(v), f"{k} is NaN"
             assert not torch.isinf(v), f"{k} is Inf"
 
     def test_coefficients(self, tensors, registry):
         output, target = tensors
-        coeff = {"mass": 0.0, "geo": 1.0, "hydro": 0.0, "energy": 0.0, "moisture": 0.0, "thermal": 0.0}
+        coeff = {"mass": 0.0, "geo": 1.0, "hydro": 0.0, "energy": 0.0, "moisture": 0.0, "thermal": 0.0, "pv": 0.0}
         losses = pinn_loss(output, target, registry, coefficients=coeff)
         assert "loss_geo" in losses
         assert "loss_mass" not in losses
 
     def test_with_weight(self, tensors, registry, weight):
         output, target = tensors
-        losses = pinn_loss(output, target, registry, weight=weight)
-        assert len(losses) == 6
+        losses = pinn_loss(output, target, registry, weight=weight, coefficients=self.ALL_COEFF)
+        assert len(losses) == 7
 
     def test_gradient_flow_combined(self, registry):
         output = torch.randn(B, T, C, H, W, requires_grad=True)
         target = torch.randn(B, T, C, H, W)
-        losses = pinn_loss(output, target, registry)
+        losses = pinn_loss(output, target, registry, coefficients=self.ALL_COEFF)
         total = sum(losses.values())
         total.backward()
         assert output.grad is not None
@@ -303,8 +311,8 @@ class TestCombinedPinnLoss:
 
     def test_sum_reduction(self, tensors, registry):
         output, target = tensors
-        losses_mean = pinn_loss(output, target, registry, reduction="mean")
-        losses_sum = pinn_loss(output, target, registry, reduction="sum")
+        losses_mean = pinn_loss(output, target, registry, reduction="mean", coefficients=self.ALL_COEFF)
+        losses_sum = pinn_loss(output, target, registry, reduction="sum", coefficients=self.ALL_COEFF)
         for k in losses_mean:
             assert losses_sum[k].item() >= losses_mean[k].item()
 
