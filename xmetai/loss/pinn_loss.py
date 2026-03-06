@@ -631,7 +631,7 @@ def pinn_loss(
         ``loss_mass``, ``loss_geo``, ``loss_hydro``, ``loss_energy``,
         ``loss_moisture``, ``loss_thermal``.
     """
-    default_coeff = 1e-4
+    default_coeff = 0.0
     coeff = coefficients or {}
 
     loss_dict: dict[str, torch.Tensor] = {}
@@ -660,7 +660,7 @@ def pinn_loss(
     if c > 0 and registry.has_var("u") and registry.has_var("t"):
         loss_dict["loss_thermal"] = c * thermal_wind_loss(output, registry, weight, reduction)
 
-    c = coeff.get("pv", 0.0)  # PV loss is opt-in (default disabled)
+    c = coeff.get("pv", default_coeff)
     if c > 0 and registry.has_var("u") and registry.has_var("v") and registry.has_var("t"):
         loss_dict["loss_pv"] = c * potential_vorticity_loss(output, registry, weight, reduction)
 
