@@ -451,12 +451,12 @@ class ExpandTrainer(SimpleTrainer):
         zero_grad_before_forward=False,
         async_write_metrics=False,
         use_ema=True,
-        increment_iter=1000,
+        teacher_forcing=dict(teach_iters=-1, teach_steps=10, teach_start=0),
         ens_train=False,
     ):
         """
         Args:
-            increment_iter (int): The number of iterations to increment the step.
+            teacher_forcing (dict): Configuration for teacher forcing.
         """
         super().__init__(
             model,
@@ -467,7 +467,7 @@ class ExpandTrainer(SimpleTrainer):
             async_write_metrics,
             use_ema,
         )
-        self.increment_iter = increment_iter
+        self.teacher_forcing = teacher_forcing
         self.future_step = 1
         self.ens_train = ens_train
         if ens_train:
@@ -540,8 +540,9 @@ class ExpandTrainer(SimpleTrainer):
 
     def expand_data(self, data):
         assert "targets" in data, "The data must contain the targets"
-        current_step = self.iter // self.increment_iter
-        future_step = min(current_step + 1, data["targets"].shape[1])
+        current_step = self.iter // self.teacher_forcing["teach_steps"]
+        current_step = max(current_step + 1, self.teacher_forcing["teach_start"])
+        future_step = min(current_step, data["targets"].shape[1])
         if self.future_step != future_step:
             self.logger.info(f"Expanding data to future step {future_step} from current step {self.future_step}")
             self.future_step = future_step
