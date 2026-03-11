@@ -540,7 +540,7 @@ class ExpandTrainer(SimpleTrainer):
 
     def expand_data(self, data):
         assert "targets" in data, "The data must contain the targets"
-        current_step = self.iter // self.teacher_forcing["teach_steps"]
+        current_step = self.iter // self.teacher_forcing["teach_iters"]
         current_step = max(current_step + 1, self.teacher_forcing["teach_start"])
         future_step = min(current_step, data["targets"].shape[1])
         if self.future_step != future_step:
