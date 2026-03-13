@@ -384,7 +384,6 @@ class SimpleTrainer(TrainerBase):
                 SimpleTrainer.write_metrics(loss_dict, data_time, iter, prefix)
             except Exception:
                 self.logger.exception("Exception in writing metrics: ")
-                raise
 
     @staticmethod
     def write_metrics(

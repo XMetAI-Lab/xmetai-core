@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch.distributions import kl_divergence
 
-__all__ = ["kl_loss", "kl_entropy_loss"]
+__all__ = ["kl_loss", "kl_detail_entropy_loss", "kl_entropy_loss"]
 
 
 def compute_kl(mean1, logvar1, mean2, logvar2):
@@ -21,6 +21,33 @@ def kl_loss(mean1, logvar1, mean2, logvar2):
     kl = compute_kl(mean1, logvar1, mean2, logvar2)
     loss = torch.mean(kl.flatten(1).sum(-1))
     return loss
+
+
+def kl_detail_entropy_loss(mean1, logvar1, mean2, logvar2, entropy_weight=0.1, min_std=1e-3, target_std=0.1):
+    # 1. Apply soft lower bound to stddev to avoid collapse
+    std_p = torch.clamp(torch.exp(0.5 * logvar1), min=min_std)
+    std_q = torch.clamp(torch.exp(0.5 * logvar2), min=min_std)
+
+    # 2. Replace distributions with stabilized versions
+    dist_p = torch.distributions.Normal(mean1, std_p)
+    dist_q = torch.distributions.Normal(mean2, std_q)
+
+    # 3. KL divergence
+    kl = kl_divergence(dist_q, dist_p)  # KL(q || p)
+    if kl.ndim > 2:
+        kl = kl.flatten(1)
+    kl_loss_value = kl.sum(dim=-1).mean()
+
+    # 3. Entropy regularization
+    entropy_p = 0.5 * torch.log(2 * torch.pi * torch.exp(torch.tensor(1.0, device=std_p.device)) * std_p.pow(2))
+    entropy_q = 0.5 * torch.log(2 * torch.pi * torch.exp(torch.tensor(1.0, device=std_q.device)) * std_q.pow(2))
+    entropy = (entropy_p + entropy_q).mean()
+
+    # penalty: only when std is smaller than target_std
+    penalty_factor = torch.mean(F.relu(target_std - std_p) + F.relu(target_std - std_q)) / target_std
+    entropy_reg = -entropy_weight * penalty_factor * entropy
+
+    return kl_loss_value + entropy_reg
 
 
 def kl_entropy_loss(dist_p, dist_q, w=1e-4, entropy_weight=1e-5, min_std=1e-3, target_std=0.1):
