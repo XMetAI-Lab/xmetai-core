@@ -154,6 +154,28 @@ class BasePredictor(Meta):
         step = input.new_full(input.shape[:1], t)
         return dict(step=step, hour=hour, doy=doy)
 
+    def build_loss_steps_and_weights(self, future_step: int, alpha: float, rollout_max: int):
+        """Build selected loss steps and normalized rolling weights."""
+        exponents = torch.arange(future_step, dtype=torch.float32)
+        rolling_weights = torch.pow(alpha, exponents)
+        loss_steps = set(range(future_step))
+        if rollout_max > 0 and future_step > rollout_max:
+            loss_steps = {0, future_step - 1}
+            middle_steps = list(range(1, future_step - 1))
+            num_additional = rollout_max - 2
+            if num_additional > 0:
+                selected = torch.randperm(len(middle_steps))[:num_additional].tolist()
+                loss_steps.update(middle_steps[i] for i in selected)
+
+        if len(loss_steps) < future_step:
+            valid_steps = sorted(loss_steps)
+            mask = torch.zeros_like(rolling_weights)
+            mask[valid_steps] = 1.0
+            rolling_weights = rolling_weights * mask
+
+        rolling_weights = rolling_weights / rolling_weights.sum().clamp_min(torch.finfo(rolling_weights.dtype).eps)
+        return loss_steps, rolling_weights
+
     @torch.no_grad()
     def inv_normalize(self, input, test_chans=[]):
         assert input.ndim == 5

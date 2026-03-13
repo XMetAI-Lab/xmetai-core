@@ -29,10 +29,16 @@ class Meta(nn.Module, metaclass=ABCMeta):
 
     def freeze(self, names=set()):
         for name in names:
-            m = getattr(self, f"{name}")
-            m.eval()
-            for p in m.parameters():
-                p.requires_grad = False
+            try:
+                m = getattr(self, f"{name}")
+                m.eval()
+                for p in m.parameters():
+                    p.requires_grad = False
+            except Exception as e:
+                print(f"Freeze {name} failed with error {e}")
+                for n, p in self.named_parameters():
+                    if name in n:
+                        p.requires_grad = False
 
     def train(self, mode=True):
         super().train(mode=mode)
