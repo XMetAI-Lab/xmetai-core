@@ -113,7 +113,6 @@ class BasePredictor(Meta):
         self.maskid = maskid
         self.landid = landid
         self.add_noise = add_noise
-
         self.logger = logging.getLogger(__name__)
 
         for k, v in buffers.items():
@@ -156,25 +155,32 @@ class BasePredictor(Meta):
 
     def build_loss_steps_and_weights(self, future_step: int, alpha: float, rollout_max: int):
         """Build selected loss steps and normalized rolling weights."""
-        exponents = torch.arange(future_step, dtype=torch.float32)
+        device = next(self.parameters()).device
+        exponents = torch.arange(future_step, dtype=torch.float32, device=device)
         rolling_weights = torch.pow(alpha, exponents)
         loss_steps = set(range(future_step))
         if rollout_max > 0 and future_step > rollout_max:
-            loss_steps = {0, future_step - 1}
-            middle_steps = list(range(1, future_step - 1))
-            num_additional = rollout_max - 2
-            if num_additional > 0:
-                selected = torch.randperm(len(middle_steps))[:num_additional].tolist()
-                loss_steps.update(middle_steps[i] for i in selected)
+            if rollout_max == 1:
+                loss_steps = {future_step - 1}
+            else:
+                loss_steps = {0, future_step - 1}
+                middle_steps = list(range(1, future_step - 1))
+                num_additional = rollout_max - len(loss_steps)
+                if num_additional > 0 and len(middle_steps) > 0:
+                    num_to_sample = min(num_additional, len(middle_steps))
+                    gen = torch.Generator(device=rolling_weights.device)
+                    gen.manual_seed(future_step * 1070001 + rollout_max)
+                    selected = torch.randperm(len(middle_steps), generator=gen, device=device)[:num_to_sample].tolist()
+                    loss_steps.update(middle_steps[i] for i in selected)
 
-        if len(loss_steps) < future_step:
-            valid_steps = sorted(loss_steps)
+        valid_steps = sorted(loss_steps)
+        if len(valid_steps) < future_step:
             mask = torch.zeros_like(rolling_weights)
             mask[valid_steps] = 1.0
             rolling_weights = rolling_weights * mask
 
         rolling_weights = rolling_weights / rolling_weights.sum().clamp_min(torch.finfo(rolling_weights.dtype).eps)
-        return loss_steps, rolling_weights
+        return valid_steps, rolling_weights
 
     @torch.no_grad()
     def inv_normalize(self, input, test_chans=[]):

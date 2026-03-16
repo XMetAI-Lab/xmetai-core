@@ -384,6 +384,7 @@ class SimpleTrainer(TrainerBase):
                 SimpleTrainer.write_metrics(loss_dict, data_time, iter, prefix)
             except Exception:
                 self.logger.exception("Exception in writing metrics: ")
+                raise
 
     @staticmethod
     def write_metrics(
@@ -450,7 +451,7 @@ class ExpandTrainer(SimpleTrainer):
         zero_grad_before_forward=False,
         async_write_metrics=False,
         use_ema=True,
-        teacher_forcing=dict(teach_iters=-1, teach_steps=10, teach_start=0),
+        teacher_forcing=None,
         ens_train=False,
     ):
         """
@@ -466,7 +467,14 @@ class ExpandTrainer(SimpleTrainer):
             async_write_metrics,
             use_ema,
         )
+        if teacher_forcing is None:
+            teacher_forcing = dict(teach_iters=-1, teach_steps=10, teach_start=0)
         self.teacher_forcing = teacher_forcing
+        teach_iters = self.teacher_forcing.get("teach_iters")
+        if not isinstance(teach_iters, int) or teach_iters <= 0:
+            raise ValueError(
+                f"'teacher_forcing[\"teach_iters\"]' must be a positive integer, " f"but got {teach_iters!r}. Please set a valid value in the trainer config."
+            )
         self.future_step = 1
         self.ens_train = ens_train
         if ens_train:
