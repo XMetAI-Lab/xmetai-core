@@ -8,7 +8,7 @@ from collections import defaultdict
 import numpy as np
 import PIL
 import torch
-from tabulate import tabulate
+from tabulate import tabulate  # type: ignore[import-untyped]
 
 __all__ = ["collect_env_info"]
 

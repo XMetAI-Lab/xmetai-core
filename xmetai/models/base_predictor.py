@@ -7,6 +7,7 @@ Copyright (c) 2025 by XMetAI/douzsheng, All Rights Reserved.
 
 import logging
 import os
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -77,8 +78,8 @@ class BasePredictor(Meta):
         add_noise: bool = False,
         save_dir: str = "",
         buffers: dict = {},
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         # Extract PINN configuration from kwargs before passing remaining args to Meta
         self.pinn_enable = kwargs.pop("pinn_enable", False)
@@ -139,21 +140,22 @@ class BasePredictor(Meta):
                 "ensure `in_names` or model.buffers with channel metadata are supplied to avoid runtime errors."
             )
 
-    def train(self, mode=True):
+    def train(self, mode: bool = True) -> "BasePredictor":
         super().train(mode=mode)
+        return self
 
-    def get_timestamp(self, input, times, t):
+    def get_timestamp(self, input: Any, times: Any, t: int) -> dict:
         times = times + pd.Timedelta(hours=t * self.freq)
-        hour = [p.hour / 24 for p in times]
-        hour = np.array(hour, dtype=np.float32)
-        hour = input.new_tensor(hour)
-        doy = [min(365, p.day_of_year) / 365 for p in times]
-        doy = np.array(doy, dtype=np.float32)
-        doy = input.new_tensor(doy)
+        hour_list = [p.hour / 24 for p in times]
+        hour_arr = np.array(hour_list, dtype=np.float32)
+        hour = input.new_tensor(hour_arr)
+        doy_list = [min(365, p.day_of_year) / 365 for p in times]
+        doy_arr = np.array(doy_list, dtype=np.float32)
+        doy = input.new_tensor(doy_arr)
         step = input.new_full(input.shape[:1], t)
         return dict(step=step, hour=hour, doy=doy)
 
-    def build_loss_steps_and_weights(self, future_step: int, alpha: float, rollout_max: int):
+    def build_loss_steps_and_weights(self, future_step: int, alpha: float, rollout_max: int) -> tuple:
         """Build selected loss steps and normalized rolling weights."""
         device = next(self.parameters()).device
         exponents = torch.arange(future_step, dtype=torch.float32, device=device)

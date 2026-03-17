@@ -12,6 +12,7 @@ import time
 import warnings
 from collections import Counter
 from collections.abc import Iterable, Mapping
+from typing import Any
 
 import numpy as np
 import torch
@@ -361,7 +362,7 @@ class BestCheckpointer(HookBase):
 
 
 class SchedulerMultiplier(HookBase):
-    def __init__(self, optimizer=None, schedulers: dict = {}):
+    def __init__(self, optimizer: Any = None, schedulers: dict = {}):
         self._optimizer = optimizer
         self._schedulers = schedulers
 

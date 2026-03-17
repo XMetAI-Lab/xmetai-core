@@ -18,7 +18,7 @@ from xmetai.loss import afcrps_loss_lite, charbonnier_loss
 from .vit import ViTModel
 
 
-def get_exponential_weights(steps: int, alpha: float):
+def get_exponential_weights(steps: int, alpha: float) -> torch.Tensor:
     """
     Generate normalized exponential weights for sequence loss.
 

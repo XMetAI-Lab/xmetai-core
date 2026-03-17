@@ -49,7 +49,7 @@ class HookBase:
 
     """
 
-    trainer: "TrainerBase" = None
+    trainer: Optional["TrainerBase"] = None
     """
     A weak reference to the trainer object. Set by the trainer when the hook is registered.
     """
@@ -127,17 +127,17 @@ class TrainerBase:
         Args:
             hooks (list[Optional[HookBase]]): list of hooks
         """
-        hooks = [h for h in hooks if h is not None]
-        for h in hooks:
+        hooks_clean: list["HookBase"] = [h for h in hooks if h is not None]
+        for h in hooks_clean:
             assert isinstance(h, HookBase)
             # To avoid circular reference, hooks and trainer cannot own each other.
             # This normally does not matter, but will cause memory leak if the
             # involved objects contain __del__:
             # See http://engineering.hearsaysocial.com/2013/06/16/circular-references-in-python/
             h.trainer = weakref.proxy(self)
-        self._hooks.extend(hooks)
+        self._hooks.extend(hooks_clean)
 
-    def train(self, start_iter: int, max_iter: int):
+    def train(self, start_iter: int, max_iter: int) -> None:
         """
         Args:
             start_iter, max_iter (int): See docs above

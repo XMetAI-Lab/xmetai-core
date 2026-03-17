@@ -12,7 +12,7 @@ Date: 2026-02-02
 
 import logging
 import re
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Mapping, Optional, Union, cast
 
 import torch
 import torch.nn as nn
@@ -92,7 +92,7 @@ class LinearLoRA(nn.Module):
 
         self.reset_parameters()
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         """Initialize LoRA parameters using Kaiming uniform for A and zeros for B."""
         if self.num_steps == 1:
             nn.init.kaiming_uniform_(self.lora_A, a=5**0.5)
@@ -104,7 +104,7 @@ class LinearLoRA(nn.Module):
                 nn.init.kaiming_uniform_(lora_a, a=5**0.5)
                 nn.init.zeros_(lora_b)
 
-    def set_step(self, step: int):
+    def set_step(self, step: int) -> None:
         """Set current LoRA step for multi-step LoRA.
         This is optional - you can also pass step directly to forward().
         Useful for setting a default step for multiple forward passes.
@@ -226,7 +226,7 @@ def _get_target_modules(
 
 def apply_lora_to_model(
     model: nn.Module,
-    lora_config: Union[dict, object],
+    lora_config: Union[Mapping[str, Any], object],
     verbose: bool = True,
     num_steps: int = 1,
 ) -> nn.Module:
@@ -249,19 +249,21 @@ def apply_lora_to_model(
     """
     # Handle both dict and LazyConfig objects
     if hasattr(lora_config, "r"):
-        r = lora_config.r
-        alpha = lora_config.alpha
-        dropout = getattr(lora_config, "dropout", 0.0)
-        target_modules = lora_config.target_modules
-        exclude_modules = getattr(lora_config, "exclude_modules", [])
-        modules_to_save = getattr(lora_config, "modules_to_save", [])
+        cfg_obj = cast(Any, lora_config)
+        r = cfg_obj.r
+        alpha = cfg_obj.alpha
+        dropout = getattr(cfg_obj, "dropout", 0.0)
+        target_modules = cfg_obj.target_modules
+        exclude_modules = getattr(cfg_obj, "exclude_modules", [])
+        modules_to_save = getattr(cfg_obj, "modules_to_save", [])
     else:
-        r = lora_config.get("r", 8)
-        alpha = lora_config.get("alpha", 16)
-        dropout = lora_config.get("dropout", 0.0)
-        target_modules = lora_config.get("target_modules", [])
-        exclude_modules = lora_config.get("exclude_modules", [])
-        modules_to_save = lora_config.get("modules_to_save", [])
+        cfg_map = cast(Mapping[str, Any], lora_config)
+        r = cfg_map.get("r", 8)
+        alpha = cfg_map.get("alpha", 16)
+        dropout = cfg_map.get("dropout", 0.0)
+        target_modules = cfg_map.get("target_modules", [])
+        exclude_modules = cfg_map.get("exclude_modules", [])
+        modules_to_save = cfg_map.get("modules_to_save", [])
 
     if not target_modules:
         logger.warning("No target_modules specified in LoRA config, returning model unchanged")
@@ -337,7 +339,7 @@ def apply_lora_to_model(
     return model
 
 
-def set_lora_step(model: nn.Module, step: int):
+def set_lora_step(model: nn.Module, step: int) -> None:
     """Set current LoRA step for all LinearLoRA modules in the model.
 
     Args:

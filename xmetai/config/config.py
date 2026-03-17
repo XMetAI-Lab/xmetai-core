@@ -8,7 +8,7 @@ import logging
 import os
 from typing import IO, Any, Callable, Dict, List, Union
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from iopath.common.file_io import g_pathmgr
 from yacs.config import CfgNode as __CfgNode
 
@@ -59,6 +59,8 @@ class _CfgNode(__CfgNode):
             Dict[str, Any]: The loaded configuration as a dictionary.
         """
         spec = importlib.util.spec_from_file_location("config_module", filename)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to load python config from {filename}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return {k: v for k, v in vars(module).items() if not k.startswith("__")}

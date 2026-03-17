@@ -24,7 +24,7 @@ __all__ = ["ERA5"]
 class ERA5(Dataset):
     def __init__(
         self,
-        data_name,
+        data_name: str,
         hist_frames,
         fcst_frames,
         start_frames: int = 0,
@@ -68,7 +68,7 @@ class ERA5(Dataset):
 
         if len(in_names) > 0:
             level_values = ds.level.values.tolist()
-            self.select_vars = [level_values.index(v) for v in in_names if v in level_values]
+            self.select_vars: list | None = [level_values.index(v) for v in in_names if v in level_values]
             missing = [v for v in in_names if v not in level_values]
             if len(missing) > 0:
                 self.logger.warning(f"Variables not found in 'level': {missing}")

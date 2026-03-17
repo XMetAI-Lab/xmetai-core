@@ -14,7 +14,7 @@ from dataclasses import is_dataclass
 from typing import List, Tuple, Union
 
 import cloudpickle
-import yaml
+import yaml  # type: ignore[import-untyped]
 from omegaconf import DictConfig, ListConfig, OmegaConf, SCMode
 
 from xmetai.utils.file_io import PathManager

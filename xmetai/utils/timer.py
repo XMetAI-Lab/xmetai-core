@@ -29,7 +29,7 @@ class Timer:
         """
         self._start = perf_counter()
         self._paused: Optional[float] = None
-        self._total_paused = 0
+        self._total_paused: float = 0.0
         self._count_start = 1
 
     def pause(self) -> None:

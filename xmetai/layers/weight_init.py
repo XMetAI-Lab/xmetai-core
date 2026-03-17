@@ -26,11 +26,12 @@ def c2_xavier_fill(module: nn.Module) -> None:
     """
     # Caffe2 implementation of XavierFill in fact
     # corresponds to kaiming_uniform_ in PyTorch
-    nn.init.kaiming_uniform_(module.weight, a=1)
-    if module.bias is not None:
-        # pyre-fixme[6]: Expected `Tensor` for 1st param but got `Union[nn.Module,
-        #  torch.Tensor]`.
-        nn.init.constant_(module.bias, 0)
+    weight = getattr(module, "weight", None)
+    if isinstance(weight, torch.Tensor):
+        nn.init.kaiming_uniform_(weight, a=1)
+    bias = getattr(module, "bias", None)
+    if isinstance(bias, torch.Tensor):
+        nn.init.constant_(bias, 0)
 
 
 def c2_msra_fill(module: nn.Module) -> None:
@@ -41,11 +42,12 @@ def c2_msra_fill(module: nn.Module) -> None:
     Args:
         module (torch.nn.Module): module to initialize.
     """
-    nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
-    if module.bias is not None:
-        # pyre-fixme[6]: Expected `Tensor` for 1st param but got `Union[nn.Module,
-        #  torch.Tensor]`.
-        nn.init.constant_(module.bias, 0)
+    weight = getattr(module, "weight", None)
+    if isinstance(weight, torch.Tensor):
+        nn.init.kaiming_normal_(weight, mode="fan_out", nonlinearity="relu")
+    bias = getattr(module, "bias", None)
+    if isinstance(bias, torch.Tensor):
+        nn.init.constant_(bias, 0)
 
 
 def constant_fill(module, val, bias=0):
@@ -93,8 +95,7 @@ def _no_grad_trunc_normal_(tensor, mean, std, a, b):
         return tensor
 
 
-def trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0):
-    # type: (Tensor, float, float, float, float) -> Tensor
+def trunc_normal_(tensor: torch.Tensor, mean: float = 0.0, std: float = 1.0, a: float = -2.0, b: float = 2.0) -> torch.Tensor:
     r"""Fills the input Tensor with values drawn from a truncated
     normal distribution. The values are effectively drawn from the
     normal distribution :math:`\mathcal{N}(\text{mean}, \text{std}^2)`
@@ -116,12 +117,15 @@ def trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0):
 
 def variance_scaling_(tensor, scale=1.0, mode="fan_in", distribution="normal"):
     fan_in, fan_out = _calculate_fan_in_and_fan_out(tensor)
+    denom = fan_in
     if mode == "fan_in":
         denom = fan_in
     elif mode == "fan_out":
         denom = fan_out
     elif mode == "fan_avg":
         denom = (fan_in + fan_out) / 2
+    else:
+        raise ValueError(f"invalid mode {mode}")
 
     variance = scale / denom
 
@@ -155,7 +159,7 @@ def lecun_normal_(tensor):
     variance_scaling_(tensor, mode="fan_in", distribution="truncated_normal")
 
 
-def vit_fill(module: nn.Module, name: str = "", head_bias: float = 0.0):
+def vit_fill(module: nn.Module, name: str = "", head_bias: float = 0.0) -> None:
     if isinstance(module, nn.Linear):
         if name.startswith("head"):
             nn.init.zeros_(module.weight)

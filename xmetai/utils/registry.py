@@ -1,7 +1,7 @@
 import pydoc
 from typing import Any, Dict, Iterable, Iterator, Tuple
 
-from tabulate import tabulate
+from tabulate import tabulate  # type: ignore[import-untyped]
 
 """
 ``Registry`` and `locate` provide ways to map a string (typically found

@@ -350,7 +350,7 @@ def default_setup(cfg, args):
         _set_float32_precision(fp32_precision)
 
 
-def default_writers(output_dir: str, max_iter: Optional[int] = None):
+def default_writers(output_dir: str, max_iter: Optional[int] = None) -> list:
     """
     Build a list of :class:`EventWriter` to be used.
     It now consists of a :class:`CommonMetricPrinter`,
