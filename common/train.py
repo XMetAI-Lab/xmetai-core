@@ -1,5 +1,9 @@
-# Common training-related configs that are designed for "tools/lazyconfig_train_net.py"
-# You can use your own instead, together with your own train_net.py
+"""
+Author: DouZesheng && douzsh@gmail.com
+Date: 2025-05-05 09:20:50
+Description: Common training-related configs
+Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
+"""
 
 train = dict(
     output_dir="",
@@ -35,6 +39,7 @@ train = dict(
     teacher_forcing=dict(  # for teacher forcing
         teach_iters=-1,  # -1 means no teacher forcing
         teach_steps=10,  # maximum number of steps for teacher forcing
+        teach_start=1,  # minimum number of steps to start teacher forcing, default 1 means no rollout at iter 0.
     ),
     lora=dict(  # LoRA (Low-Rank Adaptation) for parameter-efficient fine-tuning
         enabled=False,  # Whether to enable LoRA

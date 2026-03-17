@@ -168,18 +168,14 @@ def do_train(args, cfg):
             model,
             train_loader,
             optimizer,
-            increment_iter=cfg.train.teacher_forcing.teach_iters,
+            teacher_forcing=cfg.train.teacher_forcing,
             use_ema=cfg.train.use_ema,
             ens_train=cfg.train.ens_train,
         )
     else:
         trainer = SimpleTrainer(model, train_loader, optimizer, use_ema=cfg.train.use_ema)
 
-    checkpointer = FSDPCheckpointer(
-        model,
-        save_dir=cfg.train.output_dir,
-        trainer=trainer,
-    )
+    checkpointer = FSDPCheckpointer(model, save_dir=cfg.train.output_dir, trainer=trainer)
     lr_scheduler = LRMultiplier(optimizer, scheduler, cfg.train.max_iter)
     trainer.register_hooks(
         [
@@ -188,20 +184,8 @@ def do_train(args, cfg):
             hooks.PeriodicCheckpointer(checkpointer, **cfg.train.checkpointer),
             hooks.EvalHook(cfg.train.eval_period, lambda: do_test(cfg, model)),
             hooks.GradientClipHook(),
-            hooks.BestCheckpointer(
-                eval_period=cfg.train.eval_period,
-                checkpointer=checkpointer,
-                val_metric=cfg.train.val_metric,
-                mode="min",
-            ),
-            (
-                hooks.PeriodicWriter(
-                    default_writers(cfg.train.output_dir, cfg.train.max_iter),
-                    period=cfg.train.log_period,
-                )
-                if comm.is_main_process()
-                else None
-            ),
+            hooks.BestCheckpointer(eval_period=cfg.train.eval_period, checkpointer=checkpointer, val_metric=cfg.train.val_metric, mode="min"),
+            (hooks.PeriodicWriter(default_writers(cfg.train.output_dir, cfg.train.max_iter), period=cfg.train.log_period) if comm.is_main_process() else None),
             (hooks.TorchMemoryStats(cfg.train.log_period, 20) if comm.is_main_process() else None),
             # hooks.TorchProfiler(lambda trainer: 10 < trainer.iter < 20, cfg.train.output_dir, save_tensorboard=False),
         ]

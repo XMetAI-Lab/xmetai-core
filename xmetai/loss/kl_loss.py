@@ -9,21 +9,10 @@ import torch
 import torch.nn.functional as F
 from torch.distributions import kl_divergence
 
-__all__ = ["kl_loss", "kl_entropy_loss"]
+__all__ = ["kl_entropy_loss"]
 
 
-def compute_kl(mean1, logvar1, mean2, logvar2):
-    kl = 0.5 * (-1.0 + logvar2 - logvar1 + torch.exp(logvar1 - logvar2) + ((mean1 - mean2) ** 2) * torch.exp(-logvar2))
-    return kl
-
-
-def kl_loss(mean1, logvar1, mean2, logvar2):
-    kl = compute_kl(mean1, logvar1, mean2, logvar2)
-    loss = torch.mean(kl.flatten(1).sum(-1))
-    return loss
-
-
-def kl_entropy_loss(dist_p, dist_q, w=1e-4, entropy_weight=1e-5, min_std=1e-3, target_std=0.1):
+def kl_entropy_loss(dist_p, dist_q, w=1e-4, entropy_weight=1e-5, min_std=1e-3, target_std=0.1, mu_penalty=0.0):
     # 1. Apply soft lower bound to stddev to avoid collapse
     std_p = torch.clamp(dist_p.stddev, min=min_std)
     std_q = torch.clamp(dist_q.stddev, min=min_std)
@@ -34,6 +23,14 @@ def kl_entropy_loss(dist_p, dist_q, w=1e-4, entropy_weight=1e-5, min_std=1e-3, t
 
     # 3. KL divergence
     kl = kl_divergence(dist_q, dist_p)  # KL(q || p)
+
+    # Optional mean penalty to encourage means to be close (if mu_penalty > 0)
+    if mu_penalty > 0.0:
+        var_p = std_p.pow(2)
+        # mean_term: (mu_q - mu_p)^2 / (2 * var_p)
+        mean_term = (dist_q.mean - dist_p.mean).pow(2) / (2 * var_p)
+        kl = kl + mu_penalty * mean_term
+
     if kl.ndim > 2:
         kl = kl.flatten(1)
     loss = kl.sum(dim=-1).mean()
