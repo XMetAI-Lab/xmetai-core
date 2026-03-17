@@ -7,7 +7,7 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import cached_property
-from typing import Any, Iterator, List, Optional, Tuple
+from typing import Any, DefaultDict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -179,7 +179,7 @@ class JSONWriter(EventWriter):
 
     def write(self) -> None:
         storage = get_event_storage()
-        to_save: dict[int, dict] = defaultdict(dict)
+        to_save: DefaultDict[int, dict[str, Any]] = defaultdict(dict)
 
         for k, (v, iter) in storage.latest_with_smoothing_hint(self._window_size).items():
             # keep scalars that have not been written

@@ -25,15 +25,15 @@ class ERA5(Dataset):
     def __init__(
         self,
         data_name: str,
-        hist_frames,
-        fcst_frames,
+        hist_frames: int,
+        fcst_frames: int | list[int],
         start_frames: int = 0,
         freq: int = 6,
         interval: int = 1,
         training: bool = True,
         inference_only: bool = False,
         years: tuple = ("19790101", "20161231"),
-        in_names: list = [],  # list of variable names to use, if empty, use all variables in the dataset
+        in_names: list[str] = [],  # list of variable names to use, if empty, use all variables in the dataset
     ):
         self.logger = logging.getLogger(__name__)
         self.start_frames = start_frames
@@ -68,7 +68,7 @@ class ERA5(Dataset):
 
         if len(in_names) > 0:
             level_values = ds.level.values.tolist()
-            self.select_vars: list | None = [level_values.index(v) for v in in_names if v in level_values]
+            self.select_vars: list[int] | None = [level_values.index(v) for v in in_names if v in level_values]
             missing = [v for v in in_names if v not in level_values]
             if len(missing) > 0:
                 self.logger.warning(f"Variables not found in 'level': {missing}")

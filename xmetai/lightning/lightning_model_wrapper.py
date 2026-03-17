@@ -57,7 +57,7 @@ class Lightning_Model_Wrapper(pl.LightningModule):
         pass
 
     def configure_model(self) -> None:
-        model_cfg = self.hparams.model_cfg
+        model_cfg = self.hparams.model_cfg  # type: ignore[attr-defined]
         self.model = instantiate(model_cfg)
         return
 

@@ -29,13 +29,10 @@ if TORCH_VERSION >= (1, 11):
     from torch.ao import quantization
     from torch.ao.quantization import FakeQuantizeBase, ObserverBase
 elif TORCH_VERSION >= (1, 8) and hasattr(torch.quantization, "FakeQuantizeBase") and hasattr(torch.quantization, "ObserverBase"):
-    from torch import quantization
-    from torch.quantization import FakeQuantizeBase, ObserverBase
+    from torch import quantization  # type: ignore[no-redef]
+    from torch.quantization import FakeQuantizeBase, ObserverBase  # type: ignore[no-redef]
 
 __all__ = ["Checkpointer", "PeriodicCheckpointer", "FSDPCheckpointer"]
-
-
-TORCH_VERSION: Tuple[int, ...] = tuple(int(x) for x in torch.__version__.split(".")[:2])
 
 
 class _IncompatibleKeys(
@@ -441,7 +438,7 @@ class PeriodicCheckpointer:
 
 
 class FSDPCheckpointer(Checkpointer):
-    def _get_full_model_state_dict(self):
+    def _get_full_model_state_dict(self) -> Dict[str, Any]:
         sharded_sd = self.model.state_dict()
         cpu_state_dict = {}
         for name, param in sharded_sd.items():
@@ -455,7 +452,7 @@ class FSDPCheckpointer(Checkpointer):
                 del full_param
         return cpu_state_dict
 
-    def save(self, name: str, **kwargs):
+    def save(self, name: str, **kwargs: Any) -> None:
         if not self.save_dir or not self.save_to_disk:
             return
 
@@ -501,7 +498,7 @@ class FSDPCheckpointer(Checkpointer):
                     has_observer_base_classes = TORCH_VERSION >= (1, 8) and hasattr(quantization, "ObserverBase") and hasattr(quantization, "FakeQuantizeBase")
                     if has_observer_base_classes:
 
-                        def _get_module_for_key(model, key: str):
+                        def _get_module_for_key(model: Any, key: str) -> Any:
                             key_parts = key.split(".")[:-1]
                             cur_module = model
                             for key_part in key_parts:
@@ -548,7 +545,9 @@ def _filter_reused_missing_keys(model: nn.Module, keys: List[str]) -> List[str]:
         # if one name appears missing but its alias exists, then this
         # name is not considered missing
         if any(n in keyset for n in names) and not all(n in keyset for n in names):
-            [keyset.remove(n) for n in names if n in keyset]
+            for n in names:
+                if n in keyset:
+                    keyset.remove(n)
     return list(keyset)
 
 
@@ -600,7 +599,7 @@ def _strip_prefix_if_present(state_dict: Dict[str, Any], prefix: str) -> None:
 
     # also strip the prefix in metadata, if any..
     try:
-        metadata = state_dict._metadata  # pyre-ignore
+        metadata = getattr(state_dict, "_metadata")  # pyre-ignore
     except AttributeError:
         pass
     else:

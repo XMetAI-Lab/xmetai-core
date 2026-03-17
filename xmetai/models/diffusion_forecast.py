@@ -15,7 +15,7 @@ Design goals:
 - Inference: DDIM sampler for speed; autoregressive over out_frames if >1.
 """
 
-from typing import Tuple
+from typing import Any, Tuple
 
 import einops
 import numpy as np
@@ -55,14 +55,15 @@ class DiffusionForecast(BasePredictor):
         ddim_eta: float = 0.0,  # for DDIM sampling
         clip_x0: bool = True,
         scheduler_type: str = "ddim",  # "ddpm" or "ddim"
-        *args,
-        **kwargs,
+        *args: Any,
+        **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
         from diffusers import DDIMScheduler, DDPMScheduler, UNet2DModel
 
         self.logger.name = __name__
         self.predict_type = predict_type
+        self.noise_scheduler: Any
         self.sample_steps = sample_steps
         self.clip_x0 = clip_x0
         self.ddim_eta = ddim_eta
@@ -125,7 +126,7 @@ class DiffusionForecast(BasePredictor):
     # -------------- forward --------------
     def forward(self, data: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         if not self.training:
-            return self.test(data, 24)
+            return self.test(data, 24)  # type: ignore[call-arg]
 
         data = self.process_data(data)
         cond, target = self.preprocess_batch(data)
@@ -145,7 +146,7 @@ class DiffusionForecast(BasePredictor):
         _, _, H, W = model_in.shape
         model_in = pad_to_even(model_in)
         self.logger.debug(f"model input shape: {model_in.shape}, min: {model_in.min().item()}, max: {model_in.max().item()}")
-        pred = self.unet(model_in, timesteps, return_dict=False)[0][:, :, :H, :W]
+        pred = self.unet(model_in, timesteps, return_dict=False)[0][:, :, :H, :W]  # type: ignore
         self.logger.debug(f"model output shape: {pred.shape}, min: {pred.min().item()}, max: {pred.max().item()}")
 
         if self.predict_type == "epsilon":
@@ -181,7 +182,7 @@ class DiffusionForecast(BasePredictor):
                     model_in = torch.cat([last_frame, x_t], dim=1)
                     _, _, H, W = model_in.shape
                     model_in = pad_to_even(model_in)
-                    noise_pred = self.unet(model_in, t, return_dict=False)[0][:, :, :H, :W]
+                    noise_pred = self.unet(model_in, t, return_dict=False)[0][:, :, :H, :W]  # type: ignore
 
                     # 调用 scheduler 更新
                     x_t = self.noise_scheduler.step(

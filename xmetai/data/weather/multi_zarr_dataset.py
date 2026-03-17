@@ -18,15 +18,15 @@ class MultiZarrDataset(Dataset):
     def __init__(
         self,
         data_paths: list,  # List[str]
-        hist_frames,
-        fcst_frames,
+        hist_frames: int,
+        fcst_frames: int | list[int],
         start_frames: int = 0,
         freq: int = 6,
         interval: int = 1,
         training: bool = True,
         inference_only: bool = False,
         years: tuple = ("19790101", "20161231"),
-        in_names: list = [],  # list of variable names to use, if empty, use all variables in the dataset
+        in_names: list[str] = [],  # list of variable names to use, if empty, use all variables in the dataset
         lat_flip: bool = False,  # whether to flip latitude axis
     ):
         self.logger = logging.getLogger(__name__)
@@ -85,15 +85,14 @@ class MultiZarrDataset(Dataset):
 
         stage = "train" if self.training else "test"
         self.logger.info(f"{stage}_times: {self.start_time} ~ {self.end_time} = {len(self.inds)} samples")
+        self.select_vars: list[int] | None = None
         if len(in_names) > 0:
             level_values = self.ds.level.values.tolist()
-            self.select_vars: list | None = [level_values.index(v) for v in in_names if v in level_values]
+            self.select_vars = [level_values.index(v) for v in in_names if v in level_values]
             missing = [v for v in in_names if v not in level_values]
             if len(missing) > 0:
                 self.logger.warning(f"Variables not found in 'level': {missing}")
             self.logger.info(f"Selected variables: {self.select_vars}, total {len(self.select_vars)} variables.")
-        else:
-            self.select_vars = None
 
     def __len__(self):
         return len(self.inds)

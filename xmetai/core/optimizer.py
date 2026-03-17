@@ -43,10 +43,10 @@ def _create_gradient_clipper(cfg: CfgNode) -> _GradientClipper:
     """
     cfg = copy.deepcopy(cfg)
 
-    def clip_grad_norm(p: _GradientClipperInput):
+    def clip_grad_norm(p: _GradientClipperInput):  # type: ignore[no-untyped-def]
         torch.nn.utils.clip_grad_norm_(p, cfg.CLIP_VALUE, cfg.NORM_TYPE)
 
-    def clip_grad_value(p: _GradientClipperInput):
+    def clip_grad_value(p: _GradientClipperInput):  # type: ignore[no-untyped-def]
         torch.nn.utils.clip_grad_value_(p, cfg.CLIP_VALUE)
 
     _GRADIENT_CLIP_TYPE_TO_CLIPPER = {
@@ -135,7 +135,7 @@ def build_optimizer(cfg: CfgNode, model: torch.nn.Module) -> torch.optim.Optimiz
 
     optimizer_type = cfg.SOLVER.OPTIMIZER
     if optimizer_type == "SGD":
-        return maybe_add_gradient_clipping(cfg, torch.optim.SGD)(
+        return maybe_add_gradient_clipping(cfg, torch.optim.SGD)(  # type: ignore[call-arg]
             params,
             lr=cfg.SOLVER.BASE_LR,
             momentum=cfg.SOLVER.MOMENTUM,
@@ -143,7 +143,7 @@ def build_optimizer(cfg: CfgNode, model: torch.nn.Module) -> torch.optim.Optimiz
             weight_decay=cfg.SOLVER.WEIGHT_DECAY,
         )
     elif optimizer_type == "ADAM":
-        return maybe_add_gradient_clipping(cfg, torch.optim.Adam)(
+        return maybe_add_gradient_clipping(cfg, torch.optim.Adam)(  # type: ignore[call-arg]
             params,
             lr=cfg.SOLVER.BASE_LR,
             betas=cfg.SOLVER.BETAS,
@@ -151,7 +151,7 @@ def build_optimizer(cfg: CfgNode, model: torch.nn.Module) -> torch.optim.Optimiz
         )
 
     elif optimizer_type == "ADAMW":
-        return maybe_add_gradient_clipping(cfg, torch.optim.AdamW)(
+        return maybe_add_gradient_clipping(cfg, torch.optim.AdamW)(  # type: ignore[call-arg]
             params,
             lr=cfg.SOLVER.BASE_LR,
             betas=cfg.SOLVER.BETAS,
@@ -160,7 +160,7 @@ def build_optimizer(cfg: CfgNode, model: torch.nn.Module) -> torch.optim.Optimiz
     elif optimizer_type == "AdamW8bit":
         import bitsandbytes as bnb
 
-        return maybe_add_gradient_clipping(cfg, bnb.optim.AdamW8bit)(
+        return maybe_add_gradient_clipping(cfg, bnb.optim.AdamW8bit)(  # type: ignore[call-arg]
             params,
             lr=cfg.SOLVER.BASE_LR,
             betas=cfg.SOLVER.BETAS,
@@ -170,7 +170,7 @@ def build_optimizer(cfg: CfgNode, model: torch.nn.Module) -> torch.optim.Optimiz
         raise NotImplementedError(f"no optimizer type {optimizer_type}")
 
 
-def gradient_clipping(optimizer: Type[torch.optim.Optimizer]):
+def gradient_clipping(optimizer: Type[torch.optim.Optimizer]):  # type: ignore[no-untyped-def]
 
     def grad_clipper(p):
         torch.nn.utils.clip_grad_norm_(p, 1)
@@ -189,7 +189,7 @@ def gradient_clipping(optimizer: Type[torch.optim.Optimizer]):
     return OptimizerWithGradientClip
 
 
-def get_default_optimizer_params(
+def get_default_optimizer_params(  # type: ignore[no-untyped-def]
     model: torch.nn.Module,
     base_lr: Optional[float] = None,
     weight_decay: Optional[float] = None,
@@ -279,7 +279,7 @@ def get_default_optimizer_params(
     return params
 
 
-def get_muon_params_group(
+def get_muon_params_group(  # type: ignore[no-untyped-def]
     model: torch.nn.Module,
     base_lr: Optional[float] = 5e-4,
     muon_lr: Optional[float] = 0.02,
@@ -311,7 +311,7 @@ def get_muon_params_group(
 def _expand_param_groups(params: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Transform parameter groups into per-parameter structure.
     # Later items in `params` can overwrite parameters set in previous items.
-    ret = defaultdict(dict)
+    ret = defaultdict(dict)  # type: ignore[var-annotated]
     for item in params:
         assert "params" in item
         cur_params = {x: y for x, y in item.items() if x != "params"}
@@ -361,20 +361,20 @@ def build_lr_scheduler(cfg: CfgNode, optimizer: torch.optim.Optimizer) -> torch.
         if len(steps) != len(cfg.SOLVER.STEPS):
             logger = logging.getLogger(__name__)
             logger.warning("SOLVER.STEPS contains values larger than SOLVER.MAX_ITER. " "These values will be ignored.")
-        sched = MultiStepParamScheduler(
+        sched = MultiStepParamScheduler(  # type: ignore[assignment]
             values=[cfg.SOLVER.GAMMA**k for k in range(len(steps) + 1)],
             milestones=steps,
             num_updates=cfg.SOLVER.MAX_ITER,
         )
     elif name == "WarmupCosineLR":
-        sched = CosineParamScheduler(1, 0)
+        sched = CosineParamScheduler(1, 0)  # type: ignore[assignment]
     else:
         raise ValueError("Unknown LR scheduler: {}".format(name))
 
-    sched = WarmupParamScheduler(
-        sched,
+    sched = WarmupParamScheduler(  # type: ignore[assignment]
+        sched,  # type: ignore[arg-type]
         cfg.SOLVER.WARMUP_FACTOR,
         min(cfg.SOLVER.WARMUP_ITERS / cfg.SOLVER.MAX_ITER, 1.0),
         cfg.SOLVER.WARMUP_METHOD,
     )
-    return LRMultiplier(optimizer, multiplier=sched, max_iter=cfg.SOLVER.MAX_ITER)
+    return LRMultiplier(optimizer, multiplier=sched, max_iter=cfg.SOLVER.MAX_ITER)  # type: ignore[arg-type]

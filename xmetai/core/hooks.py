@@ -362,9 +362,9 @@ class BestCheckpointer(HookBase):
 
 
 class SchedulerMultiplier(HookBase):
-    def __init__(self, optimizer: Any = None, schedulers: dict = {}):
+    def __init__(self, optimizer: Any = None, schedulers: dict | None = None):
         self._optimizer = optimizer
-        self._schedulers = schedulers
+        self._schedulers = {} if schedulers is None else schedulers
 
     def before_train(self):
         self._optimizer = self._optimizer or self.trainer.optimizer

@@ -278,20 +278,20 @@ def _set_float32_precision(precision: str = "high") -> None:
         return
     # set precision for torch 2.9.0 or higher
     if precision == "highest":
-        torch.backends.fp32_precision = "ieee"
-        torch.backends.cuda.matmul.fp32_precision = "ieee"
-        torch.backends.cudnn.fp32_precision = "ieee"
-        torch.backends.cudnn.conv.fp32_precision = "ieee"
+        torch.backends.fp32_precision = "ieee"  # type: ignore[attr-defined]
+        torch.backends.cuda.matmul.fp32_precision = "ieee"  # type: ignore[attr-defined]
+        torch.backends.cudnn.fp32_precision = "ieee"  # type: ignore[attr-defined]
+        torch.backends.cudnn.conv.fp32_precision = "ieee"  # type: ignore[attr-defined]
     elif precision == "high":
-        torch.backends.fp32_precision = "tf32"
-        torch.backends.cuda.matmul.fp32_precision = "tf32"
-        torch.backends.cudnn.fp32_precision = "tf32"
-        torch.backends.cudnn.conv.fp32_precision = "tf32"
+        torch.backends.fp32_precision = "tf32"  # type: ignore[attr-defined]
+        torch.backends.cuda.matmul.fp32_precision = "tf32"  # type: ignore[attr-defined]
+        torch.backends.cudnn.fp32_precision = "tf32"  # type: ignore[attr-defined]
+        torch.backends.cudnn.conv.fp32_precision = "tf32"  # type: ignore[attr-defined]
     elif precision == "medium":
-        torch.backends.fp32_precision = "bf16"
-        torch.backends.cuda.matmul.fp32_precision = "none"
-        torch.backends.cudnn.fp32_precision = "none"
-        torch.backends.cudnn.conv.fp32_precision = "none"
+        torch.backends.fp32_precision = "bf16"  # type: ignore[attr-defined]
+        torch.backends.cuda.matmul.fp32_precision = "none"  # type: ignore[attr-defined]
+        torch.backends.cudnn.fp32_precision = "none"  # type: ignore[attr-defined]
+        torch.backends.cudnn.conv.fp32_precision = "none"  # type: ignore[attr-defined]
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
         torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
         torch.backends.cuda.matmul.allow_fp16_accumulation = False

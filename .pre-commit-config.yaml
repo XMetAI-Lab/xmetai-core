@@ -23,9 +23,6 @@ repos:
     rev: v1.19.1
     hooks:
       - id: mypy
-        files: ^$
-        args:
-          - --ignore-missing-imports
-          - --strict
+        files: ^xmetai/
         additional_dependencies:
           - types-requests

@@ -324,6 +324,7 @@ class MultiStepParamScheduler(ParamScheduler):
         if num_updates is None and milestones is None:
             raise ValueError("num_updates and milestones cannot both be None")
         if milestones is None:
+            assert num_updates is not None
             # Default equispaced drop_epochs behavior
             milestones = []
             step_width = math.ceil(num_updates / float(len(values)))
@@ -558,6 +559,7 @@ class WarmupParamScheduler(CompositeParamScheduler):
         """
         end_value = scheduler(warmup_length)  # the value to reach when warmup ends
         start_value = warmup_factor * scheduler(0.0)
+        warmup: ParamScheduler
         if warmup_method == "constant":
             warmup = ConstantParamScheduler(start_value)
         elif warmup_method == "linear":
@@ -583,10 +585,10 @@ class WarmupTeachParamScheduler(CompositeParamScheduler):
         teach_length: float,
         warmup_length: float,
         warmup_method: str = "linear",
-        start_value=0,
-        end_value=1,
+        start_value: float = 0.0,
+        end_value: float = 1.0,
     ):
-
+        warmup: ParamScheduler
         if warmup_method == "constant":
             warmup = ConstantParamScheduler(start_value)
         elif warmup_method == "linear":

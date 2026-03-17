@@ -160,7 +160,7 @@ class LazyConfig:
     """
 
     @staticmethod
-    def load_rel(filename: str, keys: Union[None, str, Tuple[str, ...]] = None):
+    def load_rel(filename: str, keys: Union[None, str, Tuple[str, ...]] = None):  # type: ignore[no-untyped-def]
         """
         Similar to :meth:`load()`, but load path relative to the caller's
         source file.
@@ -176,7 +176,7 @@ class LazyConfig:
         return LazyConfig.load(filename, keys)
 
     @staticmethod
-    def load(filename: str, keys: Union[None, str, Tuple[str, ...]] = None):
+    def load(filename: str, keys: Union[None, str, Tuple[str, ...]] = None):  # type: ignore[no-untyped-def]
         """
         Load a config file.
 
@@ -216,11 +216,11 @@ class LazyConfig:
             if isinstance(keys, str):
                 return _cast_to_config(ret[keys])
             else:
-                return tuple(_cast_to_config(ret[a]) for a in keys)
+                return tuple(_cast_to_config(ret[a]) for a in keys)  # type: ignore[union-attr]
         else:
             if filename.endswith(".py"):
                 # when not specified, only load those that are config objects
-                ret = DictConfig(
+                ret = DictConfig(  # type: ignore[assignment]
                     {
                         name: _cast_to_config(value)
                         for name, value in ret.items()
@@ -231,7 +231,7 @@ class LazyConfig:
             return ret
 
     @staticmethod
-    def save(cfg, filename: str):
+    def save(cfg, filename: str):  # type: ignore[no-untyped-def]
         """
         Save a config object to a yaml file.
         Note that when the config dictionary contains complex objects (e.g. lambda),
@@ -294,7 +294,7 @@ class LazyConfig:
                 pass
 
     @staticmethod
-    def apply_overrides(cfg, overrides: List[str]):
+    def apply_overrides(cfg, overrides: List[str]):  # type: ignore[no-untyped-def]
         """
         In-place override contents of cfg.
 
@@ -322,18 +322,18 @@ class LazyConfig:
         from hydra.core.override_parser.overrides_parser import OverridesParser
 
         parser = OverridesParser.create()
-        overrides = parser.parse_overrides(overrides)
+        overrides = parser.parse_overrides(overrides)  # type: ignore[assignment]
         for o in overrides:
-            key = o.key_or_group
-            value = o.value()
-            if o.is_delete():
+            key = o.key_or_group  # type: ignore[attr-defined]
+            value = o.value()  # type: ignore[attr-defined]
+            if o.is_delete():  # type: ignore[attr-defined]
                 # TODO support this
                 raise NotImplementedError("deletion is not yet a supported override")
             safe_update(cfg, key, value)
         return cfg
 
     @staticmethod
-    def to_py(cfg, prefix: str = "cfg."):
+    def to_py(cfg, prefix: str = "cfg."):  # type: ignore[no-untyped-def]
         """
         Try to convert a config object into Python-like psuedo code.
 
