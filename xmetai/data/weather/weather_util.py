@@ -254,7 +254,7 @@ def update_units(v):
     return v
 
 
-def update_coords_zarr(data_path, coord_name, coord_values: np.ndarray):
+def update_coords_zarr(data_path: str, coord_name: str, coord_values: np.ndarray) -> None:
     # Open the Zarr dataset in read/write mode
     ds = zarr.open_group(data_path, mode="r+")
 
@@ -263,11 +263,12 @@ def update_coords_zarr(data_path, coord_name, coord_values: np.ndarray):
         raise KeyError(f"Coordinate '{coord_name}' not found in dataset")
 
     # Verify shape compatibility
-    if ds[coord_name].shape != coord_values.shape:
-        raise ValueError(f"Shape mismatch: existing {ds[coord_name].shape} vs new {coord_values.shape}")
+    coord_arr = ds[coord_name]  # type: ignore[union-attr]
+    if coord_arr.shape != coord_values.shape:  # type: ignore[union-attr]
+        raise ValueError(f"Shape mismatch: existing {coord_arr.shape} vs new {coord_values.shape}")  # type: ignore[union-attr]
 
     # Update the coordinate values in-place
-    ds[coord_name][:] = coord_values
+    coord_arr[:] = coord_values  # type: ignore[index]
 
 
 def load_grib(file_path, decode_timedelta=False):
@@ -1089,7 +1090,7 @@ def merge_member(data_dir, save_dir):
         save_zarr(ds, save_path)
 
 
-def load_zarr(file_path: str, name: str = None) -> xr.DataArray:
+def load_zarr(file_path: str, name: str | None = None) -> "xr.DataArray | None":
     if not file_path:
         return None
 

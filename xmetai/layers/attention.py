@@ -33,7 +33,7 @@ else:
     from contextlib import nullcontext
 
     SDP_IS_AVAILABLE = False
-    sdp_kernel = nullcontext
+    sdp_kernel = nullcontext  # type: ignore[assignment]
     BACKEND_MAP = {}
 
 

@@ -7,7 +7,7 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import cached_property
-from typing import List, Optional, Tuple
+from typing import Any, DefaultDict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -23,7 +23,7 @@ __all__ = [
     "EventStorage",
 ]
 
-_CURRENT_STORAGE_STACK = []
+_CURRENT_STORAGE_STACK: list["EventStorage"] = []
 
 
 class HistoryBuffer:
@@ -69,13 +69,13 @@ class HistoryBuffer:
         """
         Return the median of the latest `window_size` values in the buffer.
         """
-        return np.median([x[0] for x in self._data[-window_size:]])
+        return float(np.median([x[0] for x in self._data[-window_size:]]))
 
     def avg(self, window_size: int) -> float:
         """
         Return the mean of the latest `window_size` values in the buffer.
         """
-        return np.mean([x[0] for x in self._data[-window_size:]])
+        return float(np.mean([x[0] for x in self._data[-window_size:]]))
 
     def global_avg(self) -> float:
         """
@@ -166,7 +166,7 @@ class JSONWriter(EventWriter):
 
     """
 
-    def __init__(self, json_file, window_size=20):
+    def __init__(self, json_file: str, window_size: int = 20):
         """
         Args:
             json_file (str): path to the json file. New data will be appended if the file exists.
@@ -177,9 +177,9 @@ class JSONWriter(EventWriter):
         self._window_size = window_size
         self._last_write = -1
 
-    def write(self):
+    def write(self) -> None:
         storage = get_event_storage()
-        to_save = defaultdict(dict)
+        to_save: DefaultDict[int, dict[str, Any]] = defaultdict(dict)
 
         for k, (v, iter) in storage.latest_with_smoothing_hint(self._window_size).items():
             # keep scalars that have not been written
@@ -199,7 +199,7 @@ class JSONWriter(EventWriter):
         except AttributeError:
             pass
 
-    def close(self):
+    def close(self) -> None:
         self._file_handle.close()
 
 
@@ -208,7 +208,7 @@ class TensorboardXWriter(EventWriter):
     Write all scalars to a tensorboard file.
     """
 
-    def __init__(self, log_dir: str, window_size: int = 20, **kwargs):
+    def __init__(self, log_dir: str, window_size: int = 20, **kwargs: Any) -> None:
         """
         Args:
             log_dir (str): the directory to save the output events
@@ -217,7 +217,7 @@ class TensorboardXWriter(EventWriter):
             kwargs: other arguments passed to `torch.utils.tensorboard.SummaryWriter(...)`
         """
         self._window_size = window_size
-        self._writer_args = {"log_dir": log_dir, **kwargs}
+        self._writer_args: dict = {"log_dir": log_dir, **kwargs}
         self._last_write = -1
 
     @cached_property
@@ -226,7 +226,7 @@ class TensorboardXWriter(EventWriter):
 
         return SummaryWriter(**self._writer_args)
 
-    def write(self):
+    def write(self) -> None:
         storage = get_event_storage()
         new_last_write = self._last_write
         for k, (v, iter) in storage.latest_with_smoothing_hint(self._window_size).items():
@@ -252,7 +252,7 @@ class TensorboardXWriter(EventWriter):
                 self._writer.add_histogram_raw(**params)
             storage.clear_histograms()
 
-    def close(self):
+    def close(self) -> None:
         if "_writer" in self.__dict__:
             self._writer.close()
 
@@ -277,9 +277,9 @@ class CommonMetricPrinter(EventWriter):
         self.logger = logging.getLogger(__name__)
         self._max_iter = max_iter
         self._window_size = window_size
-        self._last_write = None  # (step, time) of last call to write(). Used to compute ETA
+        self._last_write: Optional[Tuple[int, float]] = None  # (step, time) of last call to write(). Used to compute ETA
 
-    def _get_eta(self, storage) -> Optional[str]:
+    def _get_eta(self, storage: "EventStorage") -> Optional[str]:
         if self._max_iter is None:
             return ""
         iteration = storage.iter
@@ -297,7 +297,7 @@ class CommonMetricPrinter(EventWriter):
             self._last_write = (iteration, time.perf_counter())
             return eta_string
 
-    def write(self):
+    def write(self) -> None:
         storage = get_event_storage()
         iteration = storage.iter
         if iteration == self._max_iter:
@@ -561,7 +561,7 @@ class EventStorage:
         _CURRENT_STORAGE_STACK.pop()
 
     @contextmanager
-    def name_scope(self, name):
+    def name_scope(self, name: str) -> Iterator[None]:
         """
         Yields:
             A context within which all the events added to this storage

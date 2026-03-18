@@ -1,11 +1,11 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
-import importlib
 import importlib.util
 import logging
 import os
 import random
 import sys
 from datetime import datetime
+from types import ModuleType
 
 import numpy as np
 import torch
@@ -45,8 +45,10 @@ def seed_all_rng(seed=None):
 
 # from
 # https://stackoverflow.com/questions/67631/how-to-import-a-module-given-the-full-path
-def _import_file(module_name, file_path, make_importable=False):
+def _import_file(module_name: str, file_path: str, make_importable: bool = False) -> ModuleType:
     spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to import {module_name} from {file_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     if make_importable:
@@ -85,7 +87,7 @@ def _configure_libraries():
     assert get_version(torch) >= (1, 4), "Requires torch>=1.4"
     import fvcore
     assert get_version(fvcore, 3) >= (0, 1, 2), "Requires fvcore>=0.1.2"
-    import yaml
+    import yaml  # type: ignore[import-untyped]
     assert get_version(yaml) >= (5, 1), "Requires pyyaml>=5.1"
     # fmt: on
 

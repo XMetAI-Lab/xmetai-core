@@ -6,8 +6,9 @@ import os
 import sys
 import time
 from collections import Counter
+from typing import Any
 
-from tabulate import tabulate
+from tabulate import tabulate  # type: ignore[import-untyped]
 from termcolor import colored
 
 from xmetai.utils.file_io import PathManager
@@ -134,8 +135,8 @@ def _find_caller():
         frame = frame.f_back
 
 
-_LOG_COUNTER = Counter()
-_LOG_TIMER = {}
+_LOG_COUNTER: Counter[tuple[Any, ...]] = Counter()
+_LOG_TIMER: dict[tuple[Any, ...], float] = {}
 
 
 def log_first_n(lvl, msg, n=1, *, name=None, key="caller"):

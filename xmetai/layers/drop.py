@@ -23,14 +23,14 @@ __all__ = ["MCDropout", "DropBlock2d", "DropPath"]
 
 
 def drop_block_2d(
-    x,
+    x: torch.Tensor,
     drop_prob: float = 0.1,
     block_size: int = 7,
     gamma_scale: float = 1.0,
     with_noise: bool = False,
     inplace: bool = False,
     batchwise: bool = False,
-):
+) -> torch.Tensor:
     """DropBlock. See https://arxiv.org/pdf/1810.12890.pdf
 
     DropBlock with an experimental gaussian noise option. This layer has been tested on a few training
@@ -85,7 +85,7 @@ def drop_block_fast_2d(
     with_noise: bool = False,
     inplace: bool = False,
     batchwise: bool = False,
-):
+) -> torch.Tensor:
     """DropBlock. See https://arxiv.org/pdf/1810.12890.pdf
 
     DropBlock with an experimental gaussian noise option. Simplied from above without concern for valid
@@ -147,7 +147,7 @@ class DropBlock2d(nn.Module):
         self.batchwise = batchwise
         self.fast = fast  # FIXME finish comparisons of fast vs not
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not self.training or not self.drop_prob:
             return x
 
@@ -173,7 +173,7 @@ class DropBlock2d(nn.Module):
             )
 
 
-def drop_path(x, drop_prob: float = 0.0, training: bool = False):
+def drop_path(x: torch.Tensor, drop_prob: float = 0.0, training: bool = False) -> torch.Tensor:
     """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
 
     This is the same as the DropConnect impl I created for EfficientNet, etc networks, however,
@@ -197,13 +197,13 @@ def drop_path(x, drop_prob: float = 0.0, training: bool = False):
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
 
-    def __init__(self, drop_prob=None, deterministic=True):
+    def __init__(self, drop_prob: float | None = None, deterministic: bool = True):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
         self.deterministic = deterministic
 
-    def forward(self, x):
-        return drop_path(x, self.drop_prob, self.training or not self.deterministic)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return drop_path(x, float(self.drop_prob or 0.0), self.training or not self.deterministic)
 
     def extra_repr(self) -> str:
         return "p={}".format(self.drop_prob)
@@ -213,7 +213,7 @@ class MCDropout(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, x, dropout=0):
+    def forward(self, x: torch.Tensor, dropout: float = 0) -> torch.Tensor:
         if dropout == 0:
             return x
 

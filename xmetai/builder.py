@@ -1,9 +1,9 @@
 from xmetai.utils.registry import Registry
 
-MODELS = Registry("models")
-CRITERIONS = Registry("criterions")
-METRICS = Registry("metrics")
-DATASETS = Registry("datasets")
+MODELS: Registry = Registry("models")
+CRITERIONS: Registry = Registry("criterions")
+METRICS: Registry = Registry("metrics")
+DATASETS: Registry = Registry("datasets")
 
 from .metrics import *
 

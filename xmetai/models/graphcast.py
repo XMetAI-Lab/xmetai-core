@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict
 
 import numpy as np
 import torch
@@ -29,7 +29,7 @@ __all__ = ["GraphCastPredictor"]
 class GraphCastPredictor(BasePredictor):
     def __init__(
         self,
-        *args,
+        *args: Any,
         embed_dim: int = 256,
         num_layers: int = 4,
         dropout: float = 0.0,
@@ -43,7 +43,7 @@ class GraphCastPredictor(BasePredictor):
         use_multiscale: bool = False,
         coarse_factors: list[int] | None = None,
         num_coarse_layers: int | list[int] = 2,
-        **kwargs,
+        **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
         self.embed_dim = embed_dim
@@ -59,8 +59,8 @@ class GraphCastPredictor(BasePredictor):
         self.use_multiscale = use_multiscale
         self.coarse_factors = coarse_factors
         self.num_coarse_layers = num_coarse_layers
-        self._graph_cache = {}
-        self._multiscale_cache = {}
+        self._graph_cache: dict[Any, Any] = {}
+        self._multiscale_cache: dict[Any, Any] = {}
 
         in_dim = self.in_chans * self.in_frames
         self.encoder = GraphCastEncoder(in_dim, embed_dim, static_dim=static_dim)
@@ -132,7 +132,7 @@ class GraphCastPredictor(BasePredictor):
             ms_graph = [self._build_multiscale_from_shape(height, width, factor, inputs.device) for factor in factors]
         return edge_index, edge_attr, node_static, grid_shape, ms_graph
 
-    def _build_graph_from_shape(self, height: int, width: int, device):
+    def _build_graph_from_shape(self, height: int, width: int, device: Any) -> Any:
         cache_key = (height, width, self.edge_dim, self.static_dim, self.neighbors)
         if cache_key in self._graph_cache:
             edge_index, edge_attr, node_static, grid_shape = self._graph_cache[cache_key]
@@ -175,7 +175,7 @@ class GraphCastPredictor(BasePredictor):
             grid_shape.to(device=device),
         )
 
-    def _build_multiscale_from_shape(self, height: int, width: int, factor: int, device):
+    def _build_multiscale_from_shape(self, height: int, width: int, factor: int, device: Any) -> Any:
         cache_key = (height, width, self.edge_dim, factor, self.neighbors)
         if cache_key in self._multiscale_cache:
             cached = self._multiscale_cache[cache_key]
@@ -269,7 +269,7 @@ class GraphCastPredictor(BasePredictor):
                 loss_dict[k] = v / future_frames
         return loss_dict
 
-    def forward_step(self, inputs, times, graph, step: int, timestamp: dict | None = None):
+    def forward_step(self, inputs: Any, times: Any, graph: Any, step: int, timestamp: dict | None = None) -> Any:
         if len(graph) == 4:
             edge_index, edge_attr, node_static, grid_shape = graph
             ms_graph = None
@@ -310,7 +310,7 @@ class GraphCastPredictor(BasePredictor):
                 coarse_nodes.scatter_add_(1, idx, h)
                 coarse_nodes = coarse_nodes / coarse_counts.unsqueeze(0).unsqueeze(-1)
 
-                for layer in coarse_layers:
+                for layer in coarse_layers:  # type: ignore[attr-defined]
                     coarse_nodes = layer(coarse_nodes, coarse_edge_index, coarse_edge_attr)
 
                 h = h + coarse_nodes[:, fine_to_coarse]

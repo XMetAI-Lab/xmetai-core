@@ -19,19 +19,19 @@ class Meta(nn.Module, metaclass=ABCMeta):
         "bf16": torch.bfloat16,
     }
 
-    def __init__(self, precision="fp32", device="cuda", export_kwargs=None):
+    def __init__(self, precision: str = "fp32", device: str = "cuda", export_kwargs: Optional[dict] = None):
         super().__init__()
         self.device = device
         self.dtype = self.dtype_dict[precision]
         self.export_kwargs = export_kwargs if export_kwargs is not None else {}
         self.epoch = 0
         self.logger = logging.getLogger(__name__)
-        self._frozen_names = set()
+        self._frozen_names: set[str] = set()
 
-    def params(self):
+    def params(self) -> int:
         return sum(map(lambda x: x.numel(), self.parameters()))
 
-    def freeze(self, names: Optional[Collection[str]] = None):
+    def freeze(self, names: Optional[Collection[str]] = None) -> None:
         if names is None:
             return
 
@@ -55,7 +55,8 @@ class Meta(nn.Module, metaclass=ABCMeta):
                 self.logger.exception(f"Unexpected error while freezing component {name}")
                 raise
 
-    def train(self, mode=True):
+    def train(self, mode: bool = True) -> "Meta":
         super().train(mode=mode)
         if mode and len(self._frozen_names) > 0:
             self.freeze(self._frozen_names)
+        return self

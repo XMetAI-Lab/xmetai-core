@@ -8,7 +8,7 @@ from xmetai.utils.registry import _convert_target_to_string, locate
 __all__ = ["dump_dataclass", "instantiate"]
 
 
-def dump_dataclass(obj: Any):
+def dump_dataclass(obj: Any) -> dict[str, Any]:
     """
     Dump a dataclass recursively into a dict that can be later instantiated.
 
@@ -30,7 +30,7 @@ def dump_dataclass(obj: Any):
     return ret
 
 
-def instantiate(cfg):
+def instantiate(cfg: Any) -> Any:
     """
     Recursively instantiate objects defined in dictionaries by
     "_target_" and arguments.

@@ -1,5 +1,5 @@
 import math
-from typing import List
+from typing import Any, List
 
 import torch
 from einops import rearrange
@@ -7,7 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 
-def cat(tensors: List[torch.Tensor], dim: int = 0):
+def cat(tensors: List[torch.Tensor], dim: int = 0) -> torch.Tensor:
     """
     Efficient version of torch.cat that avoids a copy if there is only a single element in a list
     """
@@ -17,7 +17,7 @@ def cat(tensors: List[torch.Tensor], dim: int = 0):
     return torch.cat(tensors, dim)
 
 
-def cross_entropy(input, target, *, reduction="mean", **kwargs):
+def cross_entropy(input: torch.Tensor, target: torch.Tensor, *, reduction: str = "mean", **kwargs: Any) -> torch.Tensor:
     """
     Same as `torch.nn.functional.cross_entropy`, but returns 0 (instead of nan)
     for empty inputs.

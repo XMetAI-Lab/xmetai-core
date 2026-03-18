@@ -8,7 +8,7 @@ from torch import nn
 __all__ = ["RotaryAttention", "precompute_freqs_cis", "precompute_freqs_cis_2d"]
 
 
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> Tuple[torch.Tensor, torch.Tensor]:
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(end, device=freqs.device)  # type: ignore
     freqs = torch.outer(t, freqs).float()  # type: ignore
@@ -17,7 +17,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     return freqs_cos, freqs_sin
 
 
-def precompute_freqs_cis_2d(dim: int, size: tuple, theta: float = 10000.0):
+def precompute_freqs_cis_2d(dim: int, size: tuple[int, int], theta: float = 10000.0) -> Tuple[torch.Tensor, torch.Tensor]:
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 4)[: (dim // 4)].float() / dim))
     y = torch.arange(size[0], device=freqs.device)
     x = torch.arange(size[1], device=freqs.device)
@@ -30,7 +30,7 @@ def precompute_freqs_cis_2d(dim: int, size: tuple, theta: float = 10000.0):
     return freqs_cos, freqs_sin
 
 
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
+def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     ndim = x.ndim
     assert 0 <= 1 < ndim
     assert freqs_cis.shape == (x.shape[1], x.shape[-1])
@@ -103,8 +103,8 @@ class RotaryAttention(nn.Module):
         x: torch.Tensor,
         freqs_cos: torch.Tensor,
         freqs_sin: torch.Tensor,
-        mask: torch.Tensor = None,
-    ):
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         bsz, seq_len, _ = x.shape
         # QKV
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)

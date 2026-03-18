@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch
 from einops.einops import rearrange, repeat
 from torch import nn as nn
@@ -89,12 +91,12 @@ class CubeEmbed(nn.Module):
         self,
         in_chans: int,
         out_chans: int,
-        in_frames=1,
+        in_frames: int = 1,
         patch_size: int = 2,
         stride_size: int = -1,
         const_chans: int = 0,
-        norm_layer=None,
-        flatten=False,
+        norm_layer: Any = None,
+        flatten: bool = False,
     ):
         super().__init__()
         patch_size = to_2tuple(patch_size)

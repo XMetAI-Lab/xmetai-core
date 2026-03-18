@@ -1,3 +1,5 @@
+from typing import Optional
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -560,10 +562,10 @@ class SwinBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        time_embedding: torch.Tensor = None,
-        freqs_cos: torch.Tensor = None,
-        freqs_sin: torch.Tensor = None,
-    ):
+        time_embedding: Optional[torch.Tensor] = None,
+        freqs_cos: Optional[torch.Tensor] = None,
+        freqs_sin: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         H, W = self.input_size
         B, L, C = x.shape
         if torch.jit.is_scripting():

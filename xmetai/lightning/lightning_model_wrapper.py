@@ -57,7 +57,7 @@ class Lightning_Model_Wrapper(pl.LightningModule):
         pass
 
     def configure_model(self) -> None:
-        model_cfg = self.hparams.model_cfg
+        model_cfg = self.hparams.model_cfg  # type: ignore[attr-defined]
         self.model = instantiate(model_cfg)
         return
 
@@ -106,7 +106,7 @@ class Lightning_Model_Wrapper(pl.LightningModule):
         max_iter = self.hparams.get("max_iter", 1000)
         warmup_steps = int(max_iter * self.hparams.get("warmup_rate", 0.01))
 
-        def lr_lambda(current_step: int):
+        def lr_lambda(current_step: int) -> float:
             if current_step < warmup_steps:
                 # 线性 warmup
                 return float(current_step) / float(max(1, warmup_steps))

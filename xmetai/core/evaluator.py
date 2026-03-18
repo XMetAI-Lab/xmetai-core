@@ -3,10 +3,10 @@ import logging
 import time
 from collections import OrderedDict, abc
 from contextlib import ExitStack, contextmanager
-from typing import List, Union
+from typing import Any, Dict, Iterator, List, Union
 
 import torch
-from tabulate import tabulate
+from tabulate import tabulate  # type: ignore[import-untyped]
 from termcolor import colored
 
 from xmetai.utils.comm import get_world_size, is_main_process
@@ -95,7 +95,7 @@ class DatasetEvaluators(DatasetEvaluator):
             del inputs[k]
         del inputs
 
-    def evaluate(self):
+    def evaluate(self) -> OrderedDict:
         results = OrderedDict()
         for evaluator in self._evaluators:
             result = evaluator.evaluate()
@@ -107,11 +107,11 @@ class DatasetEvaluators(DatasetEvaluator):
 
 
 def inference_on_dataset(
-    model,
-    data_loader,
+    model: Any,
+    data_loader: Any,
     evaluator: Union[DatasetEvaluator, List[DatasetEvaluator], None],
-    callbacks=None,
-):
+    callbacks: Any = None,
+) -> Dict[str, Any]:
     """
     Run model on the data_loader and evaluate the metrics with evaluator.
     Also benchmark the inference speed of `model.__call__` accurately.
@@ -148,9 +148,9 @@ def inference_on_dataset(
 
     num_warmup = min(5, total - 1)
     start_time = time.perf_counter()
-    total_data_time = 0
-    total_compute_time = 0
-    total_eval_time = 0
+    total_data_time: float = 0.0
+    total_compute_time: float = 0.0
+    total_eval_time: float = 0.0
     with ExitStack() as stack:
         stack.enter_context(torch.no_grad())
         stack.enter_context(inference_context(model))
@@ -235,7 +235,7 @@ def inference_on_dataset(
 
 
 @contextmanager
-def inference_context(model):
+def inference_context(model: Any) -> Iterator[None]:
     """
     A context where the model is temporarily changed to eval mode,
     and restored to previous mode afterwards.

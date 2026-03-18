@@ -26,7 +26,7 @@ else:
     # use mamba_ssm ops only when onnxruntime-extensions is installed.
     try:
         from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
-        from onnxruntime_extensions import PyOp, get_library_path, onnx_op
+        from onnxruntime_extensions import PyOp, get_library_path, onnx_op  # type: ignore[no-redef]
 
         @onnx_op(
             op_type="SelectiveScanFn",

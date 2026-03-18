@@ -33,13 +33,13 @@ class GraphCastDataset(Dataset):
         training: bool = True,
         inference_only: bool = False,
         years: tuple = ("19790101", "20161231"),
-        in_names: Optional[list] = None,
+        in_names: Optional[list[str]] = None,
         lat_flip: bool = False,
         neighbors: int = 8,
         periodic_lon: bool = True,
         edge_trig: bool = False,
-        static_fields: Optional[list] = None,
-        static_levels: Optional[dict] = None,
+        static_fields: Optional[list[str]] = None,
+        static_levels: Optional[dict[str, int]] = None,
     ):
         self.logger = logging.getLogger(__name__)
         if data_paths is None:
@@ -111,7 +111,7 @@ class GraphCastDataset(Dataset):
         in_names = in_names or []
         if len(in_names) > 0 and "level" in self.ds.coords:
             level_values = self.ds.coords["level"].values.tolist()
-            self.select_vars = [level_values.index(v) for v in in_names if v in level_values]
+            self.select_vars: list[int] | None = [level_values.index(v) for v in in_names if v in level_values]
             missing = [v for v in in_names if v not in level_values]
             if len(missing) > 0:
                 self.logger.warning(f"Variables not found in 'level': {missing}")
@@ -156,8 +156,8 @@ class GraphCastDataset(Dataset):
                 arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
                 extra_feats.append(arr.reshape(-1, 1))
             if len(extra_feats) > 0:
-                extra_feats = np.concatenate(extra_feats, axis=-1)
-                node_static = torch.cat([node_static, torch.from_numpy(extra_feats)], dim=-1)
+                extra_feats_arr = np.concatenate(extra_feats, axis=-1)
+                node_static = torch.cat([node_static, torch.from_numpy(extra_feats_arr)], dim=-1)
         self.node_static = node_static
 
     def __len__(self):
