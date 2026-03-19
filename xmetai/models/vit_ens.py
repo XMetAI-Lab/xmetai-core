@@ -5,17 +5,15 @@ Description: ViT model with ensemble strategy.
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
 
 from xmetai.builder import MODELS
-from xmetai.layers import DropPath, set_lora_step
+from xmetai.layers import DropPath
 from xmetai.loss import afcrps_loss_lite, charbonnier_loss
 
-from .vit import ViTModel
+from .vit import PerturbUMamba
 
 
 def get_exponential_weights(steps: int, alpha: float) -> torch.Tensor:
@@ -71,143 +69,89 @@ class EnsNoiseMLP(nn.Module):
 
 
 @MODELS.register()
-class ViTEnsModel(ViTModel):
+class PerturbUMambaEns(PerturbUMamba):
     def __init__(self, embed_dim=256, alpha=1.0, *args, **kwargs):
         super().__init__(embed_dim=embed_dim, *args, **kwargs)
         self.logger.name = __name__
         self.alpha = alpha
         self.ens_noise_mlp = EnsNoiseMLP(embed_dim)
+        self.delta_h = None
+
+        # Register a forward pre-hook on the middle layer to inject noise.
+        # This completely delegates the main loop to the base PerturbUMamba class.
+        if hasattr(self, "encoder") and hasattr(self.encoder, "layers"):
+            mid_layer = len(self.encoder.layers) // 2
+            self.encoder.layers[mid_layer].register_forward_pre_hook(self._inject_noise_hook)
+
+    def _inject_noise_hook(self, module, args):
+        h = args[0]  # args is a tuple of (h,) according to standard pytorch
+        # In base class, perturbations happen when self.training or self.use_pertub is True.
+        if self.training or self.use_pertub:
+            noise = torch.randn_like(h)
+            self.delta_h = self.ens_noise_mlp(noise)
+            # Add delta_h on top of any mixup/dropout that might be present
+            return (h + self.delta_h,)
+        return args
 
     def forward(self, data):
         if not self.training:
             return self.test(data)
 
-        data = self.process_data(data)
-        input = data["input"]
-        times = data["times"]
-        targets = data["targets"]
-        self.logger.debug(f"input shape: {input.shape}, target shape: {targets.shape}")  # input: bx2x76x121x240, target: bx1x76x121x240
-        self.logger.debug(f"input data min: {input.min():.3f}, max: {input.max():.3f}, target min: {targets.min():.3f}, max: {targets.max():.3f}")
+        # Pre-compute exponential rolling weights explicitly for the base AR loop
+        targets = data.get("targets", None)
+        if targets is not None:
+            future_frames = targets.size(1)
+            self.rolling_weights = get_exponential_weights(steps=future_frames, alpha=self.alpha).to(targets.device)
+            # base class inherently divides final acc_loss by future_frames.
+            # We compensate this during step computation.
+            self.future_frames = future_frames
 
-        future_frames = targets.size(1)
-        total_frames = self.start_frames + future_frames
+        # Complete dependency on the base autoregressive loop
+        return super().forward(data)
 
-        # get weights for each future frames
-        rolling_weights = get_exponential_weights(steps=future_frames, alpha=self.alpha)
-        self.logger.debug(f"rolling weights: {rolling_weights}")
+    def compute_step_loss(self, output, target, step):
+        # Base class calculates unweighted charbonnier and PINN losses
+        base_losses = super().compute_step_loss(output, target, step)
 
-        loss_rec = 0
-        loss_crps = 0
-        loss_noise = 0
-        pinn_acc: dict[str, torch.Tensor] = {}
+        # Compensate for base class division since rolling weights sum to 1
+        w = self.rolling_weights[step] * self.future_frames
 
-        for t in range(self.start_frames, total_frames):
-            k = t - self.start_frames
-            target = targets[:, k : k + self.out_frames]
-            self.reset_input(input)
-            output, delta_h = self.forward_step(input, times, step=t)
-            if "channel_weights" in self._buffers:
-                loss_rec += rolling_weights[k] * charbonnier_loss(output, target, weight=self.channel_weights * self.weight)
+        ens_losses = {}
+        # Apply weights to base losses
+        for k, v in base_losses.items():
+            if k == "loss_rec" and "channel_weights" in getattr(self, "_buffers", {}):
+                # Override charb specifically if channel_weights are applied differently for ENS
+                channel_weight = getattr(self, "channel_weights") * getattr(self, "weight", 1.0)
+                ens_losses[k] = charbonnier_loss(output, target, weight=channel_weight) * w
             else:
-                loss_rec += rolling_weights[k] * charbonnier_loss(output, target, weight=self.weight)
-            loss_crps += rolling_weights[k] * afcrps_loss_lite(output, target, weight=self.weight)
-            loss_noise += noise_magnitude_loss(delta_h)
-            if self.pinn_enable:
-                pinn_losses = self.compute_pinn_losses(output, target)
-                for k, v in pinn_losses.items():
-                    pinn_acc[k] = pinn_acc.get(k, 0) + v
+                ens_losses[k] = v * w
 
-            # prepare next input with current output
-            input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
+        # Add Ensemble-specific CRPS loss
+        ens_losses["loss_crps"] = afcrps_loss_lite(output, target, weight=getattr(self, "weight", None)) * w
 
-        loss_dict = dict(loss_rec=loss_rec, loss_crps=loss_crps, loss_noise=loss_noise)
-        if len(pinn_acc) > 0:
-            for k, v in pinn_acc.items():
-                loss_dict[k] = v
-        return loss_dict
+        # Add Noise Magnitude enforcement loss
+        if getattr(self, "delta_h", None) is not None:
+            ens_losses["loss_noise"] = noise_magnitude_loss(self.delta_h) * w
 
-    def forward_step(self, input, times=None, step=None, timestamp=None):
-        # Setup LoRA step for multi-step LoRA (cascade mode)
-        if step is not None:
-            set_lora_step(self.encoder, step)
-        # time embeddings.
-        if timestamp is None:
-            timestamp = self.get_timestamp(input, times, step)
-        self.logger.debug(f"timestamp: {timestamp}")
-        time_token = self.step_embed(timestamp["step"]).unsqueeze(1)  # Bx1xC
-        time_token = torch.concat([time_token, self.hour_embed(timestamp["hour"]).unsqueeze(1)], dim=1)
-        time_token = torch.concat([time_token, self.doy_embed(timestamp["doy"]).unsqueeze(1)], dim=1)
-        self.logger.debug(f"time embed shape: {time_token.shape}, min: {time_token.min().item()}, max: {time_token.max().item()}")  # Bx3xC
-
-        # start forward calculation
-        x = rearrange(input, "n t c h w -> n (t c) h w")
-        if x.shape[-2:] != self.image_size:
-            x = F.interpolate(x.float(), size=self.image_size, mode="bilinear", align_corners=False).to(input)
-        h = self.patch_embed(x)  # B, h*w/p/p, C
-        self.logger.debug(f"patch embed output shape: {h.shape}, min: {h.min().item()}, max: {h.max().item()}")
-
-        # apply noise on h for ensemble
-        noise = torch.randn_like(h)
-        delta_h = self.ens_noise_mlp(noise)
-        h = h + delta_h
-
-        # apply time embeddings. h is B x N x C, time_token is Bx3xC
-        time_token = self.time_mlp(time_token.sum(dim=1))
-        gamma, beta = time_token.chunk(2, dim=-1)
-        h = h * (1 + gamma.unsqueeze(1)) + beta.unsqueeze(1)
-        self.logger.debug(f"hidden shape: {h.shape}, min: {h.min().item()}, max: {h.max().item()}")
-
-        h = self.encoder(h)
-        self.logger.debug(f"encoder output shape: {h.shape}, min: {h.min().item()}, max: {h.max().item()}")
-        output = self.head(h)  # B, N, C_out*P*P
-        self.logger.debug(f"head output shape: {output.shape}")
-        output = rearrange(
-            output,
-            "n (h w) (c p1 p2) -> n c (h p1) (w p2)",
-            h=self.feat_size[0],
-            p1=self.patch_size,
-            p2=self.patch_size,
-        )
-        if output.shape[-2:] != input.shape[-2:]:
-            output = F.interpolate(
-                output.float(),
-                size=input.shape[-2:],
-                mode="bilinear",
-                align_corners=False,
-            ).to(input)
-        # decode output is only a residual, so we add the last input frame
-        self.logger.debug(f"final output shape: {output.shape}, min: {output.min().item()}, max: {output.max().item()}")
-        output = output.unsqueeze(1) + input[:, -1:]
-        if self.training:
-            return output, delta_h
-        return output
+        return ens_losses
 
     @torch.no_grad()
     def test_cascade(self, data):
-        input = data["input"]
-        times = data["times"]
-        total_step = max(self.test_frames)
-        steps = np.array(self.test_frames) // self.out_frames
-        assert sum(self.step_range) <= total_step
+        self.logger.info(f"Start testing with {self.members} ensemble members and step_range {self.step_range} with time:{data.get('times', None)}.")
 
-        chw = list(input.shape[-3:])
-        outputs = input.new_zeros(input.shape[0], len(steps), *chw)  # batch_size, saved_steps, c,h,w
-        self.logger.info(f"Start testing with {self.members} ensemble members and step_range {self.step_range} with time:{times}.")
+        # Enable perturbation logic to trigger the forward_pre_hook
+        self.use_pertub = True
 
-        # for each member, we inference for step_range times. Each time we get num_step results.
+        original_input = data["input"].clone()
+        outputs = 0
         for member in range(self.members):
             self.logger.debug(f"inference with member:{member} for step_range:{self.step_range}.")
-            new_input = input.clone()
-            for num_step in self.step_range:
-                curr_step = 0
-                for step in range(num_step):
-                    self.reset_input(new_input)
-                    output = self.forward_step(new_input, times, step=step + self.start_frames)
-                    new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames :]
-                    # save for output
-                    if step + 1 in steps:
-                        self.logger.debug(f"Saving output for step {step} with curr_step {curr_step}")
-                        outputs[:, curr_step : curr_step + 1, : self.out_chans] += output
-                        curr_step += 1
+            data["input"] = original_input.clone()
+            # The base class cleanly handles single trajectory simulation and frame caching
+            outputs += super().test_cascade(data)
+
+        self.use_pertub = False
+        data["input"] = original_input  # Restore untouched state
+
         outputs /= self.members  # ensemble prediction with mean
         return outputs

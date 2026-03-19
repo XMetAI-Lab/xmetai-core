@@ -123,10 +123,14 @@ class BasePredictor(Meta):
                 # make sure mask is binary
                 v = (v > 0).float()
                 self.logger.info(f"{k} shape: {v.shape} with 1 percent: {v.sum() / v.numel() * 100:.2f}%")
+            if k in ["mean", "std", "channel_weights"]:
+                self.logger.info(f"{k} shape: {v.shape}, values: {v.reshape(-1)}")
             self.register_buffer(k, v)
         self.logger.info(f"using mask(ocean) id: {self.maskid}, land mask id: {self.landid}")
         self.logger.info(f"using log norm id: {self.logid}")
         self.logger.info(f"accumulate id: {self.accumid}. Do zero accumulate: {self.zero_accum}")
+        if self.in_names is not None:
+            self.logger.info(f"input channel names: {self.in_names}")
 
         if self.pinn_enable and self.in_names is not None:
             self.pinn_registry = ChannelRegistry(list(self.in_names))
