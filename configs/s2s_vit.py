@@ -64,8 +64,8 @@ zero_accum = True  # whether to zero the accumulation variables after each optim
 freq = 24  # 24 hours for 1 day
 # model setting
 patch_size = 2
-embed_dim = 192
-num_heads = 24
+embed_dim = 512
+num_heads = 16
 image_size = (120, 240)  # resize from 121x240->120x240 with input data
 members = 8
 
@@ -93,9 +93,8 @@ model = L(MODELS.get(model_name))(
     members=members,
     save_dir=output_dir + "/pred/",
     layer_type="mamba_embed",  # Enable Mamba with internal AdaLN mechanism
-    # alpha=0.9 if load_from_pretrain else 1.0,
     # PINN integration: enable physics-informed losses for ViT experiments by default
-    pinn_enable=True,
+    pinn_enable=False,
     pinn_coeffs=pinn_coeffs,
     in_names=in_names,
     pinn_use_denorm=True,  # whether to denormalize the inputs before computing PINN losses; typically improves PINN performance
@@ -107,3 +106,4 @@ model.precision = "bf16"
 
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
+    model.alpha = 0.9  # Start with some noise regularization even during fine-tuning, can be tuned based on validation performance.

@@ -68,10 +68,25 @@ class PerturbUMamba(BasePredictor):
 
     def init_weight(self):
         for name, param in self.named_parameters():
-            if param.dim() > 1 or name.endswith("weight"):
-                nn.init.trunc_normal_(param, std=0.02)
+            # Respect parameters that shouldn't be reinitialized
+            if getattr(param, "_no_reinit", False):
+                continue
+
+            # Mamba's time step dynamics and structural arrays explicitly require
+            # their own initializations. Overwriting them breaks the SSM.
+            if "mamba" in name.lower() or "dt_proj" in name or "x_proj" in name or "A_log" in name or "out_proj" in name.lower() or "mixer" in name.lower():
+                continue
+
+            if "norm" in name.lower() or "ln" in name.lower() or "layernorm" in name.lower():
+                if name.endswith("weight") and param.dim() == 1:
+                    nn.init.ones_(param)
+                elif name.endswith("bias") and param.dim() == 1:
+                    nn.init.zeros_(param)
             else:
-                nn.init.zeros_(param)
+                if param.dim() > 1:
+                    nn.init.trunc_normal_(param, std=0.02)
+                elif name.endswith("bias") and param.dim() == 1:
+                    nn.init.zeros_(param)
 
     def forward(self, data):
         if not self.training:

@@ -273,6 +273,11 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
                 logger.debug(f"LoRA param {module_name}.{param_name}: lr={hyperparams.get('lr', 'N/A')}, wd={hyperparams.get('weight_decay', 'N/A')}")
             elif isinstance(module, norm_module_types) and weight_decay_norm is not None:
                 hyperparams["weight_decay"] = weight_decay_norm
+            elif value.dim() <= 1 and weight_decay_norm is not None:
+                # 1D parameters are typically biases and normalization weights
+                hyperparams["weight_decay"] = weight_decay_norm
+            elif hasattr(module, "weight") and param_name == "weight" and "norm" in module.__class__.__name__.lower() and weight_decay_norm is not None:
+                hyperparams["weight_decay"] = weight_decay_norm
 
             params.append({"params": [value], **hyperparams})
 

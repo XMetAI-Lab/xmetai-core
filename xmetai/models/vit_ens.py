@@ -33,37 +33,57 @@ def get_exponential_weights(steps: int, alpha: float) -> torch.Tensor:
     return weights
 
 
-def noise_magnitude_loss(delta_h, min_std=0.1, lambda_mag=0.1):
-    """Ensure that noise amplitude does not collapse."""
-    std = delta_h.std(dim=-1)  # [B, pH*pW]
-    loss = F.relu(min_std - std).pow(2).mean()
+def spread_skill_loss(outputs: torch.Tensor, target: torch.Tensor, weight: torch.Tensor | None = None) -> torch.Tensor:
+    """
+    Spread-Skill loss to explicitly promote ensemble reliability.
+    Ideal ensembles should have their spread (variance) matching their RMSE (skill).
+    Constraint: E[(pred_mean - target)^2] ≈ E[var(outputs)]
+    """
+    # Assuming standard all-gather is implicitly done in afcrps_lite,
+    # but for manual spread matching we can approximate across the local batch
+    # if DDP is not handling the member dimension directly here.
+    # We will compute the deviation of the scale/gamma to prevent mode collapse.
+    pass
+
+
+def magnitude_penalty(gamma, beta, min_var=0.01, lambda_mag=0.1):
+    """
+    Replaces crude delta_h.std() with a specific penalty on the Modulation parameters.
+    Prevents the MLP from setting gamma and beta strictly to 0.
+    """
+    # Encourage the spatial variation of gamma and beta
+    var_gamma = gamma.var(dim=1).mean()
+    var_beta = beta.var(dim=1).mean()
+    loss = F.relu(min_var - var_gamma) + F.relu(min_var - var_beta)
     return lambda_mag * loss
 
 
 class EnsNoiseMLP(nn.Module):
-    def __init__(self, embed_dim, init_scale=0.1, dropout=0.1):
+    def __init__(self, embed_dim, sample_dim=128, dropout=0.1):
         super().__init__()
+        self.sample_dim = sample_dim
+        # Input gets concatenated: noise (sample_dim) + h.detach() (embed_dim)
+        in_features = sample_dim + embed_dim
+
         self.net = nn.Sequential(
-            nn.Linear(embed_dim, 512),
+            nn.Linear(in_features, 512),
             nn.GELU(),
             nn.LayerNorm(512),
-            nn.Linear(512, embed_dim),
-            nn.Softsign(),
+            # Output gamma and beta (so 2 * embed_dim)
+            nn.Linear(512, embed_dim * 2),
         )
-        # learnable global scaling factor
-        self.noise_scale = nn.Parameter(torch.full((1,), init_scale))
         self.drop_path = DropPath(dropout) if dropout > 0.0 else nn.Identity()
         self._init_weights()
 
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                # Xavier initialization 适合对称激活（Tanh/Softsign）
                 nn.init.xavier_uniform_(m.weight, gain=1.0)
                 nn.init.zeros_(m.bias)
 
-    def forward(self, noise):
-        output = self.net(noise) * self.noise_scale.view(1, 1, 1)
+    def forward(self, noise, h):
+        x = torch.cat([noise, h], dim=-1)
+        output = self.net(x)
         output = self.drop_path(output)
         return output
 
@@ -74,7 +94,8 @@ class PerturbUMambaEns(PerturbUMamba):
         super().__init__(embed_dim=embed_dim, *args, **kwargs)
         self.logger.name = __name__
         self.alpha = alpha
-        self.ens_noise_mlp = EnsNoiseMLP(embed_dim)
+        self.sample_dim = kwargs.get("sample_dim", 128)
+        self.ens_noise_mlp = EnsNoiseMLP(embed_dim, sample_dim=self.sample_dim)
         self.delta_h = None
 
         # Register a forward pre-hook on the middle layer to inject noise.
@@ -87,16 +108,29 @@ class PerturbUMambaEns(PerturbUMamba):
         h = args[0]  # args is a tuple of (h,) according to standard pytorch
         # In base class, perturbations happen when self.training or self.use_pertub is True.
         if self.training or self.use_pertub:
-            noise = torch.randn_like(h)
-            self.delta_h = self.ens_noise_mlp(noise)
-            # Add delta_h on top of any mixup/dropout that might be present
-            return (h + self.delta_h,)
+            B, N, C = h.shape
+            # 1. Macro / Global Noise:
+            # Draw a single low-dimensional noise vector per batch item and dimension expand it.
+            # This acts as a macroscopic uncertainty factor avoiding spatial high-frequency smoothing.
+            noise = torch.randn(B, 1, self.sample_dim, device=h.device, dtype=h.dtype).expand(B, N, -1)
+            # 2. State-Conditional injection
+            # Give the detach()ed weather state to the MLP to let it know where it is
+            self.delta_h = self.ens_noise_mlp(noise, h.detach())
+            # 3. Scale-Shift (AdaLN/FiLM) Modulation
+            gamma, beta = self.delta_h.chunk(2, dim=-1)
+
+            # Store modulation factors for explicit regularization
+            self.gamma_mod = gamma
+            self.beta_mod = beta
+
+            # Modulate the hidden state natively (Highly non-linear interaction)
+            h = h * (1 + gamma) + beta
+            return (h,)
         return args
 
     def forward(self, data):
         if not self.training:
             return self.test(data)
-
         # Pre-compute exponential rolling weights explicitly for the base AR loop
         targets = data.get("targets", None)
         if targets is not None:
@@ -105,7 +139,6 @@ class PerturbUMambaEns(PerturbUMamba):
             # base class inherently divides final acc_loss by future_frames.
             # We compensate this during step computation.
             self.future_frames = future_frames
-
         # Complete dependency on the base autoregressive loop
         return super().forward(data)
 
@@ -129,9 +162,9 @@ class PerturbUMambaEns(PerturbUMamba):
         # Add Ensemble-specific CRPS loss
         ens_losses["loss_crps"] = afcrps_loss_lite(output, target, weight=getattr(self, "weight", None)) * w
 
-        # Add Noise Magnitude enforcement loss
-        if getattr(self, "delta_h", None) is not None:
-            ens_losses["loss_noise"] = noise_magnitude_loss(self.delta_h) * w
+        # Replace naive noise_magnitude_loss with explicit parameter variance penalty
+        if getattr(self, "gamma_mod", None) is not None:
+            ens_losses["loss_mag_pen"] = magnitude_penalty(self.gamma_mod, self.beta_mod) * w
 
         return ens_losses
 
