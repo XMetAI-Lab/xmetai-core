@@ -64,7 +64,7 @@ zero_accum = True  # whether to zero the accumulation variables after each optim
 freq = 24  # 24 hours for 1 day
 # model setting
 patch_size = 2
-embed_dim = 512
+embed_dim = 256
 num_heads = 16
 image_size = (120, 240)  # resize from 121x240->120x240 with input data
 members = 8
@@ -75,6 +75,7 @@ model = L(MODELS.get(model_name))(
     num_heads=num_heads,
     patch_size=patch_size,
     image_size=image_size,
+    window_size=10,
     drop_rate=0.1,
     in_chans=in_chans,
     out_chans=out_chans,
@@ -92,13 +93,13 @@ model = L(MODELS.get(model_name))(
     step_range=step_range,
     members=members,
     save_dir=output_dir + "/pred/",
-    layer_type="mamba_embed",  # Enable Mamba with internal AdaLN mechanism
+    layer_type="mamba_embed",  # Use local windowed Mamba blocks
     # PINN integration: enable physics-informed losses for ViT experiments by default
     pinn_enable=False,
-    pinn_coeffs=pinn_coeffs,
+    # pinn_coeffs=pinn_coeffs,
     in_names=in_names,
     pinn_use_denorm=True,  # whether to denormalize the inputs before computing PINN losses; typically improves PINN performance
-    use_pertub=True,
+    # use_pertub=True,
 )
 
 model.buffers = buffers

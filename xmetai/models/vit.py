@@ -29,6 +29,7 @@ class PerturbUMamba(BasePredictor):
         num_heads=8,
         patch_size=8,
         image_size=(120, 240),  # resize from 121x240->120x240 with input data
+        window_size=8,
         drop_rate=0.1,
         mlp_ratio=4,
         layer_type="mamba_embed",
@@ -56,12 +57,15 @@ class PerturbUMamba(BasePredictor):
             embed_dim=embed_dim,
             image_size=image_size,
             const_chans=const_chans,
+            window_size=window_size,
             patch_size=patch_size,
             depths=depths,
             num_heads=num_heads,
             drop_mcmc=drop_rate,
             mlp_ratio=mlp_ratio,
             layer_type=layer_type,
+            attn_type="v2",
+            mask_type="h",
             head_type="2fc",
         )
         self.init_weight()
@@ -69,12 +73,7 @@ class PerturbUMamba(BasePredictor):
     def init_weight(self):
         for name, param in self.named_parameters():
             # Respect parameters that shouldn't be reinitialized
-            if getattr(param, "_no_reinit", False):
-                continue
-
-            # Mamba's time step dynamics and structural arrays explicitly require
-            # their own initializations. Overwriting them breaks the SSM.
-            if "mamba" in name.lower() or "dt_proj" in name or "x_proj" in name or "A_log" in name or "out_proj" in name.lower() or "mixer" in name.lower():
+            if getattr(param, "_no_reinit", False) or getattr(param, "_no_weight_decay", False):
                 continue
 
             if "norm" in name.lower() or "ln" in name.lower() or "layernorm" in name.lower():

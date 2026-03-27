@@ -63,7 +63,7 @@ def build_model(cfg):
         def wrap_f1(module):
             return checkpoint_wrapper(
                 module,
-                checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+                checkpoint_impl=CheckpointImpl.REENTRANT,
                 preserve_rng_state=False,
             )
 

@@ -152,8 +152,10 @@ class UTransformer(nn.Module):
                 if not HAS_MAMBA:
                     raise ImportError("MambaVisionLayer requires mamba-ssm. " "Install it with: pip install '.[gpu]' or pip install mamba-ssm")
                 with_embedding = True if layer_type.lower().find("embed") > -1 else False
-                self.logger.info(f"Using Mamba style transformer blocks with embedding={with_embedding}.")
+                mamba_type = "mamba3" if layer_type.lower().find("mamba3") > -1 else ("mamba2" if layer_type.lower().find("mamba2") > -1 else "mamba")
+                self.logger.info(f"Using {mamba_type} style transformer blocks with embedding={with_embedding}.")
                 layer = MambaVisionLayer(
+                    mamba_type=mamba_type,
                     dim=embed_dim,
                     depth=depths[i],
                     num_heads=num_heads,
