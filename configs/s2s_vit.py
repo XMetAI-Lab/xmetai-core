@@ -76,7 +76,7 @@ model = L(MODELS.get(model_name))(
     patch_size=patch_size,
     image_size=image_size,
     window_size=10,
-    drop_rate=0.1,
+    drop_rate=0.01,
     in_chans=in_chans,
     out_chans=out_chans,
     const_chans=2,
@@ -100,6 +100,7 @@ model = L(MODELS.get(model_name))(
     in_names=in_names,
     pinn_use_denorm=True,  # whether to denormalize the inputs before computing PINN losses; typically improves PINN performance
     # use_pertub=True,
+    pertub_mixup=0.01,
 )
 
 model.buffers = buffers

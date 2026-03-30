@@ -43,8 +43,8 @@ class PerturbUMamba(BasePredictor):
         self.logger = logging.getLogger(__name__)
 
         # Perturbation settings (Mixup and Random Masking)
-        self.pertub_mixup = kwargs.pop("pertub_mixup", 0.1)  # max mixup alpha
-        self.pertub_mask = kwargs.pop("pertub_mask", 0.05)  # spatial dropout ratio
+        self.pertub_mixup = kwargs.pop("pertub_mixup", 0.0)  # max mixup alpha
+        self.pertub_mask = kwargs.pop("pertub_mask", 0.0)  # spatial dropout ratio
         self.use_pertub = kwargs.pop("use_pertub", False)  # enable at inference
 
         super().__init__(*args, **kwargs)
