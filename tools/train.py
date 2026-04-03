@@ -59,11 +59,14 @@ def build_model(cfg):
     cfg.train.fsdp.mods = mods
     # Apply activation checkpointing
     if cfg.train.activation_checkpointing:
+        # Determine if we are using Mamba3 to set the proper checkpoint implementation
+        mamba_type = cfg.model.layer_type if hasattr(cfg.model, "layer_type") else ""
+        checkpoint_info = CheckpointImpl.REENTRANT if "mamba3" in mamba_type else CheckpointImpl.NO_REENTRANT
 
         def wrap_f1(module):
             return checkpoint_wrapper(
                 module,
-                checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+                checkpoint_impl=checkpoint_info,
                 preserve_rng_state=False,
             )
 

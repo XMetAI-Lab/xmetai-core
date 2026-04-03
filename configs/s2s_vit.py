@@ -65,7 +65,7 @@ freq = 24  # 24 hours for 1 day
 # model setting
 patch_size = 2
 embed_dim = 256
-num_heads = 16
+num_heads = 32
 image_size = (120, 240)  # resize from 121x240->120x240 with input data
 members = 8
 
@@ -93,14 +93,15 @@ model = L(MODELS.get(model_name))(
     step_range=step_range,
     members=members,
     save_dir=output_dir + "/pred/",
-    layer_type="mamba_embed",  # Use local windowed Mamba blocks
+    layer_type="mamba_met_embed",  # Use local windowed Mamba blocks
     # PINN integration: enable physics-informed losses for ViT experiments by default
     pinn_enable=False,
     # pinn_coeffs=pinn_coeffs,
     in_names=in_names,
     pinn_use_denorm=True,  # whether to denormalize the inputs before computing PINN losses; typically improves PINN performance
     # use_pertub=True,
-    pertub_mixup=0.01,
+    pertub_mixup=0.0,
+    pertub_mask=0.0,
 )
 
 model.buffers = buffers

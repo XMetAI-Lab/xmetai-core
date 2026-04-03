@@ -25,9 +25,6 @@ iopath>=0.1.9
 # Mamba State Space Model
 mamba-ssm>=2.2.0
 
-# TIMM (for layers)
-timm>=0.9.0
-
 # Logging and monitoring
 tensorboard>=2.14.0
 

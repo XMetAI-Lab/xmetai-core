@@ -67,6 +67,8 @@ class PerturbUMamba(BasePredictor):
             attn_type="v2",
             mask_type="h",
             head_type="2fc",
+            norm_type="adaln",
+            ffn_type="gegluffn",
         )
         self.init_weight()
 
@@ -122,7 +124,10 @@ class PerturbUMamba(BasePredictor):
         return loss_dict
 
     def compute_step_loss(self, output, target, step):
-        loss_rec = charbonnier_loss(output, target, weight=getattr(self, "weight", None))
+        if "channel_weights" in self._buffers:
+            loss_rec = charbonnier_loss(output, target, weight=self.channel_weights * self.weight)
+        else:
+            loss_rec = charbonnier_loss(output, target, weight=self.weight)
         step_losses = {"loss_rec": loss_rec}
         # accumulate PINN losses per-step when enabled
         if self.pinn_enable:
@@ -165,12 +170,14 @@ class PerturbUMamba(BasePredictor):
                     alpha = torch.rand(1, device=h.device) * self.pertub_mixup
                     indices = torch.randperm(batch_size, device=h.device)
                     h = h * (1 - alpha) + h[indices] * alpha
+                    self.logger.debug(f"Applied feature mixup with alpha: {alpha.item():.3f}")
 
                 # 2. Random Token Masking (Spatial Dropout)
                 if self.pertub_mask > 0:
                     # Random mask on the sequence length dimension (N), shape: (B, N, 1)
                     mask = (torch.rand(batch_size, h.shape[1], 1, device=h.device) > self.pertub_mask).to(h.dtype)
                     h = h * mask / (1 - self.pertub_mask)
+                    self.logger.debug(f"Applied random token masking with mask ratio: {self.pertub_mask:.3f}")
             # --------------------------------------------------------------
 
             h = getattr(self.encoder, f"drop{i}")(h, self.encoder.drop_mcmc)
@@ -184,13 +191,16 @@ class PerturbUMamba(BasePredictor):
                 )
             else:
                 h = blk(h, time_embedding=embed)
+            self.logger.debug(f"After layer {i}, h shape: {h.shape}")
 
         if hasattr(self.encoder, "fpn") and self.encoder.fpn is not None:
             # Just in case we expand UTransformer later to use feature pyramids
+            self.logger.debug("FPN is enabled, but not implemented in this ViT model.")
             pass
 
         if hasattr(self.encoder, "norm") and self.encoder.norm is not None:
             h = self.encoder.norm(h, embed)
+            self.logger.debug(f"After normalization, h shape: {h.shape}")
 
         output = self.encoder.head(h)  # B, N, C_out*P*P
         self.logger.debug(f"head output shape: {output.shape}")

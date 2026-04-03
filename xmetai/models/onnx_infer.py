@@ -154,13 +154,13 @@ class OnnxInferModel(BasePredictor):
         num_step,
         times=None,
     ):
+        model = self.session
         outputs = input.new_zeros(input.shape[0], num_step, len(self.test_chans), *input.shape[-2:])
-        output = input.new_zeros(input.shape[0], 1, *input.shape[-3:])
+        output = input.new_zeros(model.get_outputs()[0].shape)
         step_tensor = input.new_zeros([1])
         hour_tensor = input.new_zeros([1])
         doy_tensor = input.new_zeros([1])
         self.logger.debug(f"inference for output shape:{outputs.shape}, dtype:{outputs.dtype}")
-        model = self.session
         input_names = [x.name for x in model.get_inputs()]
         io_binding = model.io_binding()
         for k in range(num_step):

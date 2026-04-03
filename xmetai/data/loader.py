@@ -54,7 +54,7 @@ def build_train_loader(
     total_batch_size,
     num_workers=0,
     pin_memory=True,
-    do_augment=True,
+    do_augment=False,
 ):
     world_size = get_world_size()
     batch_size = total_batch_size // world_size
