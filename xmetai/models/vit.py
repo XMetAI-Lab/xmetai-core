@@ -156,30 +156,28 @@ class PerturbUMamba(BasePredictor):
         # Cube embedding
         h = self.encoder.patch_embed(resized_input, const)
 
+        # ---------- Inject Perturbations at the Input Token Level ----------
+        if self.training or self.use_pertub:
+            # 1. Feature Space Mixup (Batch Mixup / Manifold Mixup) at input layer
+            if self.pertub_mixup > 0 and batch_size > 1:
+                alpha = torch.rand(1, device=h.device) * self.pertub_mixup
+                indices = torch.randperm(batch_size, device=h.device)
+                h = h * (1 - alpha) + h[indices] * alpha
+                self.logger.debug(f"Applied input mixup with alpha: {alpha.item():.3f}")
+
+            # 2. Random Token Masking (Spatial Dropout) at input layer
+            if self.pertub_mask > 0:
+                # Random mask on the sequence length dimension (N), shape: (B, N, 1)
+                mask = (torch.rand(batch_size, h.shape[1], 1, device=h.device) > self.pertub_mask).to(h.dtype)
+                h = h * mask / (1 - self.pertub_mask)
+                self.logger.debug(f"Applied input token masking with ratio: {self.pertub_mask:.3f}")
+        # -----------------------------------------------------------------
+
         # timestamp embedding
         embed = self.encoder.get_embed(timestamp)
 
         # Iterate over transformer layers
-        num_layers = len(self.encoder.layers)
-        mid_layer = num_layers // 2
         for i, blk in enumerate(self.encoder.layers):
-            # ---------- Inject Perturbations in the middle layer ----------
-            if i == mid_layer and (self.training or self.use_pertub):
-                # 1. Feature Space Mixup (Batch Mixup / Manifold Mixup)
-                if self.pertub_mixup > 0 and batch_size > 1:
-                    alpha = torch.rand(1, device=h.device) * self.pertub_mixup
-                    indices = torch.randperm(batch_size, device=h.device)
-                    h = h * (1 - alpha) + h[indices] * alpha
-                    self.logger.debug(f"Applied feature mixup with alpha: {alpha.item():.3f}")
-
-                # 2. Random Token Masking (Spatial Dropout)
-                if self.pertub_mask > 0:
-                    # Random mask on the sequence length dimension (N), shape: (B, N, 1)
-                    mask = (torch.rand(batch_size, h.shape[1], 1, device=h.device) > self.pertub_mask).to(h.dtype)
-                    h = h * mask / (1 - self.pertub_mask)
-                    self.logger.debug(f"Applied random token masking with mask ratio: {self.pertub_mask:.3f}")
-            # --------------------------------------------------------------
-
             h = getattr(self.encoder, f"drop{i}")(h, self.encoder.drop_mcmc)
             # handle time-embedding for layers correctly as UTransformer expects
             if "rotary" in self.encoder.attn_type:
