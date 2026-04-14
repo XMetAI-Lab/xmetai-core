@@ -60,12 +60,11 @@ train.output_dir = output_dir
 ######################################################################
 # Model settings
 ######################################################################
-zero_accum = True  # whether to zero the accumulation variables after each optimization step.
 freq = 24  # 24 hours for 1 day
 # model setting
 patch_size = 2
-embed_dim = 256
-num_heads = 32
+embed_dim = 384
+num_heads = 16
 image_size = (120, 240)  # resize from 121x240->120x240 with input data
 members = 8
 
@@ -76,7 +75,7 @@ model = L(MODELS.get(model_name))(
     patch_size=patch_size,
     image_size=image_size,
     window_size=10,
-    drop_rate=0.01,
+    drop_rate=0.05,
     in_chans=in_chans,
     out_chans=out_chans,
     const_chans=2,
@@ -85,8 +84,8 @@ model = L(MODELS.get(model_name))(
     freq=freq,
     accumid=logid,
     logid=logid,
-    maskid=maskid,
-    zero_accum=zero_accum,
+    maskid=[],  # maskid,
+    zero_accum=False,
     test_frames=test_frames,
     test_chans=test_chans,
     test_names=test_names,
@@ -100,8 +99,8 @@ model = L(MODELS.get(model_name))(
     in_names=in_names,
     pinn_use_denorm=True,  # whether to denormalize the inputs before computing PINN losses; typically improves PINN performance
     # use_pertub=True,
-    pertub_mixup=0.0,
-    pertub_mask=0.0,
+    pertub_mixup=0.05,
+    pertub_mask=0.1,
 )
 
 model.buffers = buffers
