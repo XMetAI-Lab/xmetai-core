@@ -12,17 +12,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 from mamba_ssm.ops.selective_scan_interface import SelectiveScanFn, selective_scan_fn
-from timm.layers.drop import DropPath
-from timm.layers.mlp import Mlp
 
+from xmetai.layers import DropPath
 from xmetai.layers.rotary_attention import RotaryAttention
-from xmetai.layers.swin import window_partition, window_reverse
 
 __all__ = ["MambaVisionLayer"]
 
+
 # define symbolic function for SelectiveScanFn
-
-
 def symbolic_selective_scan_fn(
     g,
     u,
@@ -35,7 +32,7 @@ def symbolic_selective_scan_fn(
     delta_bias=None,
     delta_softplus=False,
     return_last_state=False,
-):  # pylint: disable=too-many-arguments, invalid-name
+):
     """
     ONNX export symbolic for Mamba::SelectiveScanFn custom op; constructs the node with optional inputs and flags.
     """
@@ -60,7 +57,57 @@ def symbolic_selective_scan_fn(
 setattr(SelectiveScanFn, "symbolic", symbolic_selective_scan_fn)
 
 
-class MambaMixer(nn.Module):
+def window_partition(x: torch.Tensor, window_size: tuple[int, int]) -> torch.Tensor:
+    """
+    Args:
+        x: (B, C, H, W)
+        window_size: window size (tuple)
+    Returns:
+        local window features (num_windows*B, window_size[0]*window_size[1], C)
+    """
+    B, C, H, W = x.shape
+    x = x.view(B, C, H // window_size[0], window_size[0], W // window_size[1], window_size[1])
+    windows = x.permute(0, 2, 4, 3, 5, 1).reshape(-1, window_size[0] * window_size[1], C)
+    return windows
+
+
+def window_reverse(windows: torch.Tensor, window_size: tuple[int, int], H: int, W: int) -> torch.Tensor:
+    """
+    Args:
+        windows: local window features (num_windows*B, window_size[0]*window_size[1], C)
+        window_size: Window size (tuple)
+        H: Height of image
+        W: Width of image
+    Returns:
+        x: (B, C, H, W)
+    """
+    B = int(windows.shape[0] / (H * W / window_size[0] / window_size[1]))
+    x = windows.reshape(B, H // window_size[0], W // window_size[1], window_size[0], window_size[1], -1)
+    x = x.permute(0, 5, 1, 3, 2, 4).reshape(B, windows.shape[2], H, W)
+    return x
+
+
+# Simple MLP block to replace timm.layers.mlp.Mlp
+class Mlp(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.0):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop) if drop > 0.0 else nn.Identity()
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
+
+class MambaVisionMixer(nn.Module):
     def __init__(
         self,
         d_model,
@@ -80,7 +127,7 @@ class MambaMixer(nn.Module):
         device=None,
         dtype=None,
     ):
-        factory_kwargs = {}  # {"device": device, "dtype": dtype}
+        factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
         self.d_model = d_model
         self.d_state = d_state
@@ -91,12 +138,7 @@ class MambaMixer(nn.Module):
         self.use_fast_path = use_fast_path
         self.layer_idx = layer_idx
         self.in_proj = nn.Linear(self.d_model, self.d_inner, bias=bias, **factory_kwargs)
-        self.x_proj = nn.Linear(
-            self.d_inner // 2,
-            self.dt_rank + self.d_state * 2,
-            bias=False,
-            **factory_kwargs,
-        )
+        self.x_proj = nn.Linear(self.d_inner // 2, self.dt_rank + self.d_state * 2, bias=False, **factory_kwargs)
         self.dt_proj = nn.Linear(self.dt_rank, self.d_inner // 2, bias=True, **factory_kwargs)
         dt_init_std = self.dt_rank**-0.5 * dt_scale
         if dt_init == "constant":
@@ -110,6 +152,7 @@ class MambaMixer(nn.Module):
         with torch.no_grad():
             self.dt_proj.bias.copy_(inv_dt)
         self.dt_proj.bias._no_reinit = True
+        self.dt_proj.bias._no_weight_decay = True
         A = repeat(
             torch.arange(1, self.d_state + 1, dtype=torch.float32, device=device),
             "n -> d n",
@@ -148,24 +191,8 @@ class MambaMixer(nn.Module):
         xz = rearrange(xz, "b l d -> b d l")
         x, z = xz.chunk(2, dim=1)
         A = -torch.exp(self.A_log.float())
-        x = F.silu(
-            F.conv1d(
-                input=x,
-                weight=self.conv1d_x.weight,
-                bias=self.conv1d_x.bias,
-                padding="same",
-                groups=self.d_inner // 2,
-            )
-        )
-        z = F.silu(
-            F.conv1d(
-                input=z,
-                weight=self.conv1d_z.weight,
-                bias=self.conv1d_z.bias,
-                padding="same",
-                groups=self.d_inner // 2,
-            )
-        )
+        x = F.silu(F.conv1d(input=x, weight=self.conv1d_x.weight, bias=self.conv1d_x.bias, padding="same", groups=self.d_inner // 2))
+        z = F.silu(F.conv1d(input=z, weight=self.conv1d_z.weight, bias=self.conv1d_z.bias, padding="same", groups=self.d_inner // 2))
         x_dbl = self.x_proj(rearrange(x, "b d l -> (b l) d"))
         dt, B, C = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=-1)
         dt = rearrange(self.dt_proj(dt), "(b l) d -> b d l", l=seqlen)
@@ -177,24 +204,91 @@ class MambaMixer(nn.Module):
             dt = dt.float()
             B = B.float()
             C = C.float()
-        y = selective_scan_fn(
-            x,
-            dt,
-            A,
-            B,
-            C,
-            self.D.float(),
-            z=None,
-            delta_bias=self.dt_proj.bias.float(),
-            delta_softplus=True,
-            return_last_state=False,
-        )
+        y = selective_scan_fn(x, dt, A, B, C, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
         if torch.onnx.is_in_onnx_export():
             y = y.to(z)
         y = torch.cat([y, z], dim=1)
         y = rearrange(y, "b d l -> b l d")
         out = self.out_proj(y)
         return out
+
+
+class MambaMetMixer(MambaVisionMixer):
+    """
+    Bidirectional Mamba Mixer tailored for Meteorological Modeling.
+    Extends MambaVisionMixer to use dual-directional causal scanning, overcoming
+    the 1D single-direction bias which destroys 2D spatial physical properties.
+    """
+
+    def forward(self, hidden_states):
+        _, seqlen, _ = hidden_states.shape
+        xz = self.in_proj(hidden_states)
+        xz = rearrange(xz, "b l d -> b d l")
+        x, z = xz.chunk(2, dim=1)
+        A = -torch.exp(self.A_log.float())
+        # Use existing 1D convolutions (could be replaced with Conv2D if geometry allows in future)
+        x = F.silu(F.conv1d(input=x, weight=self.conv1d_x.weight, bias=self.conv1d_x.bias, padding="same", groups=self.d_inner // 2))
+        z = F.silu(F.conv1d(input=z, weight=self.conv1d_z.weight, bias=self.conv1d_z.bias, padding="same", groups=self.d_inner // 2))
+        x_dbl = self.x_proj(rearrange(x, "b d l -> (b l) d"))
+        dt, B_proj, C_proj = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=-1)
+        dt = rearrange(self.dt_proj(dt), "(b l) d -> b d l", l=seqlen)
+        B_proj = rearrange(B_proj, "(b l) dstate -> b dstate l", l=seqlen).contiguous()
+        C_proj = rearrange(C_proj, "(b l) dstate -> b dstate l", l=seqlen).contiguous()
+
+        if torch.onnx.is_in_onnx_export():
+            x = x.float()
+            dt = dt.float()
+            B_proj = B_proj.float()
+            C_proj = C_proj.float()
+
+        # Forward scan (Top-Left to Bottom-Right)
+        y_fwd = selective_scan_fn(
+            x, dt, A, B_proj, C_proj, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False
+        )
+
+        # Backward scan (Bottom-Right to Top-Left)
+        x_bwd = torch.flip(x, dims=[-1])
+        dt_bwd = torch.flip(dt, dims=[-1])
+        B_bwd = torch.flip(B_proj, dims=[-1])
+        C_bwd = torch.flip(C_proj, dims=[-1])
+
+        y_bwd = selective_scan_fn(
+            x_bwd, dt_bwd, A, B_bwd, C_bwd, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False
+        )
+        y_bwd = torch.flip(y_bwd, dims=[-1])
+
+        # Bidirectional fusion (averaging preserves scale and maintains numerical stability)
+        y = (y_fwd + y_bwd) / 2.0
+
+        if torch.onnx.is_in_onnx_export():
+            y = y.to(z)
+        y = torch.cat([y, z], dim=1)
+        y = rearrange(y, "b d l -> b l d")
+        out = self.out_proj(y)
+        return out
+
+
+class MambaMetWrapper(nn.Module):
+    """
+    A general wrapper for Mamba-2/3 to enable tied-weight bidirectional scanning
+    by reversing the sequence length dimension (B, L, D).
+    """
+
+    def __init__(self, mixer):
+        super().__init__()
+        self.mixer = mixer
+
+    def forward(self, hidden_states, **kwargs):
+        # Forward scan
+        y_fwd = self.mixer(hidden_states, **kwargs)
+
+        # Backward scan (flip along sequence dimension L)
+        hidden_states_bwd = torch.flip(hidden_states, dims=[1])
+        y_bwd = self.mixer(hidden_states_bwd, **kwargs)
+        y_bwd = torch.flip(y_bwd, dims=[1])
+
+        # Bidirectional fusion
+        return (y_fwd + y_bwd) / 2.0
 
 
 class Attention(nn.Module):
@@ -223,17 +317,19 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q).to(v), self.k_norm(k).to(v)
 
         if self.fused_attn:
-            x = F.scaled_dot_product_attention(q, k, v, dropout_p=self.attn_drop.p)
+            x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.attn_drop.p)
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
+            if mask is not None:
+                attn = attn + mask
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
             x = attn @ v
@@ -259,18 +355,33 @@ class Block(nn.Module):
         drop_path=0.0,
         act_layer=nn.GELU,
         norm_layer=nn.LayerNorm,
-        Mlp_block=Mlp,
         layer_scale=None,
         with_embedding=False,
         attn_type="standard",
         window_size=None,
         input_size=None,
+        mamba_type="mamba",
     ):
         super().__init__()
-        self.norm1 = norm_layer(dim)
+        self.with_embedding = with_embedding
+        if with_embedding:
+            self.norm1 = norm_layer(dim, elementwise_affine=False)
+        else:
+            self.norm1 = norm_layer(dim)
         self.attn_type = attn_type
         self.window_size = window_size
         self.input_size = input_size
+
+        # Determine shift size for Swin capabilities
+        if self.window_size is not None:
+            if isinstance(self.window_size, int):
+                win_h = win_w = self.window_size
+            else:
+                win_h, win_w = self.window_size
+            self.shift_size = (win_h // 2, win_w // 2) if counter % 2 != 0 else (0, 0)
+        else:
+            self.shift_size = (0, 0)
+
         if counter in transformer_blocks:
             if attn_type.find("rotary") != -1:
                 max_seq_len = None
@@ -295,17 +406,47 @@ class Block(nn.Module):
                     norm_layer=norm_layer,
                 )
         else:
-            self.mixer = MambaMixer(d_model=dim, d_state=8, d_conv=3, expand=1)
-        self.with_embedding = with_embedding
+            if mamba_type in ["mamba3", "mamba2", "mamba3_met", "mamba2_met"]:
+                d_inner = dim * 2
+                headdim = 64 if d_inner % 64 == 0 else (32 if d_inner % 32 == 0 else 16)
+                if mamba_type.startswith("mamba3"):
+                    try:
+                        from mamba_ssm.modules.mamba3 import Mamba3
+                    except ImportError:
+                        raise ImportError("Mamba3 requires latest mamba_ssm. Please install mamba-ssm.")
+                    mixer_inst = Mamba3(d_model=dim, d_state=64, d_conv=3, expand=2, headdim=headdim)
+                else:
+                    try:
+                        from mamba_ssm.modules.mamba2 import Mamba2
+                    except ImportError:
+                        raise ImportError("Mamba2 requires mamba_ssm>=2.0.0. Please install mamba-ssm.")
+                    mixer_inst = Mamba2(d_model=dim, d_state=64, d_conv=3, expand=2, headdim=headdim)
+
+                if mamba_type.endswith("_met"):
+                    self.mixer = MambaMetWrapper(mixer_inst)
+                else:
+                    self.mixer = mixer_inst
+            elif mamba_type == "mamba_met":
+                self.mixer = MambaMetMixer(d_model=dim, d_state=8, d_conv=3, expand=1)
+            else:
+                self.mixer = MambaVisionMixer(d_model=dim, d_state=8, d_conv=3, expand=1)
         if with_embedding:
             self.time_embed = nn.Sequential(
-                act_layer(),
+                nn.SiLU(),
                 nn.Linear(dim, dim * 6, bias=True),
             )
+            # init time embedding to small values to stabilize early training
+            nn.init.uniform_(self.time_embed[1].weight, -0.01, 0.01)
+            nn.init.constant_(self.time_embed[1].bias, 0.0)
+            self.time_embed[1].weight._no_reinit = True
+            self.time_embed[1].bias._no_reinit = True
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.norm2 = norm_layer(dim)
+        if with_embedding:
+            self.norm2 = norm_layer(dim, elementwise_affine=False)
+        else:
+            self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp_block(
+        self.mlp = Mlp(
             in_features=dim,
             hidden_features=mlp_hidden_dim,
             act_layer=act_layer,
@@ -316,55 +457,85 @@ class Block(nn.Module):
         self.gamma_2 = nn.Parameter(layer_scale * torch.ones(dim)) if use_layer_scale else 1
 
     def forward(self, x, time_embedding=None, freqs_cos=None, freqs_sin=None, **kwargs):
+        B, L, C = x.shape
         if self.with_embedding and time_embedding is not None:
             gamma = self.time_embed(time_embedding).unsqueeze(1)
             scale_msa, shift_msa, gate_msa, scale_mlp, shift_mlp, gate_mlp = gamma.chunk(6, dim=-1)
-            gate_msa = torch.sigmoid(gate_msa)
-            gate_mlp = torch.sigmoid(gate_mlp)
             norm1_x = self.norm1(x) * (1 + scale_msa) + shift_msa
+        else:
+            norm1_x = self.norm1(x)
+
+        if self.window_size is not None and self.input_size is not None:
+            H, W = self.input_size
+            if isinstance(self.window_size, int):
+                win_h = win_w = self.window_size
+            else:
+                win_h, win_w = self.window_size
+
+            norm1_x = norm1_x.view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
+            pad_r = (win_w - W % win_w) % win_w
+            pad_b = (win_h - H % win_h) % win_h
+            if pad_r > 0 or pad_b > 0:
+                norm1_x = torch.nn.functional.pad(norm1_x, (0, pad_r, 0, pad_b))
+                Hp, Wp = H + pad_b, W + pad_r
+            else:
+                Hp, Wp = H, W
+
+            if self.shift_size[0] > 0 or self.shift_size[1] > 0:
+                # Cyclic shift
+                shifted_x = torch.roll(norm1_x, shifts=(-self.shift_size[0], -self.shift_size[1]), dims=(2, 3))
+                # Calculate attention mask for SW-MSA
+                img_mask = torch.zeros((1, 1, Hp, Wp), device=norm1_x.device)
+                h_slices = (slice(0, -win_h), slice(-win_h, -self.shift_size[0]), slice(-self.shift_size[0], None))
+                w_slices = (slice(0, -win_w), slice(-win_w, -self.shift_size[1]), slice(-self.shift_size[1], None))
+                cnt = 0
+                for h in h_slices:
+                    for w in w_slices:
+                        img_mask[:, :, h, w] = cnt
+                        cnt += 1
+                mask_windows = window_partition(img_mask, (win_h, win_w))
+                mask_windows = mask_windows.squeeze(-1)
+                attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+                attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+                nW = mask_windows.shape[0]
+                attn_mask = attn_mask.unsqueeze(0).repeat(B, 1, 1, 1).view(B * nW, 1, win_h * win_w, win_h * win_w)
+            else:
+                shifted_x = norm1_x
+                attn_mask = None
+
+            x_windows = window_partition(shifted_x, (win_h, win_w))
+
             if isinstance(self.mixer, RotaryAttention) and freqs_cos is not None and freqs_sin is not None:
-                if self.window_size is not None and self.input_size is not None:
-                    attn_out = self._apply_windowed_rotary_attn(norm1_x, freqs_cos, freqs_sin)
+                attn_out = self.mixer(x_windows, freqs_cos, freqs_sin)
+            else:
+                if isinstance(self.mixer, Attention) and attn_mask is not None:
+                    attn_out = self.mixer(x_windows, mask=attn_mask)
                 else:
-                    attn_out = self.mixer(norm1_x, freqs_cos, freqs_sin)
+                    attn_out = self.mixer(x_windows)
+
+            attn_out = window_reverse(attn_out, (win_h, win_w), Hp, Wp)
+
+            if self.shift_size[0] > 0 or self.shift_size[1] > 0:
+                # Reverse cyclic shift
+                attn_out = torch.roll(attn_out, shifts=(self.shift_size[0], self.shift_size[1]), dims=(2, 3))
+
+            if pad_r > 0 or pad_b > 0:
+                attn_out = attn_out[:, :, :H, :W].contiguous()
+            attn_out = attn_out.permute(0, 2, 3, 1).view(B, L, C)
+        else:
+            if isinstance(self.mixer, RotaryAttention) and freqs_cos is not None and freqs_sin is not None:
+                attn_out = self.mixer(norm1_x, freqs_cos, freqs_sin)
             else:
                 attn_out = self.mixer(norm1_x)
+
+        if self.with_embedding and time_embedding is not None:
             x = x + gate_msa * self.drop_path(self.gamma_1 * attn_out)
             norm2_x = self.norm2(x) * (1 + scale_mlp) + shift_mlp
             x = x + gate_mlp * self.drop_path(self.gamma_2 * self.mlp(norm2_x))
         else:
-            norm1_x = self.norm1(x)
-            if isinstance(self.mixer, RotaryAttention) and freqs_cos is not None and freqs_sin is not None:
-                if self.window_size is not None and self.input_size is not None:
-                    attn_out = self._apply_windowed_rotary_attn(norm1_x, freqs_cos, freqs_sin)
-                else:
-                    attn_out = self.mixer(norm1_x, freqs_cos, freqs_sin)
-            else:
-                attn_out = self.mixer(norm1_x)
             x = x + self.drop_path(self.gamma_1 * attn_out)
             x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x
-
-    def _apply_windowed_rotary_attn(self, x, freqs_cos, freqs_sin):
-        """Apply rotary attention with window partitioning."""
-        B, L, C = x.shape
-        H, W = self.input_size
-        # Reshape to spatial format (B, H, W, C)
-        x_spatial = x.view(B, H, W, C)
-        # Partition into windows
-        x_windows = window_partition(x_spatial, self.window_size)  # (nW*B, win_h, win_w, C)
-        x_windows = x_windows.view(-1, self.window_size[0] * self.window_size[1], C)  # (nW*B, win_size, C)
-        # Apply rotary attention
-        attn_windows = self.mixer(x_windows, freqs_cos, freqs_sin)  # (nW*B, win_size, C)
-        # Reshape back to spatial windows
-        attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], C)
-        # Reverse window partition
-        x_out = window_reverse(attn_windows, self.window_size, H, W)  # (B, H, W, C)
-
-        # Reshape back to sequence format (B, L, C)
-        x_out = x_out.view(B, L, C)
-
-        return x_out
 
 
 class MambaVisionLayer(nn.Module):
@@ -377,7 +548,6 @@ class MambaVisionLayer(nn.Module):
         dim,
         depth,
         num_heads,
-        conv=False,
         mlp_ratio=4.0,
         qkv_bias=True,
         qk_scale=False,
@@ -390,6 +560,7 @@ class MambaVisionLayer(nn.Module):
         attn_type="standard",
         window_size=None,
         input_size=None,
+        mamba_type="mamba",
     ):
         """
         Args:
@@ -412,9 +583,7 @@ class MambaVisionLayer(nn.Module):
             transformer_blocks: list of transformer blocks.
             attn_type: attention type ('standard' or 'rotary').
         """
-
         super().__init__()
-        self.conv = conv
         self.blocks = nn.ModuleList(
             [
                 Block(
@@ -433,17 +602,30 @@ class MambaVisionLayer(nn.Module):
                     attn_type=attn_type,
                     window_size=window_size,
                     input_size=input_size,
+                    mamba_type=mamba_type,
                 )
                 for i in range(depth)
             ]
         )
+        self._init_weights()
+
+    def _init_weights(self):
+        for name, param in self.named_parameters():
+            # Respect parameters that shouldn't be reinitialized
+            if getattr(param, "_no_reinit", False) or getattr(param, "_no_weight_decay", False):
+                continue
+            if "norm" in name.lower() or "ln" in name.lower() or "layernorm" in name.lower():
+                if name.endswith("weight") and param.dim() == 1:
+                    nn.init.ones_(param)
+                elif name.endswith("bias") and param.dim() == 1:
+                    nn.init.zeros_(param)
+            else:
+                if param.dim() > 1:
+                    nn.init.trunc_normal_(param, std=0.02)
+                elif name.endswith("bias") and param.dim() == 1:
+                    nn.init.zeros_(param)
 
     def forward(self, x, time_embedding=None, freqs_cos=None, freqs_sin=None, **kwargs):
         for _, blk in enumerate(self.blocks):
-            x = blk(
-                x,
-                time_embedding=time_embedding,
-                freqs_cos=freqs_cos,
-                freqs_sin=freqs_sin,
-            )
+            x = blk(x, time_embedding=time_embedding, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
         return x

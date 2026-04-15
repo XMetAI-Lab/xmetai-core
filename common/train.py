@@ -16,6 +16,7 @@ train = dict(
         broadcast_buffers=False,
         find_unused_parameters=True,
         fp16_compression=False,
+        static_graph=True,
     ),
     fsdp=dict(  # options for FullyShardedDataParallel
         cpu_offload=False,

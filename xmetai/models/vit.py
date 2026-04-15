@@ -5,23 +5,18 @@ Description: Simple ViT Forecast model.
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
-from functools import partial
-from typing import Dict
+import logging
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.builder import MODELS
-from xmetai.layers import HAS_MAMBA, CubeEmbed, TimestepEmbed, set_lora_step
+from xmetai.layers import set_lora_step
 from xmetai.loss import charbonnier_loss
 
-if HAS_MAMBA:
-    from xmetai.layers import MambaVisionLayer
-
 from .base_predictor import BasePredictor
+from .utransformer import UTransformer
 
 
 @MODELS.register()
@@ -33,85 +28,47 @@ class ViTModel(BasePredictor):
         num_heads=8,
         patch_size=8,
         image_size=(120, 240),  # resize from 121x240->120x240 with input data
+        window_size=8,
         drop_rate=0.1,
         mlp_ratio=4,
-        layer_type="mamba",
+        layer_type="mamba_embed",
+        const_chans=0,
         *args,
         **kwargs,
     ):
-        super().__init__(*args, **kwargs)
-        norm_layer = partial(nn.LayerNorm, eps=1e-6)
         self.patch_size = patch_size
         self.image_size = tuple(image_size)
-        self.feat_size = [sz // patch_size for sz in image_size]
-        self.logger.name = __name__
-        # Patch embedding
-        self.patch_embed = CubeEmbed(
+        self.const_chans = const_chans
+        self.logger = logging.getLogger(__name__)
+
+        # Perturbation settings (Mixup and Random Masking)
+        self.pertub_mixup = kwargs.pop("pertub_mixup", 0.0)  # max mixup alpha
+        self.pertub_mask = kwargs.pop("pertub_mask", 0.0)  # spatial dropout ratio
+        self.use_pertub = kwargs.pop("use_pertub", False)  # enable at inference
+
+        super().__init__(*args, **kwargs)
+
+        # Uses UTransformer as the main backbone
+        self.encoder = UTransformer(
             in_chans=self.in_chans,
-            out_chans=embed_dim,
+            out_chans=self.out_chans,
             in_frames=self.in_frames,
+            embed_dim=embed_dim,
+            image_size=image_size,
+            const_chans=const_chans,
+            window_size=window_size,
             patch_size=patch_size,
-            norm_layer=norm_layer,
-            flatten=True,
+            depths=depths,
+            num_heads=num_heads,
+            drop_mcmc=drop_rate,
+            mlp_ratio=mlp_ratio,
+            layer_type=layer_type,
+            attn_type="v2",
+            mask_type="h",
+            head_type="2fc",
+            norm_type="adaln",
+            ffn_type="gegluffn",
         )
-        self.step_embed = TimestepEmbed(embed_dim)
-        self.hour_embed = TimestepEmbed(embed_dim)
-        self.doy_embed = TimestepEmbed(embed_dim)
-        self.time_mlp = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 2),
-            nn.GELU(),
-            nn.Linear(embed_dim * 2, embed_dim * 2),
-        )
-
-        # Transformer encoder with TransformerEncoderLayer
-        blocks = []
-        # 定义一个标准 TransformerEncoderLayer
-        if layer_type.lower() == "mamba":
-            if not HAS_MAMBA:
-                raise ImportError("MambaVisionLayer requires mamba-ssm. Install it with: pip install '.[gpu]' or pip install mamba-ssm")
-            self.logger.info("Using Mamba style transformer blocks.")
-            for _, depth in enumerate(depths):
-                block = MambaVisionLayer(
-                    dim=embed_dim,
-                    depth=depth,
-                    num_heads=num_heads,
-                    mlp_ratio=mlp_ratio,
-                    qkv_bias=True,
-                    qk_scale=True,
-                    conv=False,
-                    drop=drop_rate,
-                    transformer_blocks=(list(range(depth // 2 + 1, depth)) if depth % 2 != 0 else list(range(depth // 2, depth))),
-                )
-                blocks.append(block)
-        else:  # default use original ViT style transformer blocks
-            self.logger.info("Using original ViT style transformer blocks.")
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=embed_dim,
-                nhead=num_heads,
-                dim_feedforward=embed_dim * mlp_ratio,
-                dropout=drop_rate,
-                activation=F.gelu,
-                batch_first=True,  # 让输入是 (B, N, C)，和常见 ViT 格式一致
-            )
-            for depth in depths:
-                blocks.append(nn.TransformerEncoder(encoder_layer, num_layers=depth))
-                blocks.append(norm_layer(embed_dim))
-        self.encoder = nn.Sequential(*blocks)
-
-        self.logger.info(f"Using 2fc head with embed_dim: {embed_dim}, out_chans: {self.out_chans}, patch_size: {patch_size}")
-        self.head = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.GELU(),
-            nn.Linear(embed_dim, self.out_chans * patch_size * patch_size),
-        )
-        self.init_weight()
-
-    def init_weight(self):
-        for name, param in self.named_parameters():
-            if param.dim() > 1 or name.endswith("weight"):
-                nn.init.trunc_normal_(param, std=0.02)
-            else:
-                nn.init.zeros_(param)
 
     def forward(self, data):
         if not self.training:
@@ -121,83 +78,114 @@ class ViTModel(BasePredictor):
         input = data["input"]
         times = data["times"]
         targets = data["targets"]
+        const = data.get("const", None) if self.const_chans > 0 else None
         self.logger.debug(f"input shape: {input.shape}, target shape: {targets.shape}")  # input: bx2x76x121x240, target: bx1x76x121x240
         self.logger.debug(f"input data min: {input.min():.3f}, max: {input.max():.3f}, target min: {targets.min():.3f}, max: {targets.max():.3f}")
 
         future_frames = targets.size(1)
         total_frames = self.start_frames + future_frames
 
-        loss_rec = 0
-        pinn_acc: Dict[str, torch.Tensor] = {}
+        loss_dict = {}
 
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
             target = targets[:, k : k + self.out_frames]
             self.reset_input(input)
-            output = self.forward_step(input, times, step=t)
-            loss_rec += charbonnier_loss(output, target, weight=getattr(self, "weight", None))
-            # accumulate PINN losses per-step when enabled
-            if self.pinn_enable:
-                # Defer to BasePredictor helper to compute pinn losses; only compute when enabled
-                pinn_losses = self.compute_pinn_losses(output, target)
-                for k, v in pinn_losses.items():
-                    pinn_acc[k] = pinn_acc.get(k, 0) + v
-            self.logger.debug(f"loss_rec: {loss_rec.item()} with future frames {future_frames}.")
+            output = self.forward_step(input, const=const, times=times, step=t)
+            step_losses = self.compute_step_loss(output, target, step=k)
+            for k_loss, v_loss in step_losses.items():
+                loss_dict[k_loss] = loss_dict.get(k_loss, 0) + v_loss
+
+            self.logger.debug(f"step {k} loss_rec: {step_losses.get('loss_rec', 0)} with future frames {future_frames}.")
             # prepare next input with current output
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
 
-        loss_dict = dict(loss_rec=loss_rec / future_frames)
-        # finalize pinn accumulators (average across frames)
-        if len(pinn_acc) > 0:
-            for k, v in pinn_acc.items():
-                loss_dict[k] = v / future_frames
+        for k_loss, v_loss in loss_dict.items():
+            loss_dict[k_loss] = v_loss / future_frames
         return loss_dict
 
-    def forward_step(self, input, times=None, step=None, timestamp=None):
+    def compute_step_loss(self, output, target, step):
+        if "channel_weights" in self._buffers:
+            loss_rec = charbonnier_loss(output, target, weight=self.channel_weights * self.weight)
+        else:
+            loss_rec = charbonnier_loss(output, target, weight=self.weight)
+        step_losses = {"loss_rec": loss_rec}
+        # accumulate PINN losses per-step when enabled
+        if self.pinn_enable:
+            pinn_losses = self.compute_pinn_losses(output, target)
+            for k, v in pinn_losses.items():
+                step_losses[k] = v
+        return step_losses
+
+    def forward_step(self, input, const=None, times=None, step=None, timestamp=None):
         # Setup LoRA step for multi-step LoRA (cascade mode)
         if step is not None:
+            # We defer lora step setting inside the underlying model
             set_lora_step(self.encoder, step)
 
         # time embeddings.
         if timestamp is None:
             timestamp = self.get_timestamp(input, times, step)
         self.logger.debug(f"timestamp: {timestamp}")
-        time_token = self.step_embed(timestamp["step"]).unsqueeze(1)  # Bx1xC
-        time_token = torch.concat([time_token, self.hour_embed(timestamp["hour"]).unsqueeze(1)], dim=1)
-        time_token = torch.concat([time_token, self.doy_embed(timestamp["doy"]).unsqueeze(1)], dim=1)
-        self.logger.debug(f"time embed shape: {time_token.shape}, min: {time_token.min().item()}, max: {time_token.max().item()}")  # Bx3xC
 
-        # start forward calculation
-        x = rearrange(input, "n t c h w -> n (t c) h w")
-        if x.shape[-2:] != self.image_size:
-            x = F.interpolate(x.float(), size=self.image_size, mode="bilinear", align_corners=False).to(input)
-        h = self.patch_embed(x)  # B, h*w/p/p, C
-        self.logger.debug(f"patch embed output shape: {h.shape}, min: {h.min().item()}, max: {h.max().item()}")
+        # start forward calculation using utransformer capabilities
+        input = input[:, -self.in_frames :]  # bxTxcxhxw
+        batch_size = input.shape[0]
+        resized_input = self.encoder.resize_input(input)  # resize to target size
+        resized_input = rearrange(resized_input, "(n t) c h w -> n t c h w", n=batch_size)
 
-        # apply time embeddings. h is B x N x C, time_token is Bx3xC
-        time_token = self.time_mlp(time_token.sum(dim=1))
-        gamma, beta = time_token.chunk(2, dim=-1)
-        h = h * (1 + gamma.unsqueeze(1)) + beta.unsqueeze(1)
-        self.logger.debug(f"hidden shape: {h.shape}, min: {h.min().item()}, max: {h.max().item()}")
+        # Cube embedding
+        h = self.encoder.patch_embed(resized_input, const)
 
-        h = self.encoder(h)
-        self.logger.debug(f"encoder output shape: {h.shape}, min: {h.min().item()}, max: {h.max().item()}")
-        output = self.head(h)  # B, N, C_out*P*P
+        # ---------- Inject Perturbations at the Input Token Level ----------
+        if self.training or self.use_pertub:
+            # 1. Feature Space Mixup (Batch Mixup / Manifold Mixup) at input layer
+            if self.pertub_mixup > 0 and batch_size > 1:
+                alpha = torch.rand(1, device=h.device) * self.pertub_mixup
+                indices = torch.randperm(batch_size, device=h.device)
+                h = h * (1 - alpha) + h[indices] * alpha
+                self.logger.debug(f"Applied input mixup with alpha: {alpha.item():.3f}")
+
+            # 2. Random Token Masking (Spatial Dropout) at input layer
+            if self.pertub_mask > 0:
+                # Random mask on the sequence length dimension (N), shape: (B, N, 1)
+                mask = (torch.rand(batch_size, h.shape[1], 1, device=h.device) > self.pertub_mask).to(h.dtype)
+                h = h * mask / (1 - self.pertub_mask)
+                self.logger.debug(f"Applied input token masking with ratio: {self.pertub_mask:.3f}")
+        # -----------------------------------------------------------------
+
+        # timestamp embedding
+        embed = self.encoder.get_embed(timestamp)
+
+        # Iterate over transformer layers
+        for i, blk in enumerate(self.encoder.layers):
+            h = getattr(self.encoder, f"drop{i}")(h, self.encoder.drop_mcmc)
+            # handle time-embedding for layers correctly as UTransformer expects
+            if "rotary" in self.encoder.attn_type:
+                h = blk(
+                    h,
+                    time_embedding=embed,
+                    freqs_cos=self.encoder.freqs_cos,
+                    freqs_sin=self.encoder.freqs_sin,
+                )
+            else:
+                h = blk(h, time_embedding=embed)
+            self.logger.debug(f"After layer {i}, h shape: {h.shape}")
+
+        if hasattr(self.encoder, "fpn") and self.encoder.fpn is not None:
+            # Just in case we expand UTransformer later to use feature pyramids
+            self.logger.debug("FPN is enabled, but not implemented in this ViT model.")
+            pass
+
+        if hasattr(self.encoder, "norm") and self.encoder.norm is not None:
+            h = self.encoder.norm(h, embed)
+            self.logger.debug(f"After normalization, h shape: {h.shape}")
+
+        output = self.encoder.head(h)  # B, N, C_out*P*P
         self.logger.debug(f"head output shape: {output.shape}")
-        output = rearrange(
-            output,
-            "n (h w) (c p1 p2) -> n c (h p1) (w p2)",
-            h=self.feat_size[0],
-            p1=self.patch_size,
-            p2=self.patch_size,
-        )
-        if output.shape[-2:] != input.shape[-2:]:
-            output = F.interpolate(
-                output.float(),
-                size=input.shape[-2:],
-                mode="bilinear",
-                align_corners=False,
-            ).to(input)
+
+        output = self.encoder.resize_output(output, input)
+
         # decode output is only a residual, so we add the last input frame
         self.logger.debug(f"final output shape: {output.shape}, min: {output.min().item()}, max: {output.max().item()}")
         output = output.unsqueeze(1) + input[:, -1:]
@@ -207,6 +195,7 @@ class ViTModel(BasePredictor):
     def test_cascade(self, data):
         input = data["input"]
         times = data["times"]
+        const = data.get("const", None) if self.const_chans > 0 else None
         total_step = max(self.test_frames)
         steps = np.array(self.test_frames) // self.out_frames
         assert sum(self.step_range) <= total_step
@@ -219,7 +208,7 @@ class ViTModel(BasePredictor):
             curr_step = 0
             for step in range(num_step):
                 self.reset_input(input)
-                output = self.forward_step(input, times, step=step + self.start_frames)
+                output = self.forward_step(input, const=const, times=times, step=step + self.start_frames)
                 input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
                 # save for output
                 if step + 1 in steps:
@@ -240,15 +229,20 @@ class ViTModel(BasePredictor):
         hour = hour.to(dtype=self.dtype)
         doy = doy.to(dtype=self.dtype)
 
+        batch_size = input.shape[0]
+        const = None
+        if self.const_chans > 0 and hasattr(self, "const"):
+            const = self.const.to(input)
+            const = torch.repeat_interleave(const.unsqueeze(0), repeats=batch_size, dim=0)
+
         # forward model
         self.reset_input(normed_input)
-        batch_size = input.shape[0]
         timestamp = {
             "step": step.repeat(batch_size),
             "hour": hour.repeat(batch_size),
             "doy": doy.repeat(batch_size),
         }
-        output = self.forward_step(normed_input, timestamp=timestamp)
+        output = self.forward_step(normed_input, const=const, timestamp=timestamp)
 
         # inv normalize output with float32 precision
         output = self.inv_normalize(output)

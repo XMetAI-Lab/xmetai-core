@@ -11,6 +11,7 @@ import logging
 import os
 
 from s2s_base import (  # noqa: F401
+    ROOT_PATH,
     buffers,
     dataloader,
     depths,
@@ -32,7 +33,7 @@ from s2s_base import (  # noqa: F401
     train,
 )
 
-from xmetai import MODELS
+from xmetai import MODELS, LazyConfig
 from xmetai import LazyCall as L
 
 # set logging to debug level if needed
@@ -41,28 +42,29 @@ logging.basicConfig(level=logging.INFO)
 # Training settings
 #####################################################################
 model_name = "ViTModel"
-if os.path.exists(f"{output_dir}/../model_final.pth"):  # check if original model exists, start stage 2: ensemble
+
+if load_from_pretrain:
     train.ens_train = True
-    train.init_checkpoint = f"{output_dir}/../model_best.pth"
-    output_dir += "/../ens/"
-    train.teacher_forcing.teach_iters = 100
-    train.teacher_forcing.teach_steps = 1  # rollout 1 during ensemble training
-    if os.path.exists(f"{output_dir}/model_final.pth"):  # check if ensemble model exists, start stage 3: rollout
-        train.init_checkpoint = f"{output_dir}/model_best.pth"
-        output_dir += "/mstep/"
-        train.teacher_forcing.teach_steps = 20  # teach for 20 steps with 80GB GPU memory
-    model_name = "ViTEnsModel"
+    model_name = "ViTModelEns"
+    # Enable cascaded training for M-Step rollout logic.
+    train.teacher_forcing.teach_start = 1
+    train.teacher_forcing.teach_steps = 10
+    train.teacher_forcing.teach_iters = train.max_iter // train.teacher_forcing.teach_steps
+    train.eval_period = train.teacher_forcing.teach_iters
+
+    scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).circular_lr
+    scheduler.end_value = 1e-2
+    scheduler.period = 1.0 / (train.teacher_forcing.teach_steps - 1)
 
 train.output_dir = output_dir
 ######################################################################
 # Model settings
 ######################################################################
-zero_accum = True  # whether to zero the accumulation variables after each optimization step.
 freq = 24  # 24 hours for 1 day
 # model setting
 patch_size = 2
-embed_dim = 1536
-num_heads = 24
+embed_dim = 384
+num_heads = 16
 image_size = (120, 240)  # resize from 121x240->120x240 with input data
 members = 8
 
@@ -72,29 +74,33 @@ model = L(MODELS.get(model_name))(
     num_heads=num_heads,
     patch_size=patch_size,
     image_size=image_size,
-    drop_rate=0.1,
+    window_size=10,
+    drop_rate=0.05,
     in_chans=in_chans,
     out_chans=out_chans,
+    const_chans=2,
     in_frames=in_frames,
     out_frames=1,
     freq=freq,
     accumid=logid,
     logid=logid,
-    maskid=maskid,
-    zero_accum=zero_accum,
+    maskid=[],  # maskid,
+    zero_accum=False,
     test_frames=test_frames,
     test_chans=test_chans,
     test_names=test_names,
     step_range=step_range,
     members=members,
     save_dir=output_dir + "/pred/",
-    layer_type="mamba",  # Enable Mamba for better sequence modeling
-    # alpha=0.9 if load_from_pretrain else 1.0,
+    layer_type="mamba_met_embed",  # Use local windowed Mamba blocks
     # PINN integration: enable physics-informed losses for ViT experiments by default
-    pinn_enable=True,
-    pinn_coeffs=pinn_coeffs,
+    pinn_enable=False,
+    # pinn_coeffs=pinn_coeffs,
     in_names=in_names,
     pinn_use_denorm=True,  # whether to denormalize the inputs before computing PINN losses; typically improves PINN performance
+    # use_pertub=True,
+    pertub_mixup=0.05,
+    pertub_mask=0.1,
 )
 
 model.buffers = buffers
@@ -102,3 +108,4 @@ model.precision = "bf16"
 
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
+    model.alpha = 0.9  # Start with some noise regularization even during fine-tuning, can be tuned based on validation performance.

@@ -55,7 +55,7 @@ model_name = "ViTModel"
 if load_from_pretrain:  # check if original model exists, start stage 2: ensemble
     train.ens_train = True
     train.init_checkpoint = f"{output_dir}/../model_best.pth"
-    model_name = "ViTEnsModel"
+    model_name = "ViTModelEns"
     output_dir += "/../ens/"
     train.teacher_forcing.teach_iters = 100
     train.teacher_forcing.teach_steps = 5  # teach for 5 steps with 80GB GPU memory

@@ -261,9 +261,13 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
 
             hyperparams = copy.copy(defaults)
 
+            # Special handling for explicitly requested no-weight-decay params (e.g. Mamba A_log/D)
+            if getattr(value, "_no_weight_decay", False):
+                hyperparams["weight_decay"] = 0.0
+                logger.debug(f"Disable weight decay for {module_name}.{param_name} due to _no_weight_decay flag.")
             # Special handling for LoRA parameters
             # LoRA layers can typically use higher learning rates
-            if "lora_" in param_name:
+            elif "lora_" in param_name:
                 # LoRA parameters can use 2x learning rate for faster adaptation
                 if base_lr is not None:
                     hyperparams["lr"] = base_lr * 2.0
@@ -272,6 +276,11 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
                     hyperparams["weight_decay"] = weight_decay * 0.1
                 logger.debug(f"LoRA param {module_name}.{param_name}: lr={hyperparams.get('lr', 'N/A')}, wd={hyperparams.get('weight_decay', 'N/A')}")
             elif isinstance(module, norm_module_types) and weight_decay_norm is not None:
+                hyperparams["weight_decay"] = weight_decay_norm
+            elif value.dim() <= 1 and weight_decay_norm is not None:
+                # 1D parameters are typically biases and normalization weights
+                hyperparams["weight_decay"] = weight_decay_norm
+            elif hasattr(module, "weight") and param_name == "weight" and "norm" in module.__class__.__name__.lower() and weight_decay_norm is not None:
                 hyperparams["weight_decay"] = weight_decay_norm
 
             params.append({"params": [value], **hyperparams})

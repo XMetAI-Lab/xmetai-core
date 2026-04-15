@@ -3,4 +3,4 @@ from .ema import EMA
 from .graphcast import GraphCastPredictor
 from .onnx_infer import OnnxInferModel
 from .vit import ViTModel
-from .vit_ens import ViTEnsModel
+from .vit_ens import ViTModelEns

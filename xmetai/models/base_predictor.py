@@ -123,22 +123,28 @@ class BasePredictor(Meta):
                 # make sure mask is binary
                 v = (v > 0).float()
                 self.logger.info(f"{k} shape: {v.shape} with 1 percent: {v.sum() / v.numel() * 100:.2f}%")
+            if k in ["mean", "std", "channel_weights"]:
+                self.logger.info(f"{k} shape: {v.shape}, values: {v.reshape(-1)}")
             self.register_buffer(k, v)
         self.logger.info(f"using mask(ocean) id: {self.maskid}, land mask id: {self.landid}")
         self.logger.info(f"using log norm id: {self.logid}")
         self.logger.info(f"accumulate id: {self.accumid}. Do zero accumulate: {self.zero_accum}")
+        if self.in_names is not None:
+            self.logger.info(f"input channel names: {self.in_names}")
 
         if self.pinn_enable and self.in_names is not None:
             self.pinn_registry = ChannelRegistry(list(self.in_names))
             self.logger.info(f"enabling PINN losses with coefficients: {self.pinn_coeffs}")
             self.logger.info(f"PINN loss use denormalized inputs: {self.pinn_use_denorm}")
-        else:
+        elif self.pinn_enable and self.in_names is None:
             self.pinn_enable = False  # disable PINN if we don't have channel names to construct the registry
             self.logger.error(
                 "pinn_enable=True but `in_names` was not provided to the model config. "
                 "PINN registry will be constructed lazily when compute_pinn_losses is invoked; "
                 "ensure `in_names` or model.buffers with channel metadata are supplied to avoid runtime errors."
             )
+        else:
+            self.logger.info("PINN losses are disabled.")
 
     def train(self, mode: bool = True) -> "BasePredictor":
         super().train(mode=mode)

@@ -24,7 +24,7 @@ AdamW = L(torch.optim.AdamW)(
         weight_decay_norm=0.0,
     ),
     lr=5e-4,
-    betas=(0.9, 0.95),
+    betas=(0.9, 0.99),
     weight_decay=0.1,
 )
 
