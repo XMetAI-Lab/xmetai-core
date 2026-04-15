@@ -94,7 +94,8 @@ def build_level_channel_map(
 
     Returns:
         group_slice_indices: list of channel indices for each group (for slicing input)
-        group_reassemble_map: list of (target_indices, source_ranges) for each group (for reassembling)
+        group_reassemble_map: permutation indices mapping each original channel index
+                              to its position in the concatenated grouped-channel order.
     """
     # Step 1: Build per-level channel indices
     level_indices: list[list[int]] = [[] for _ in range(NUM_LEVELS)]
@@ -133,7 +134,7 @@ def build_level_channel_map(
             group_chans.extend(level_indices[li])
         group_slice_indices.append(group_chans)
 
-    # Step 3: Build reassemble map, mapping sequencial group output channels back to full channel indices.
+    # Step 3: Build reassemble map, mapping sequential group output channels back to full channel indices.
     group_reassemble_map: list[int] = []
     group_mapping = sum(group_slice_indices, [])  # flatten list of lists
     group_reassemble_map = [group_mapping.index(i) for i in range(len(in_names))]  # map full channel index to group output index
@@ -327,7 +328,6 @@ class LatentMixerPredictor(UTransformer):
                 h = blk(h, time_embedding=time_embedding, freqs_cos=self.freqs_cos, freqs_sin=self.freqs_sin)
             else:
                 h = blk(h, time_embedding=time_embedding)
-            self.logger.debug(f"h min: {h.min().item():.4f}, max: {h.max().item():.4f}, mean: {h.mean().item():.4f}")
         if self.group_projs is not None:
             outputs = [proj(h) for proj in self.group_projs]
             outputs = [out + sc for out, sc in zip(outputs, shortcut)]  # residual connection in latent space
@@ -580,13 +580,16 @@ class GroupVAEPredictor(BasePredictor):
             if loss_available:
                 vae_input_delta = self._reassemble(vae_rec_input_outputs_by_group, input)
                 vae_input_delta = self._resize_pred(vae_input_delta, (int(input.shape[-2]), int(input.shape[-1])))
-                vae_input_recon = self._apply_residual(vae_input_delta, input)
+
+                # reference should be x_{t-1} based on formula x_t = F(h_t, x_{t-1})
+                vae_input_base = true_input[:, -2:-1] if true_input.shape[1] > 1 else true_input[:, -1:]
+                vae_input_recon = self._apply_residual(vae_input_delta, vae_input_base)
                 vae_input_target = true_input[:, -1:]
                 loss_vae_input += rolling_weights[k] * charbonnier_loss(vae_input_recon, vae_input_target, weight=self.weight)
 
                 vae_target_delta = self._reassemble(vae_rec_target_outputs_by_group, new_target)
                 vae_target_delta = self._resize_pred(vae_target_delta, (int(new_target.shape[-2]), int(new_target.shape[-1])))
-                vae_target_recon = self._apply_residual(vae_target_delta, new_target)
+                vae_target_recon = self._apply_residual(vae_target_delta, true_input)
                 loss_vae_target += rolling_weights[k] * charbonnier_loss(vae_target_recon, target, weight=self.weight)
 
             group_outputs = []

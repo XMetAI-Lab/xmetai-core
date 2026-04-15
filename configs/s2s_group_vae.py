@@ -42,7 +42,6 @@ from xmetai import LazyCall as L
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
 
-# Loss weights (VAE input, VAE output, main predictor output, KL divergence, latent prediction reconstruction)
 loss_weight = (0.2, 0.2, 1.0, 0.3)  # (vae_input, vae_target, pred_rec, latent_pred_rec)
 if load_from_pretrain:
     # freeze upper-level VAE to preserve pretrained dynamics, only fine-tune lower-level VAE and main predictor.
@@ -73,7 +72,7 @@ members = 1
 
 model = L(MODELS.get("GroupVAEPredictor"))(
     # UTransformer shared architecture params
-    embed_dim=128,  # 1536 dims total
+    embed_dim=128,  # 3*embed_dim for mix predictor
     image_size=(120, 240),
     window_size=10,
     patch_size=2,
