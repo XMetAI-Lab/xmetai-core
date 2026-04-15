@@ -1,5 +1,5 @@
 # Requirements for project
-# Python 3.8 with PyTorch 2.7+
+# Python 3.11 with PyTorch 2.7+
 
 torch>=2.7.0
 numpy>=1.24.0
@@ -31,7 +31,7 @@ tensorboard>=2.14.0
 # For data handling
 h5py>=3.8.0
 zarr>=2.15.0
-xarray>=2023.0.0
+xarray>=2026.2.0
 dask>=2023.0.0
 
 # Optional dependencies for specific features
