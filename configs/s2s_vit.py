@@ -41,11 +41,11 @@ logging.basicConfig(level=logging.INFO)
 #####################################################################
 # Training settings
 #####################################################################
-model_name = "PerturbUMamba"
+model_name = "ViTModel"
 
 if load_from_pretrain:
     train.ens_train = True
-    model_name = "PerturbUMambaEns"
+    model_name = "ViTModelEns"
     # Enable cascaded training for M-Step rollout logic.
     train.teacher_forcing.teach_start = 1
     train.teacher_forcing.teach_steps = 10

@@ -13,7 +13,7 @@ from xmetai.builder import MODELS
 from xmetai.layers import DropPath
 from xmetai.loss import afcrps_loss_lite, charbonnier_loss
 
-from .vit import PerturbUMamba
+from .vit import ViTModel
 
 
 def get_exponential_weights(steps: int, alpha: float) -> torch.Tensor:
@@ -89,7 +89,7 @@ class EnsNoiseMLP(nn.Module):
 
 
 @MODELS.register()
-class PerturbUMambaEns(PerturbUMamba):
+class ViTModelEns(ViTModel):
     def __init__(self, embed_dim=256, alpha=1.0, *args, **kwargs):
         super().__init__(embed_dim=embed_dim, *args, **kwargs)
         self.logger.name = __name__
@@ -99,7 +99,7 @@ class PerturbUMambaEns(PerturbUMamba):
         self.delta_h = None
 
         # Register a forward pre-hook on the middle layer to inject noise.
-        # This completely delegates the main loop to the base PerturbUMamba class.
+        # This completely delegates the main loop to the base ViTModel class.
         if hasattr(self, "encoder") and hasattr(self.encoder, "layers"):
             mid_layer = len(self.encoder.layers) // 2
             self.encoder.layers[mid_layer].register_forward_pre_hook(self._inject_noise_hook)

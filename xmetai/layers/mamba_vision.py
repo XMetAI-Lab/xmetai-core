@@ -548,7 +548,6 @@ class MambaVisionLayer(nn.Module):
         dim,
         depth,
         num_heads,
-        conv=False,
         mlp_ratio=4.0,
         qkv_bias=True,
         qk_scale=False,
@@ -584,11 +583,7 @@ class MambaVisionLayer(nn.Module):
             transformer_blocks: list of transformer blocks.
             attn_type: attention type ('standard' or 'rotary').
         """
-
         super().__init__()
-        self.conv = conv
-        self.window_size = window_size
-        self.input_size = input_size
         self.blocks = nn.ModuleList(
             [
                 Block(
@@ -612,6 +607,23 @@ class MambaVisionLayer(nn.Module):
                 for i in range(depth)
             ]
         )
+        self._init_weights()
+
+    def _init_weights(self):
+        for name, param in self.named_parameters():
+            # Respect parameters that shouldn't be reinitialized
+            if getattr(param, "_no_reinit", False) or getattr(param, "_no_weight_decay", False):
+                continue
+            if "norm" in name.lower() or "ln" in name.lower() or "layernorm" in name.lower():
+                if name.endswith("weight") and param.dim() == 1:
+                    nn.init.ones_(param)
+                elif name.endswith("bias") and param.dim() == 1:
+                    nn.init.zeros_(param)
+            else:
+                if param.dim() > 1:
+                    nn.init.trunc_normal_(param, std=0.02)
+                elif name.endswith("bias") and param.dim() == 1:
+                    nn.init.zeros_(param)
 
     def forward(self, x, time_embedding=None, freqs_cos=None, freqs_sin=None, **kwargs):
         for _, blk in enumerate(self.blocks):

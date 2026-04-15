@@ -49,7 +49,7 @@ if os.path.exists(f"{output_dir}/../model_final.pth"):  # check if original mode
         train.init_checkpoint = f"{output_dir}/model_best.pth"
         output_dir += "/mstep/"
         train.teacher_forcing.teach_steps = 12  # teach for 12 steps with 80GB GPU memory
-    model_name = "ViTEnsModel"
+    model_name = "ViTModelEns"
 
 train.output_dir = output_dir
 train.eval_period = 4000

@@ -9,7 +9,6 @@ import logging
 
 import numpy as np
 import torch
-import torch.nn as nn
 from einops import rearrange
 
 from xmetai.builder import MODELS
@@ -21,7 +20,7 @@ from .utransformer import UTransformer
 
 
 @MODELS.register()
-class PerturbUMamba(BasePredictor):
+class ViTModel(BasePredictor):
     def __init__(
         self,
         embed_dim=256,
@@ -70,24 +69,6 @@ class PerturbUMamba(BasePredictor):
             norm_type="adaln",
             ffn_type="gegluffn",
         )
-        self.init_weight()
-
-    def init_weight(self):
-        for name, param in self.named_parameters():
-            # Respect parameters that shouldn't be reinitialized
-            if getattr(param, "_no_reinit", False) or getattr(param, "_no_weight_decay", False):
-                continue
-
-            if "norm" in name.lower() or "ln" in name.lower() or "layernorm" in name.lower():
-                if name.endswith("weight") and param.dim() == 1:
-                    nn.init.ones_(param)
-                elif name.endswith("bias") and param.dim() == 1:
-                    nn.init.zeros_(param)
-            else:
-                if param.dim() > 1:
-                    nn.init.trunc_normal_(param, std=0.02)
-                elif name.endswith("bias") and param.dim() == 1:
-                    nn.init.zeros_(param)
 
     def forward(self, data):
         if not self.training:

@@ -165,7 +165,6 @@ class UTransformer(nn.Module):
                     mlp_ratio=mlp_ratio,
                     qkv_bias=True,
                     qk_scale=True,
-                    conv=False,
                     drop=drop_mcmc,
                     transformer_blocks=(list(range(depths[i] // 2 + 1, depths[i])) if depths[i] % 2 != 0 else list(range(depths[i] // 2, depths[i]))),
                     with_embedding=with_embedding,
