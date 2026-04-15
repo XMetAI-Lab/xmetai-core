@@ -300,7 +300,7 @@ class TestONNXExport:
 
     @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
     def test_onnx_export_selective_scan(self):
-        """Test ONNX export with custom selective scan op."""
+        """Test ONNX export with custom selective scan op."""""
         from xmetai.layers.mamba_vision import MambaMetMixer
 
         # Test that mamba blocks have symbolic export
