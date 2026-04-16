@@ -11,7 +11,7 @@ $$
 按照变量物理属性划分为 ( G ) 个 group：
 
 $$
-x_t = {x_t^{(g)}}_{g=1}^{G}, \quad x_t^{(g)} \in \mathbb{R}^{C_g \times H \times W}
+x_t = \\{ x_t^{(g)} \in \mathbb{R}^{C_g \times H \times W} | g = 1, \dots, G\\}
 $$
 
 每个 group 内进一步划分为两类变量：
