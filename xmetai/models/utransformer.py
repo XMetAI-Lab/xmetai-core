@@ -235,7 +235,7 @@ class UTransformer(nn.Module):
                 feat_size=self.feat_size,
             )
         else:
-            self.logger.error(f"Unknown head type: {head_type}.")
+            self.logger.info(f"Using head type: {head_type} for no head.")
             self.head = None
 
     def resize_input(self, input):
