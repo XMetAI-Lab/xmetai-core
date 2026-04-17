@@ -365,7 +365,7 @@ class GroupVAEPredictor(BasePredictor):
         vae_type: str = "index",
         vae_residual_indices: list[str] | None = None,
         alpha: float = 1.0,
-        loss_weight: tuple[float, float, float, float] = (0.2, 0.2, 1.0, 0.3),
+        loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
         rollout_max: int = 50,
         **kwargs: Any,
     ) -> None:
@@ -373,8 +373,8 @@ class GroupVAEPredictor(BasePredictor):
         self.logger.name = __name__
 
         self.alpha = alpha
-        if len(loss_weight) != 4:
-            raise ValueError("loss_weight must contain four floats: (vae_input, vae_target, pred_rec, latent_pred)")
+        if len(loss_weight) != 5:
+            raise ValueError("loss_weight must contain five floats: (vae_input, vae_target, pred_rec, latent_reg, latent_pred)")
         self.loss_weight = loss_weight
         self.const_chans = const_chans
         self.rollout_max = rollout_max
@@ -539,6 +539,7 @@ class GroupVAEPredictor(BasePredictor):
         loss_vae_target = torch.zeros((), device=input.device)
         loss_pred_rec = torch.zeros((), device=input.device)
         loss_latent_pred_rec = torch.zeros((), device=input.device)
+        loss_latent_reg = torch.zeros((), device=input.device)
         pinn_acc: dict[str, torch.Tensor] = {}
 
         true_input = input.clone()
@@ -578,6 +579,10 @@ class GroupVAEPredictor(BasePredictor):
             Z_coupled = self.latent_mixer(h_prior_states_by_group, timestamp_target)
 
             if loss_available:
+                # Constrain latent space to prevent norm explosion
+                for h_prior, h_posterior in zip(h_prior_states_by_group, h_posterior_states_by_group):
+                    loss_latent_reg += rolling_weights[k] * (torch.mean(h_prior**2) + torch.mean(h_posterior**2))
+
                 vae_input_delta = self._reassemble(vae_rec_input_outputs_by_group, input)
                 vae_input_delta = self._resize_pred(vae_input_delta, (int(input.shape[-2]), int(input.shape[-1])))
 
@@ -618,10 +623,11 @@ class GroupVAEPredictor(BasePredictor):
             true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
 
         loss_dict = {
+            "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
             "loss_vae_input": self.loss_weight[0] * loss_vae_input,
             "loss_vae_target": self.loss_weight[1] * loss_vae_target,
-            "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
-            "loss_latent_pred_rec": self.loss_weight[3] * loss_latent_pred_rec,
+            "loss_latent_reg": self.loss_weight[3] * loss_latent_reg,
+            "loss_latent_pred_rec": self.loss_weight[4] * loss_latent_pred_rec,
         }
         if len(pinn_acc) > 0:
             for loss_name, loss_val in pinn_acc.items():

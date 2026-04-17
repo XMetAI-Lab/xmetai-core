@@ -42,7 +42,7 @@ from xmetai import LazyCall as L
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
 
-loss_weight = (0.2, 0.2, 1.0, 0.3)  # (vae_input, vae_target, pred_rec, latent_pred_rec)
+loss_weight = (0.2, 0.2, 1.0, 0.01, 0.3)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
 if load_from_pretrain:
     # freeze upper-level VAE to preserve pretrained dynamics, only fine-tune lower-level VAE and main predictor.
     train.teacher_forcing.teach_start = 2
