@@ -72,7 +72,7 @@ members = 1
 
 model = L(MODELS.get("GroupVAEPredictor"))(
     # UTransformer shared architecture params
-    embed_dim=128,  # 3*embed_dim for mix predictor
+    embed_dim=256,  # 3*embed_dim for mix predictor
     image_size=(120, 240),
     window_size=10,
     patch_size=2,
@@ -81,20 +81,19 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     decoder_depths=depths[-2:-1],
     num_heads=16,
     drop_mcmc=0.05,
-    attn_type="v2",
+    attn_type="rotary_flash",
     mask_type="h",
     head_type="2fc",
     norm_type="adaln",
     ffn_type="gegluffn",
     # VAE settings
     vae_type="index",
-    level_groups=[[0, 1], [2, 3, 4, 5, 6, 7, 8], [9, 10, 11, 12]],
-    # level_groups=[[0], [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
+    level_groups=[[0], [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
     split_surface=False,
     # Vertical transformer settings for VAE latent prediction
     vt_num_heads=24,
     vt_num_layers=depths[-1],
-    vt_layer_type="mamba_embed",
+    vt_layer_type="mamba_met",
     vt_use_proj=True,
     # Overall model settings
     alpha=0.9,

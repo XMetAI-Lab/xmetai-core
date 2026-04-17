@@ -63,8 +63,8 @@ train.output_dir = output_dir
 freq = 24  # 24 hours for 1 day
 # model setting
 patch_size = 2
-embed_dim = 384
-num_heads = 16
+embed_dim = 256
+num_heads = 32
 image_size = (120, 240)  # resize from 121x240->120x240 with input data
 members = 8
 
@@ -92,7 +92,7 @@ model = L(MODELS.get(model_name))(
     step_range=step_range,
     members=members,
     save_dir=output_dir + "/pred/",
-    layer_type="mamba_met_embed",  # Use local windowed Mamba blocks
+    layer_type="mamba_embed",  # Use local windowed Mamba blocks
     # PINN integration: enable physics-informed losses for ViT experiments by default
     pinn_enable=False,
     # pinn_coeffs=pinn_coeffs,

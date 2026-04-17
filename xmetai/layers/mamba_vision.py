@@ -14,7 +14,9 @@ from einops import rearrange, repeat
 from mamba_ssm.ops.selective_scan_interface import SelectiveScanFn, selective_scan_fn
 
 from xmetai.layers import DropPath
+from xmetai.layers.attention import Attention, WindowAttention, WindowAttentionV2
 from xmetai.layers.rotary_attention import RotaryAttention
+from xmetai.layers.swin import window_partition, window_reverse
 
 __all__ = ["MambaVisionLayer"]
 
@@ -55,36 +57,6 @@ def symbolic_selective_scan_fn(
 
 
 setattr(SelectiveScanFn, "symbolic", symbolic_selective_scan_fn)
-
-
-def window_partition(x: torch.Tensor, window_size: tuple[int, int]) -> torch.Tensor:
-    """
-    Args:
-        x: (B, C, H, W)
-        window_size: window size (tuple)
-    Returns:
-        local window features (num_windows*B, window_size[0]*window_size[1], C)
-    """
-    B, C, H, W = x.shape
-    x = x.view(B, C, H // window_size[0], window_size[0], W // window_size[1], window_size[1])
-    windows = x.permute(0, 2, 4, 3, 5, 1).reshape(-1, window_size[0] * window_size[1], C)
-    return windows
-
-
-def window_reverse(windows: torch.Tensor, window_size: tuple[int, int], H: int, W: int) -> torch.Tensor:
-    """
-    Args:
-        windows: local window features (num_windows*B, window_size[0]*window_size[1], C)
-        window_size: Window size (tuple)
-        H: Height of image
-        W: Width of image
-    Returns:
-        x: (B, C, H, W)
-    """
-    B = int(windows.shape[0] / (H * W / window_size[0] / window_size[1]))
-    x = windows.reshape(B, H // window_size[0], W // window_size[1], window_size[0], window_size[1], -1)
-    x = x.permute(0, 5, 1, 3, 2, 4).reshape(B, windows.shape[2], H, W)
-    return x
 
 
 # Simple MLP block to replace timm.layers.mlp.Mlp
@@ -291,55 +263,6 @@ class MambaMetWrapper(nn.Module):
         return (y_fwd + y_bwd) / 2.0
 
 
-class Attention(nn.Module):
-
-    def __init__(
-        self,
-        dim,
-        num_heads=8,
-        qkv_bias=False,
-        qk_norm=False,
-        attn_drop=0.0,
-        proj_drop=0.0,
-        norm_layer=nn.LayerNorm,
-    ):
-        super().__init__()
-        assert dim % num_heads == 0
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim**-0.5
-        self.fused_attn = True
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x, mask=None):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
-        q, k = self.q_norm(q).to(v), self.k_norm(k).to(v)
-
-        if self.fused_attn:
-            x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.attn_drop.p)
-        else:
-            q = q * self.scale
-            attn = q @ k.transpose(-2, -1)
-            if mask is not None:
-                attn = attn + mask
-            attn = attn.softmax(dim=-1)
-            attn = self.attn_drop(attn)
-            x = attn @ v
-
-        x = x.transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-
 class Block(nn.Module):
     def __init__(
         self,
@@ -364,10 +287,7 @@ class Block(nn.Module):
     ):
         super().__init__()
         self.with_embedding = with_embedding
-        if with_embedding:
-            self.norm1 = norm_layer(dim, elementwise_affine=False)
-        else:
-            self.norm1 = norm_layer(dim)
+        self.norm1 = norm_layer(dim, elementwise_affine=not self.with_embedding)
         self.attn_type = attn_type
         self.window_size = window_size
         self.input_size = input_size
@@ -383,7 +303,26 @@ class Block(nn.Module):
             self.shift_size = (0, 0)
 
         if counter in transformer_blocks:
-            if attn_type.find("rotary") != -1:
+            if attn_type == "v1":
+                self.mixer = WindowAttention(
+                    dim,
+                    window_size=(win_h, win_w),
+                    num_heads=num_heads,
+                    qkv_bias=qkv_bias,
+                    qk_scale=qk_scale,
+                    attn_drop=attn_drop,
+                    proj_drop=drop,
+                )
+            elif attn_type == "v2":
+                self.mixer = WindowAttentionV2(
+                    dim,
+                    window_size=(win_h, win_w),
+                    num_heads=num_heads,
+                    qkv_bias=qkv_bias,
+                    attn_drop=attn_drop,
+                    proj_drop=drop,
+                )
+            elif "rotary" in attn_type:
                 max_seq_len = None
                 if input_size is not None and window_size is not None:
                     # For windowed attention, max_seq_len is the window size
@@ -431,20 +370,11 @@ class Block(nn.Module):
             else:
                 self.mixer = MambaVisionMixer(d_model=dim, d_state=8, d_conv=3, expand=1)
         if with_embedding:
-            self.time_embed = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(dim, dim * 6, bias=True),
-            )
-            # init time embedding to small values to stabilize early training
-            nn.init.uniform_(self.time_embed[1].weight, -0.01, 0.01)
-            nn.init.constant_(self.time_embed[1].bias, 0.0)
-            self.time_embed[1].weight._no_reinit = True
-            self.time_embed[1].bias._no_reinit = True
+            # AdaLN-Single: global modulation outputs 6*dim, block adds per-module shift
+            self.scale_shift_table = nn.Parameter(torch.zeros(6, dim))
+            self.scale_shift_table._no_weight_decay = True
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        if with_embedding:
-            self.norm2 = norm_layer(dim, elementwise_affine=False)
-        else:
-            self.norm2 = norm_layer(dim)
+        self.norm2 = norm_layer(dim, elementwise_affine=not self.with_embedding)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
             in_features=dim,
@@ -459,7 +389,8 @@ class Block(nn.Module):
     def forward(self, x, time_embedding=None, freqs_cos=None, freqs_sin=None, **kwargs):
         B, L, C = x.shape
         if self.with_embedding and time_embedding is not None:
-            gamma = self.time_embed(time_embedding).unsqueeze(1)
+            # Add per-block scaling/shifting to the globally modulated time_embedding
+            gamma = time_embedding.unsqueeze(1) + self.scale_shift_table.view(6 * C).unsqueeze(0).unsqueeze(1)
             scale_msa, shift_msa, gate_msa, scale_mlp, shift_mlp, gate_mlp = gamma.chunk(6, dim=-1)
             norm1_x = self.norm1(x) * (1 + scale_msa) + shift_msa
         else:
@@ -472,56 +403,64 @@ class Block(nn.Module):
             else:
                 win_h, win_w = self.window_size
 
-            norm1_x = norm1_x.view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
+            norm1_x = norm1_x.view(B, H, W, C)  # (B, H, W, C)
             pad_r = (win_w - W % win_w) % win_w
             pad_b = (win_h - H % win_h) % win_h
             if pad_r > 0 or pad_b > 0:
-                norm1_x = torch.nn.functional.pad(norm1_x, (0, pad_r, 0, pad_b))
+                norm1_x = torch.nn.functional.pad(norm1_x, (0, 0, 0, pad_r, 0, pad_b))
                 Hp, Wp = H + pad_b, W + pad_r
             else:
                 Hp, Wp = H, W
 
             if self.shift_size[0] > 0 or self.shift_size[1] > 0:
                 # Cyclic shift
-                shifted_x = torch.roll(norm1_x, shifts=(-self.shift_size[0], -self.shift_size[1]), dims=(2, 3))
+                shifted_x = torch.roll(norm1_x, shifts=(-self.shift_size[0], -self.shift_size[1]), dims=(1, 2))
                 # Calculate attention mask for SW-MSA
-                img_mask = torch.zeros((1, 1, Hp, Wp), device=norm1_x.device)
-                h_slices = (slice(0, -win_h), slice(-win_h, -self.shift_size[0]), slice(-self.shift_size[0], None))
-                w_slices = (slice(0, -win_w), slice(-win_w, -self.shift_size[1]), slice(-self.shift_size[1], None))
-                cnt = 0
-                for h in h_slices:
-                    for w in w_slices:
-                        img_mask[:, :, h, w] = cnt
+                if not hasattr(self, "_attn_mask_cache") or getattr(self, "_attn_mask_cache_shape", None) != (Hp, Wp):
+                    img_mask = torch.zeros((1, Hp, Wp, 1), device=norm1_x.device)
+                    h_slices = (slice(0, -win_h), slice(-win_h, -self.shift_size[0]), slice(-self.shift_size[0], None))
+                    # 只对 h 方向（纬度方向）进行 mask 隔离，w 方向（经度方向）保持环绕连续
+                    cnt = 0
+                    for h in h_slices:
+                        img_mask[:, h, :, :] = cnt
                         cnt += 1
-                mask_windows = window_partition(img_mask, (win_h, win_w))
-                mask_windows = mask_windows.squeeze(-1)
-                attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-                attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
-                nW = mask_windows.shape[0]
-                attn_mask = attn_mask.unsqueeze(0).repeat(B, 1, 1, 1).view(B * nW, 1, win_h * win_w, win_h * win_w)
+                    mask_windows = window_partition(img_mask, (win_h, win_w))
+                    mask_windows = mask_windows.view(-1, win_h * win_w)
+                    attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+                    attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+                    self._attn_mask_cache = attn_mask  # Cache base structure (nW, L, L)
+                    self._attn_mask_cache_shape = (Hp, Wp)
+                else:
+                    attn_mask = self._attn_mask_cache
+
+                nW = attn_mask.shape[0]
+                # If using Swin's native attention, it automatically broadcasts over B inside, so do not repeat.
+                if not isinstance(self.mixer, (WindowAttention, WindowAttentionV2)):
+                    attn_mask = attn_mask.unsqueeze(0).repeat(B, 1, 1, 1).view(B * nW, 1, win_h * win_w, win_h * win_w)
             else:
                 shifted_x = norm1_x
                 attn_mask = None
 
             x_windows = window_partition(shifted_x, (win_h, win_w))
+            x_windows = x_windows.view(-1, win_h * win_w, C)
 
             if isinstance(self.mixer, RotaryAttention) and freqs_cos is not None and freqs_sin is not None:
                 attn_out = self.mixer(x_windows, freqs_cos, freqs_sin)
             else:
-                if isinstance(self.mixer, Attention) and attn_mask is not None:
+                if isinstance(self.mixer, (Attention, WindowAttention, WindowAttentionV2)) and attn_mask is not None:
                     attn_out = self.mixer(x_windows, mask=attn_mask)
                 else:
                     attn_out = self.mixer(x_windows)
 
+            attn_out = attn_out.view(-1, win_h, win_w, C)
             attn_out = window_reverse(attn_out, (win_h, win_w), Hp, Wp)
 
             if self.shift_size[0] > 0 or self.shift_size[1] > 0:
-                # Reverse cyclic shift
-                attn_out = torch.roll(attn_out, shifts=(self.shift_size[0], self.shift_size[1]), dims=(2, 3))
+                attn_out = torch.roll(attn_out, shifts=(self.shift_size[0], self.shift_size[1]), dims=(1, 2))
 
             if pad_r > 0 or pad_b > 0:
-                attn_out = attn_out[:, :, :H, :W].contiguous()
-            attn_out = attn_out.permute(0, 2, 3, 1).view(B, L, C)
+                attn_out = attn_out[:, :H, :W, :].contiguous()
+            attn_out = attn_out.view(B, H * W, C)
         else:
             if isinstance(self.mixer, RotaryAttention) and freqs_cos is not None and freqs_sin is not None:
                 attn_out = self.mixer(norm1_x, freqs_cos, freqs_sin)
@@ -584,6 +523,14 @@ class MambaVisionLayer(nn.Module):
             attn_type: attention type ('standard' or 'rotary').
         """
         super().__init__()
+        self.with_embedding = with_embedding
+        if self.with_embedding:
+            self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim, 6 * dim, bias=True))
+            nn.init.constant_(self.adaLN_modulation[1].weight, 0.0)
+            nn.init.constant_(self.adaLN_modulation[1].bias, 0.0)
+            self.adaLN_modulation[1].weight._no_reinit = True
+            self.adaLN_modulation[1].bias._no_reinit = True
+
         self.blocks = nn.ModuleList(
             [
                 Block(
@@ -626,6 +573,9 @@ class MambaVisionLayer(nn.Module):
                     nn.init.zeros_(param)
 
     def forward(self, x, time_embedding=None, freqs_cos=None, freqs_sin=None, **kwargs):
+        if self.with_embedding and time_embedding is not None:
+            time_embedding = self.adaLN_modulation(time_embedding)
+
         for _, blk in enumerate(self.blocks):
             x = blk(x, time_embedding=time_embedding, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
         return x
