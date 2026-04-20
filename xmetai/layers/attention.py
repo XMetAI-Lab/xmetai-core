@@ -39,7 +39,7 @@ class Attention(nn.Module):
         q, k = self.q_norm(q).to(v), self.k_norm(k).to(v)
 
         if self.fused_attn:
-            x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.attn_drop.p)
+            x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.attn_drop.p if self.training else 0.0)
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)

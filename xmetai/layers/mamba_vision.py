@@ -309,7 +309,7 @@ class Block(nn.Module):
                     window_size=(win_h, win_w),
                     num_heads=num_heads,
                     qkv_bias=qkv_bias,
-                    qk_scale=qk_scale,
+                    qk_scale=qk_scale if not isinstance(qk_scale, bool) else None,
                     attn_drop=attn_drop,
                     proj_drop=drop,
                 )
@@ -416,26 +416,21 @@ class Block(nn.Module):
                 # Cyclic shift
                 shifted_x = torch.roll(norm1_x, shifts=(-self.shift_size[0], -self.shift_size[1]), dims=(1, 2))
                 # Calculate attention mask for SW-MSA
-                if not hasattr(self, "_attn_mask_cache") or getattr(self, "_attn_mask_cache_shape", None) != (Hp, Wp):
-                    img_mask = torch.zeros((1, Hp, Wp, 1), device=norm1_x.device)
-                    h_slices = (slice(0, -win_h), slice(-win_h, -self.shift_size[0]), slice(-self.shift_size[0], None))
-                    # 只对 h 方向（纬度方向）进行 mask 隔离，w 方向（经度方向）保持环绕连续
-                    cnt = 0
-                    for h in h_slices:
-                        img_mask[:, h, :, :] = cnt
-                        cnt += 1
-                    mask_windows = window_partition(img_mask, (win_h, win_w))
-                    mask_windows = mask_windows.view(-1, win_h * win_w)
-                    attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
-                    attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
-                    self._attn_mask_cache = attn_mask  # Cache base structure (nW, L, L)
-                    self._attn_mask_cache_shape = (Hp, Wp)
-                else:
-                    attn_mask = self._attn_mask_cache
+                img_mask = torch.zeros((1, Hp, Wp, 1), device=norm1_x.device)
+                h_slices = (slice(0, -win_h), slice(-win_h, -self.shift_size[0]), slice(-self.shift_size[0], None))
+                # 只对 h 方向（纬度方向）进行 mask 隔离，w 方向（经度方向）保持环绕连续
+                cnt = 0
+                for h in h_slices:
+                    img_mask[:, h, :, :] = cnt
+                    cnt += 1
+                mask_windows = window_partition(img_mask, (win_h, win_w))
+                mask_windows = mask_windows.view(-1, win_h * win_w)
+                attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+                attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
 
                 nW = attn_mask.shape[0]
                 # If using Swin's native attention, it automatically broadcasts over B inside, so do not repeat.
-                if not isinstance(self.mixer, (WindowAttention, WindowAttentionV2)):
+                if not isinstance(self.mixer, (WindowAttention, WindowAttentionV2, RotaryAttention)):
                     attn_mask = attn_mask.unsqueeze(0).repeat(B, 1, 1, 1).view(B * nW, 1, win_h * win_w, win_h * win_w)
             else:
                 shifted_x = norm1_x
@@ -445,7 +440,7 @@ class Block(nn.Module):
             x_windows = x_windows.view(-1, win_h * win_w, C)
 
             if isinstance(self.mixer, RotaryAttention) and freqs_cos is not None and freqs_sin is not None:
-                attn_out = self.mixer(x_windows, freqs_cos, freqs_sin)
+                attn_out = self.mixer(x_windows, freqs_cos, freqs_sin, mask=attn_mask)
             else:
                 if isinstance(self.mixer, (Attention, WindowAttention, WindowAttentionV2)) and attn_mask is not None:
                     attn_out = self.mixer(x_windows, mask=attn_mask)

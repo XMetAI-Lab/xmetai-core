@@ -133,29 +133,7 @@ class TestGradientFlow:
 
     def test_gradient_accumulation(self, sample_input_2d):
         """Test gradient accumulation over multiple batches."""
-        from xmetai.layers import AttentionBlock as _AttentionBlock
-
-        class Attention:
-            """Small adapter so tests can call Attention(dim, num_heads).
-
-            Underlying implementation is `AttentionBlock(dim, dim_head, n_heads=...)`.
-            """
-
-            def __init__(self, dim, num_heads=8, **kwargs):
-                dim_head = max(1, dim // max(1, num_heads))
-                self._inst = _AttentionBlock(dim, dim_head, n_heads=num_heads, **kwargs)
-
-            def __call__(self, *args, **kwargs):
-                return self._inst(*args, **kwargs)
-
-            def to(self, *args, **kwargs):
-                return self._inst.to(*args, **kwargs)
-
-            def parameters(self):
-                return self._inst.parameters()
-
-            def __getattr__(self, name):
-                return getattr(self._inst, name)
+        from xmetai.layers.attention import Attention
 
         attn = Attention(dim=sample_input_2d.shape[-1], num_heads=8)
         optimizer = torch.optim.SGD(attn.parameters(), lr=0.01)
@@ -388,27 +366,7 @@ class TestDeterminism:
 
     def test_eval_mode_determinism(self, sample_input_2d, torch_seed):
         """Test that eval mode produces deterministic outputs."""
-        try:
-            from xmetai.layers.attention import AttentionBlock as _AttentionBlock
-        except Exception:
-            pytest.skip("Attention implementation not available")
-
-        class Attention:
-            def __init__(self, dim, num_heads=8, **kwargs):
-                dim_head = max(1, dim // max(1, num_heads))
-                self._inst = _AttentionBlock(dim, dim_head, n_heads=num_heads, **kwargs)
-
-            def __call__(self, *args, **kwargs):
-                return self._inst(*args, **kwargs)
-
-            def to(self, *args, **kwargs):
-                return self._inst.to(*args, **kwargs)
-
-            def parameters(self):
-                return self._inst.parameters()
-
-            def __getattr__(self, name):
-                return getattr(self._inst, name)
+        from xmetai.layers.attention import Attention
 
         attn = Attention(dim=sample_input_2d.shape[-1], num_heads=8)
         attn.eval()
@@ -421,32 +379,13 @@ class TestDeterminism:
 
     def test_training_mode_stochasticity(self, sample_input_2d, torch_seed):
         """Test that training mode can produce different outputs (due to dropout)."""
-        try:
-            from xmetai.layers.attention import AttentionBlock as _AttentionBlock
-        except Exception:
-            pytest.skip("Attention implementation not available")
-
-        class Attention:
-            def __init__(self, dim, num_heads=8, **kwargs):
-                dim_head = max(1, dim // max(1, num_heads))
-                self._inst = _AttentionBlock(dim, dim_head, n_heads=num_heads, **kwargs)
-
-            def __call__(self, *args, **kwargs):
-                return self._inst(*args, **kwargs)
-
-            def to(self, *args, **kwargs):
-                return self._inst.to(*args, **kwargs)
-
-            def parameters(self):
-                return self._inst.parameters()
-
-            def __getattr__(self, name):
-                return getattr(self._inst, name)
+        from xmetai.layers.attention import Attention
 
         attn = Attention(
             dim=sample_input_2d.shape[-1],
             num_heads=8,
-            dropout=0.5,
+            attn_drop=0.5,
+            proj_drop=0.5,
         )
         attn.train()
 

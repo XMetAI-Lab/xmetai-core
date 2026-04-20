@@ -92,7 +92,7 @@ model = L(MODELS.get(model_name))(
     step_range=step_range,
     members=members,
     save_dir=output_dir + "/pred/",
-    layer_type="mamba_embed",  # Use local windowed Mamba blocks
+    layer_type=["swin", "swin", "mamba_met", "swin"],  # Use local windowed Mamba blocks
     # PINN integration: enable physics-informed losses for ViT experiments by default
     pinn_enable=False,
     # pinn_coeffs=pinn_coeffs,

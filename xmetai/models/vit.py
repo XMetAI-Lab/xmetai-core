@@ -33,7 +33,6 @@ class ViTModel(BasePredictor):
         mlp_ratio=4,
         layer_type="mamba_embed",
         const_chans=0,
-        *args,
         **kwargs,
     ):
         self.patch_size = patch_size
@@ -46,7 +45,7 @@ class ViTModel(BasePredictor):
         self.pertub_mask = kwargs.pop("pertub_mask", 0.0)  # spatial dropout ratio
         self.use_pertub = kwargs.pop("use_pertub", False)  # enable at inference
 
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
 
         # Uses UTransformer as the main backbone
         self.encoder = UTransformer(

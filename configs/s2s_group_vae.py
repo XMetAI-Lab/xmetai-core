@@ -94,6 +94,8 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     vt_num_heads=24,
     vt_num_layers=depths[-1],
     vt_layer_type="mamba_met",
+    vt_window_size=None,
+    vt_attn_type="std",
     vt_use_proj=True,
     # Overall model settings
     alpha=0.9,
