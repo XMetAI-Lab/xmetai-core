@@ -90,8 +90,8 @@ class EnsNoiseMLP(nn.Module):
 
 @MODELS.register()
 class ViTModelEns(ViTModel):
-    def __init__(self, embed_dim=256, alpha=1.0, *args, **kwargs):
-        super().__init__(embed_dim=embed_dim, *args, **kwargs)
+    def __init__(self, embed_dim=256, alpha=1.0, **kwargs):
+        super().__init__(embed_dim=embed_dim, **kwargs)
         self.logger.name = __name__
         self.alpha = alpha
         self.sample_dim = kwargs.get("sample_dim", 128)

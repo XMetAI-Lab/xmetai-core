@@ -67,10 +67,10 @@ __all__ = ["OnnxInferModel"]
 
 @MODELS.register()
 class OnnxInferModel(BasePredictor):
-    def __init__(self, onnx_path, *args, **kwargs):
+    def __init__(self, onnx_path, **kwargs):
         self.gpu_mem_fraction = kwargs.pop("gpu_mem_fraction", 0.7)
         self.use_cpu_initializers = kwargs.pop("use_cpu_initializers", True)
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
         self.device_id = get_local_rank()
         self.logger.name = __name__
         self.load_model(onnx_path)

@@ -11,6 +11,7 @@ from xmetai.layers import (
     CubeEmbed,
     LayerNorm,
     MCDropout,
+    StepEncoding,
     SwinLayer,
     TimestepEmbed,
     precompute_freqs_cis,
@@ -86,6 +87,7 @@ class UTransformer(nn.Module):
         ffn_type="gegluffn",
         patch_norm=True,
         layer_type="swin",
+        embed_type="all",
     ):
         super().__init__()
         self.logger = logging.getLogger(__name__)
@@ -107,8 +109,16 @@ class UTransformer(nn.Module):
         self.num_layers = len(depths)
         self.down_times = down_times
         self.norm_type = norm_type
+        self.embed_type = embed_type
         self.attn_type = attn_type
         self.drop_mcmc = drop_mcmc
+
+        if isinstance(layer_type, str):
+            self.layer_types = [layer_type] * self.num_layers
+        else:
+            if len(layer_type) != self.num_layers:
+                raise ValueError(f"layer_type list length ({len(layer_type)}) must match depths length ({self.num_layers})")
+            self.layer_types = layer_type
 
         self.patch_embed = CubeEmbed(
             in_chans=in_chans,
@@ -121,13 +131,14 @@ class UTransformer(nn.Module):
             flatten=True,
         )
 
-        if self.norm_type == "adaln":
+        if self.embed_type == "all":
             self.step_embed = TimestepEmbed(embed_dim)
             self.hour_embed = TimestepEmbed(embed_dim)
             self.doy_embed = TimestepEmbed(embed_dim)
         else:
             # for only step embedding.
             self.time_embed = nn.Sequential(
+                StepEncoding(12),
                 nn.Linear(12, embed_dim),
                 nn.SiLU(),
                 nn.Linear(embed_dim, embed_dim),
@@ -148,10 +159,11 @@ class UTransformer(nn.Module):
 
         layers = []
         for i in range(self.num_layers):
-            if layer_type.lower().find("mamba") > -1:
+            current_layer_type = self.layer_types[i]
+            if current_layer_type.lower().find("mamba") > -1:
                 if not HAS_MAMBA:
                     raise ImportError("MambaVisionLayer requires mamba-ssm. " "Install it with: pip install '.[gpu]' or pip install mamba-ssm")
-                layer_lower = layer_type.lower()
+                layer_lower = current_layer_type.lower()
                 with_embedding = "embed" in layer_lower
                 mamba_version = "mamba3" if "mamba3" in layer_lower else ("mamba2" if "mamba2" in layer_lower else "mamba")
                 mamba_type = f"{mamba_version}_met" if "_met" in layer_lower else mamba_version
@@ -172,7 +184,7 @@ class UTransformer(nn.Module):
                     window_size=((window_size, window_size) if isinstance(window_size, int) else window_size),
                     input_size=(tuple(input_size) if isinstance(input_size, (list, tuple)) else input_size),
                 )
-            elif layer_type.lower().find("deltanet") > -1:
+            elif current_layer_type.lower().find("deltanet") > -1:
                 self.logger.info("Using DeltaNet style transformer blocks.")
                 layer = DeltaNetLayer(
                     mode="chunk",
@@ -238,12 +250,24 @@ class UTransformer(nn.Module):
             self.logger.info(f"Using head type: {head_type} for no head.")
             self.head = None
 
+        self.logger.info(
+            f"Initialized {self.__class__.__name__} with args: "
+            # Data dimensions
+            f"in_chans={in_chans}, out_chans={out_chans}, const_chans={const_chans}, in_frames={in_frames}, "
+            # Spatial and patch configurations
+            f"image_size={image_size}, patch_size={patch_size}, window_size={window_size}, stride_size={stride_size}, down_times={down_times}, "
+            # Architecture and layers
+            f"embed_dim={embed_dim}, depths={depths}, num_heads={num_heads}, mlp_ratio={mlp_ratio}, layer_type={self.layer_types}, "
+            # Attention and heads
+            f"attn_type={attn_type}, mask_type={mask_type}, head_type={head_type}, drop_mcmc={drop_mcmc}, "
+            # Normalization and FFN
+            f"norm_type={norm_type}, embed_type={self.embed_type}, patch_norm={patch_norm}, ffn_type={ffn_type}."
+        )
+
     def resize_input(self, input):
         x = rearrange(input, "n t c h w -> (n t) c h w")
-
         if x.shape[-2:] != self.image_size:
             x = F.interpolate(x.float(), size=self.image_size, mode="bilinear", align_corners=False).to(input)
-
         return x
 
     def resize_output(self, output, input):
@@ -266,12 +290,15 @@ class UTransformer(nn.Module):
         return output
 
     def get_embed(self, timestamp):
-        embed = self.step_embed(timestamp["step"])
-        if "hour" in timestamp:
-            embed += self.hour_embed(timestamp["hour"])
-        if "doy" in timestamp:
-            embed += self.doy_embed(timestamp["doy"])
-        return embed
+        if self.embed_type == "all":
+            embed = self.step_embed(timestamp["step"])
+            if "hour" in timestamp:
+                embed += self.hour_embed(timestamp["hour"])
+            if "doy" in timestamp:
+                embed += self.doy_embed(timestamp["doy"])
+            return embed
+        else:
+            return self.time_embed(timestamp)
 
     def forward(self, input):
         return NotImplemented

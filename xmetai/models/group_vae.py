@@ -144,8 +144,8 @@ def build_level_channel_map(
 
 @MODELS.register()
 class GroupEncoder(UTransformer):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         del self.head
         self.norm_layer = AdaptiveLN(self.embed_dim)
 
@@ -265,7 +265,7 @@ class LatentMixerPredictor(UTransformer):
     def __init__(
         self,
         image_size: tuple[int, int],
-        window_size: int,
+        window_size: int | None,
         latent_dim: list[int],
         num_heads: int = 4,
         num_layers: int = 2,
@@ -358,6 +358,8 @@ class GroupVAEPredictor(BasePredictor):
         ffn_type: str = "gegluffn",
         level_groups: list[list[int]] | None = None,
         split_surface: bool = False,
+        vt_attn_type: str = "std",
+        vt_window_size: int | None = None,
         vt_num_heads: int = 4,
         vt_num_layers: int = 12,
         vt_layer_type: str = "swin",
@@ -365,7 +367,7 @@ class GroupVAEPredictor(BasePredictor):
         vae_type: str = "index",
         vae_residual_indices: list[str] | None = None,
         alpha: float = 1.0,
-        loss_weight: tuple[float, float, float, float] = (0.2, 0.2, 1.0, 0.3),
+        loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
         rollout_max: int = 50,
         **kwargs: Any,
     ) -> None:
@@ -373,8 +375,8 @@ class GroupVAEPredictor(BasePredictor):
         self.logger.name = __name__
 
         self.alpha = alpha
-        if len(loss_weight) != 4:
-            raise ValueError("loss_weight must contain four floats: (vae_input, vae_target, pred_rec, latent_pred)")
+        if len(loss_weight) != 5:
+            raise ValueError("loss_weight must contain five floats: (vae_input, vae_target, pred_rec, latent_reg, latent_pred)")
         self.loss_weight = loss_weight
         self.const_chans = const_chans
         self.rollout_max = rollout_max
@@ -433,6 +435,8 @@ class GroupVAEPredictor(BasePredictor):
         for gi, group in enumerate(self.group_slice_indices):
             group_chans = len(self.group_slice_indices[gi])
             group_embed_dim = self.embed_dims[gi]
+            group_names = [self.in_names[idx] for idx in group]
+            self.logger.info(f"Group {gi} init: channels={group_chans}, indices={group}, names={group_names}")
 
             vae_encoder = GroupEncoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, **common_encoder_kwargs)
             vae_encoder_list.append(vae_encoder)
@@ -450,11 +454,11 @@ class GroupVAEPredictor(BasePredictor):
 
         self.latent_mixer = LatentMixerPredictor(
             image_size=(image_size[0] // patch_size, image_size[1] // patch_size),
-            window_size=window_size,
+            window_size=vt_window_size,
             latent_dim=self.embed_dims,
             num_heads=vt_num_heads,
             num_layers=vt_num_layers,
-            attn_type=attn_type,
+            attn_type=vt_attn_type,
             mask_type=mask_type,
             norm_type=norm_type,
             layer_type=vt_layer_type,
@@ -465,8 +469,6 @@ class GroupVAEPredictor(BasePredictor):
         self.logger.info(
             f"Initialized GroupVAEPredictor with {self.num_groups} groups, embed_dims={self.embed_dims}, vae_type={self.vae_type}, residual_indices={self.residual_vae_indices}"
         )
-        # set deterministic model member size to 1.
-        self.members = 1
         self.logger.info(f"Group VAE with members={self.members}, alpha={self.alpha}, loss_weight={self.loss_weight}, rollout_max={self.rollout_max}")
 
     def _build_residual_indices(self, vae_type: str, vae_residual_indices: list[str] | None) -> list[int]:
@@ -539,6 +541,7 @@ class GroupVAEPredictor(BasePredictor):
         loss_vae_target = torch.zeros((), device=input.device)
         loss_pred_rec = torch.zeros((), device=input.device)
         loss_latent_pred_rec = torch.zeros((), device=input.device)
+        loss_latent_reg = torch.zeros((), device=input.device)
         pinn_acc: dict[str, torch.Tensor] = {}
 
         true_input = input.clone()
@@ -565,12 +568,18 @@ class GroupVAEPredictor(BasePredictor):
             for gi in range(self.num_groups):
                 x_input_group = self._slice_group(input, gi)
                 h_input = self._encode_group(x_input_group, gi, timestamp, is_prior=True, const=const)
+                self.logger.debug(
+                    f"Group {gi} prior encoding output shape: {h_input.shape} with min {h_input.min().item():.4f} and max {h_input.max().item():.4f}"
+                )
                 h_prior_states_by_group.append(h_input)
                 vae_input_out = self._decode_group(h_input, gi, timestamp, const=const)
                 vae_rec_input_outputs_by_group.append(vae_input_out)
 
                 x_target_group = self._slice_group(new_target, gi)
                 h_target = self._encode_group(x_target_group, gi, timestamp_target, is_prior=False, const=const)
+                self.logger.debug(
+                    f"Group {gi} posterior encoding output shape: {h_target.shape} with min {h_target.min().item():.4f} and max {h_target.max().item():.4f}"
+                )
                 h_posterior_states_by_group.append(h_target)
                 vae_target_out = self._decode_group(h_target, gi, timestamp_target, const=const)
                 vae_rec_target_outputs_by_group.append(vae_target_out)
@@ -578,6 +587,10 @@ class GroupVAEPredictor(BasePredictor):
             Z_coupled = self.latent_mixer(h_prior_states_by_group, timestamp_target)
 
             if loss_available:
+                # Constrain latent space to prevent norm explosion
+                for h_prior, h_posterior in zip(h_prior_states_by_group, h_posterior_states_by_group):
+                    loss_latent_reg += torch.mean(h_prior**2) + torch.mean(h_posterior**2)
+
                 vae_input_delta = self._reassemble(vae_rec_input_outputs_by_group, input)
                 vae_input_delta = self._resize_pred(vae_input_delta, (int(input.shape[-2]), int(input.shape[-1])))
 
@@ -618,10 +631,11 @@ class GroupVAEPredictor(BasePredictor):
             true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
 
         loss_dict = {
+            "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
             "loss_vae_input": self.loss_weight[0] * loss_vae_input,
             "loss_vae_target": self.loss_weight[1] * loss_vae_target,
-            "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
-            "loss_latent_pred_rec": self.loss_weight[3] * loss_latent_pred_rec,
+            "loss_latent_reg": self.loss_weight[3] * loss_latent_reg,
+            "loss_latent_pred_rec": self.loss_weight[4] * loss_latent_pred_rec,
         }
         if len(pinn_acc) > 0:
             for loss_name, loss_val in pinn_acc.items():
@@ -639,6 +653,7 @@ class GroupVAEPredictor(BasePredictor):
         hw = list(input.shape[-2:])
         outputs = input.new_zeros(input.shape[0], len(steps), len(self.test_chans), *hw)
 
+        self.members = 1  # disable ensembling for testing to save time; can be re-enabled if desired
         for member in range(self.members):
             new_input = input.clone()
             new_input[~torch.isfinite(new_input)] = 0.0
