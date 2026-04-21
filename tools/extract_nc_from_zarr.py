@@ -76,14 +76,18 @@ def load_zarr_data(zarr_path, levels_list, stats):
         print("Warning: Expected 'data' variable not found in the dataset.")
         print(f"Available variables: {list(ds.data_vars)}")
         sys.exit(1)
-    # fix coord name, if level not exist use channel
-    if "level" in ds.coords:
-        coord_name = "level"
-    elif "channel" in ds.coords:
-        ds = ds.rename({"channel": "level"})
-        coord_name = "level"
-    else:
-        print("Error: The dataset does not contain a 'level' or 'channel' coordinate.")
+    # fix coord name, if level not exist try other common names
+    possible_names = ["level", "channel", "var", "variable"]
+    coord_name = None
+    for name in possible_names:
+        if name in ds.coords:
+            if name != "level":
+                ds = ds.rename({name: "level"})
+            coord_name = "level"
+            break
+
+    if coord_name is None:
+        print(f"Error: The dataset does not contain any of the coordinates: {possible_names}")
         sys.exit(1)
 
     # Check if all requested levels exist in the dataset
@@ -139,11 +143,13 @@ def load_stats(zarr_path):
             print(f"Loaded statistics from {mean_path} and {std_path}")
             mean_ds = xr.open_dataarray(mean_path)
             std_ds = xr.open_dataarray(std_path)
-            # update channel coords to level
-            if "channel" in mean_ds.coords:
-                mean_ds = mean_ds.rename({"channel": "level"})
-            if "channel" in std_ds.coords:
-                std_ds = std_ds.rename({"channel": "level"})
+            # update coords to level
+            possible_names = ["channel", "var", "variable"]
+            for name in possible_names:
+                if name in mean_ds.coords:
+                    mean_ds = mean_ds.rename({name: "level"})
+                if name in std_ds.coords:
+                    std_ds = std_ds.rename({name: "level"})
             stats = {"mean": mean_ds, "std": std_ds}
         elif os.path.exists(os.path.join(zarr_path, "mean.npy")) and os.path.exists(os.path.join(zarr_path, "std.npy")):
             print(f"Loaded statistics from {zarr_path}")
