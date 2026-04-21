@@ -42,7 +42,7 @@ from xmetai import LazyCall as L
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
 
-loss_weight = (0.2, 0.2, 1.0, 0.3)  # (vae_input, vae_target, pred_rec, latent_pred_rec)
+loss_weight = (0.2, 0.2, 1.0, 0.01, 0.3)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
 if load_from_pretrain:
     # freeze upper-level VAE to preserve pretrained dynamics, only fine-tune lower-level VAE and main predictor.
     train.teacher_forcing.teach_start = 2
@@ -72,7 +72,7 @@ members = 1
 
 model = L(MODELS.get("GroupVAEPredictor"))(
     # UTransformer shared architecture params
-    embed_dim=128,  # 3*embed_dim for mix predictor
+    embed_dim=256,  # 3*embed_dim for mix predictor
     image_size=(120, 240),
     window_size=10,
     patch_size=2,
@@ -81,20 +81,21 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     decoder_depths=depths[-2:-1],
     num_heads=16,
     drop_mcmc=0.05,
-    attn_type="v2",
+    attn_type="rotary_flash",
     mask_type="h",
     head_type="2fc",
     norm_type="adaln",
     ffn_type="gegluffn",
     # VAE settings
     vae_type="index",
-    level_groups=[[0, 1], [2, 3, 4, 5, 6, 7, 8], [9, 10, 11, 12]],
-    # level_groups=[[0], [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
+    level_groups=[[0], [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
     split_surface=False,
     # Vertical transformer settings for VAE latent prediction
     vt_num_heads=24,
     vt_num_layers=depths[-1],
-    vt_layer_type="mamba_embed",
+    vt_layer_type="mamba_met",
+    vt_window_size=None,
+    vt_attn_type="std",
     vt_use_proj=True,
     # Overall model settings
     alpha=0.9,
