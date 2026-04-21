@@ -1,3 +1,4 @@
+from .afnonet import AFNONet
 from .diffusion_forecast import DiffusionForecast
 from .ema import EMA
 from .graphcast import GraphCastPredictor
