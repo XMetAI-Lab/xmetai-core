@@ -32,7 +32,7 @@ from xmetai import LazyCall as L
 
 CONFIG_PATH = os.path.dirname(__file__)
 ROOT_PATH = os.path.join(CONFIG_PATH, "../")
-data_dir = os.environ.get("DATA_DIR", "/mnt/d/s2s_data/s2s.1950-2024.c76")
+data_dir = os.environ.get("DATA_DIR", "/workspace/data/s2s.1950-2024.c76")
 output_dir = os.environ.get("OUTPUT_DIR", os.path.join(ROOT_PATH, "output/", os.path.basename(CONFIG_PATH)))
 
 #####################################################################
@@ -157,7 +157,7 @@ model.precision = "bf16"
 dataloader = OmegaConf.create()
 
 train_times = ("19500101", "20230228")
-test_times = ("20230101", "20241231")
+test_times = ("20230301", "20241231")
 # test_times = ("20050101", "20250202")
 dataloader.train = L(build_train_loader)(
     dataset=L(DATASETS.get("ERA5"))(
