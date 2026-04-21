@@ -44,4 +44,5 @@ def kl_entropy_loss(dist_p, dist_q, w=1e-4, entropy_weight=1e-5, min_std=1e-3, t
     penalty_factor = torch.mean(F.relu(target_std - std_p) + F.relu(target_std - std_q)) / target_std
     entropy_reg = -entropy_weight * penalty_factor * entropy
 
-    return w * loss + entropy_reg
+    # w acts as the overall scale for the latent regularization, smoothing out scaling imbalances
+    return w * (loss + entropy_reg)
