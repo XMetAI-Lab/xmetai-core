@@ -40,7 +40,7 @@ class AFNONet(BasePredictor):
         self.num_blocks = num_blocks
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
-        self.patch_embed = PatchEmbed(img_size=img_size, patch_size=self.patch_size, in_chans=self.in_chans*self.in_frames, embed_dim=embed_dim)
+        self.patch_embed = PatchEmbed(img_size=img_size, patch_size=self.patch_size, in_chans=self.in_chans * self.in_frames, embed_dim=embed_dim)
         num_patches = self.patch_embed.num_patches
 
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
@@ -108,7 +108,6 @@ class AFNONet(BasePredictor):
 
         data = self.process_data(data)
         input = data["input"]
-        times = data["times"]
         targets = data["targets"]
 
         self.logger.debug(f"input shape: {input.shape}, target shape: {targets.shape}")  # input: bx2x76x121x240, target: bx1x76x121x240
@@ -123,8 +122,8 @@ class AFNONet(BasePredictor):
             k = t - self.start_frames
             target = targets[:, k : k + self.out_frames]
             self.reset_input(input)
-            output = self.forward_step(input, times=times, step=t)
-            step_losses = self.compute_step_loss(output, target, step=k)
+            output = self.forward_step(input)
+            step_losses = self.compute_step_loss(output, target)
             for k_loss, v_loss in step_losses.items():
                 loss_dict[k_loss] = loss_dict.get(k_loss, 0) + v_loss
 
@@ -136,11 +135,16 @@ class AFNONet(BasePredictor):
             loss_dict[k_loss] = v_loss / future_frames
         return loss_dict
 
-    def compute_step_loss(self, output, target, step):
-        if "channel_weights" in self._buffers:
-            loss_rec = charbonnier_loss(output, target, weight=getattr(self, "channel_weights", None) * getattr(self, "weight", None))
+    def compute_step_loss(self, output, target):
+        channel_weights = getattr(self, "channel_weights", None) if "channel_weights" in self._buffers else None
+        weight = getattr(self, "weight", None)
+        if channel_weights is not None and weight is not None:
+            loss_weight = channel_weights * weight
+        elif channel_weights is not None:
+            loss_weight = channel_weights
         else:
-            loss_rec = charbonnier_loss(output, target, weight=getattr(self, "weight", None))
+            loss_weight = weight
+        loss_rec = charbonnier_loss(output, target, weight=loss_weight)
         step_losses = {"loss_rec": loss_rec}
         # accumulate PINN losses per-step when enabled
         if self.pinn_enable:
@@ -149,11 +153,7 @@ class AFNONet(BasePredictor):
                 step_losses[k] = v
         return step_losses
 
-    def forward_step(self, input, times=None, step=None, timestamp=None):
-        # time embeddings.
-        if timestamp is None:
-            timestamp = self.get_timestamp(input, times, step)
-        self.logger.debug(f"timestamp: {timestamp}")
+    def forward_step(self, input):
 
         input = input[:, -self.in_frames :]  # bxTxcxhxw
         resized_input = self.resize_input(input)
@@ -175,7 +175,6 @@ class AFNONet(BasePredictor):
     @torch.no_grad()
     def test_cascade(self, data):
         input = data["input"]
-        times = data["times"]
         total_step = max(self.test_frames)
         steps = np.array(self.test_frames) // self.out_frames
         assert sum(self.step_range) <= total_step
@@ -188,7 +187,7 @@ class AFNONet(BasePredictor):
             curr_step = 0
             for step in range(num_step):
                 self.reset_input(input)
-                output = self.forward_step(input, times=times, step=step + self.start_frames)
+                output = self.forward_step(input)
                 input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
                 # save for output
                 if step + 1 in steps:
@@ -202,24 +201,11 @@ class AFNONet(BasePredictor):
     def export_onnx(self, input, step, hour, doy):
         # normalize input with float32 precision
         normed_input = self.normalize(input)
-
         # convert all inputs to model dtype
         normed_input = normed_input.to(dtype=self.dtype)
-        step = step.to(dtype=self.dtype)
-        hour = hour.to(dtype=self.dtype)
-        doy = doy.to(dtype=self.dtype)
-
-        batch_size = input.shape[0]
-
         # forward model
         self.reset_input(normed_input)
-        timestamp = {
-            "step": step.repeat(batch_size),
-            "hour": hour.repeat(batch_size),
-            "doy": doy.repeat(batch_size),
-        }
-        output = self.forward_step(normed_input, timestamp=timestamp)
-
+        output = self.forward_step(normed_input)
         # inv normalize output with float32 precision
         output = self.inv_normalize(output)
         output = torch.concat([input[:, -1:], output], dim=1)  # add the first input frame for output
