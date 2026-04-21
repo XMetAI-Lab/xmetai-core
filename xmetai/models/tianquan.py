@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Author: shenzhewen &&
 Date: 2026-04-20 12:00:00
@@ -11,15 +10,13 @@ Channel layout (s2s 67-channel):
 Copyright (c) 2026 by XMetAI/shenzhewen, All Rights Reserved.
 """
 
-# ==============================================================================
-# 1. 标准库导入
-# ==============================================================================
+# !/usr/bin/env python
+# -*- coding: utf-8 -*-
 import math
 import os
 from datetime import timedelta
 from functools import lru_cache
 from typing import List, Optional, Tuple, TypeVar, Union
-from scipy import stats
 
 # ==============================================================================
 # 2. 第三方科学计算库
@@ -28,6 +25,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import xskillscore as xs
+from scipy import stats
 
 # NumPy 兼容性处理 (针对旧代码调用 np.float 的补丁)
 if not hasattr(np, "float"):
@@ -40,12 +38,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
-
-from timm.models.layers import trunc_normal_
-from timm.models.vision_transformer import Mlp
-from timm.layers import to_2tuple
 from einops import rearrange
 from einops.layers.torch import Rearrange
+from timm.layers import to_2tuple
+from timm.models.layers import trunc_normal_
+from timm.models.vision_transformer import Mlp
+
+from xmetai.builder import MODELS
+
+from .base_predictor import BasePredictor
 
 # ==============================================================================
 # 4. 类型定义与全局常量
@@ -57,8 +58,6 @@ radius_earth = 6378137 / 1000
 # ==============================================================================
 # 5. 气象变量映射配置
 # ==============================================================================
-from xmetai.builder import MODELS
-from .base_predictor import BasePredictor
 
 # 基础变量名映射
 NAME_TO_VAR = {
@@ -260,17 +259,10 @@ class FourierExpansion(nn.Module):
             torch.Tensor: Fourier series-style expansion of `x` of shape `(..., n, d)`.
         """
         # If the input is not within the configured range, the embedding might be ambiguous!
-        in_range = torch.logical_and(
-            self.lower <= x.abs(), torch.all(x.abs() <= self.upper)
-        )
-        in_range_or_zero = torch.all(
-            torch.logical_or(in_range, x == 0)
-        )  # Allow zeros to pass through.
+        in_range = torch.logical_and(self.lower <= x.abs(), torch.all(x.abs() <= self.upper))
+        in_range_or_zero = torch.all(torch.logical_or(in_range, x == 0))  # Allow zeros to pass through.
         if self.assert_range and not in_range_or_zero:
-            raise AssertionError(
-                f"The input tensor is not within the configured range"
-                f" `[{self.lower}, {self.upper}]`."
-            )
+            raise AssertionError(f"The input tensor is not within the configured range" f" `[{self.lower}, {self.upper}]`.")
 
         # We will use half of the dimensionality for `sin` and the other half for `cos`.
         if not (d % 2 == 0):
@@ -329,10 +321,10 @@ absolute_time_expansion = FourierExpansion(1, 24 * 365.25, assert_range=False)
 
 
 def patch_root_area(
-        lat_min: torch.Tensor,
-        lon_min: torch.Tensor,
-        lat_max: torch.Tensor,
-        lon_max: torch.Tensor,
+    lat_min: torch.Tensor,
+    lon_min: torch.Tensor,
+    lat_max: torch.Tensor,
+    lon_max: torch.Tensor,
 ) -> torch.Tensor:
     """For a rectangular patch on a sphere, compute the square root of the area of the patch in
     units km^2. The root is taken to return units of km, and thus stay scalable between different
@@ -356,32 +348,23 @@ def patch_root_area(
     #
     #   https://www.johndcook.com/blog/2023/02/21/sphere-grid-area/
     #
-    assert (
-            lat_max > lat_min
-    ).all(), f"lat_max - lat_min: {torch.min(lat_max - lat_min)}."
-    assert (
-            lon_max > lon_min
-    ).all(), f"lon_max - lon_min: {torch.min(lon_max - lon_min)}."
+    assert (lat_max > lat_min).all(), f"lat_max - lat_min: {torch.min(lat_max - lat_min)}."
+    assert (lon_max > lon_min).all(), f"lon_max - lon_min: {torch.min(lon_max - lon_min)}."
     assert (abs(lat_max) <= 90.0).all() and (abs(lat_min) <= 90.0).all()
     assert (lon_max <= 360.0).all() and (lon_min <= 360.0).all()
     assert (lon_max >= 0.0).all() and (lon_min >= 0.0).all()
-    area = (
-            6371 ** 2
-            * torch.pi
-            * (torch.sin(torch.deg2rad(lat_max)) - torch.sin(torch.deg2rad(lat_min)))
-            * (torch.deg2rad(lon_max) - torch.deg2rad(lon_min))
-    )
+    area = 6371**2 * torch.pi * (torch.sin(torch.deg2rad(lat_max)) - torch.sin(torch.deg2rad(lat_min))) * (torch.deg2rad(lon_max) - torch.deg2rad(lon_min))
 
     assert (area > 0.0).all()
     return torch.sqrt(area)
 
 
 def pos_scale_enc_grid(
-        encode_dim: int,
-        grid: torch.Tensor,
-        patch_dims: Tuple,
-        pos_expansion: FourierExpansion,
-        scale_expansion: FourierExpansion,
+    encode_dim: int,
+    grid: torch.Tensor,
+    patch_dims: Tuple,
+    pos_expansion: FourierExpansion,
+    scale_expansion: FourierExpansion,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Compute the position and scale encoding for a latitude-longitude grid.
 
@@ -461,12 +444,12 @@ def lat_lon_meshgrid(lat: torch.Tensor, lon: torch.Tensor) -> torch.Tensor:
 
 
 def pos_scale_enc(
-        encode_dim: int,
-        lat: torch.Tensor,
-        lon: torch.Tensor,
-        patch_dims: Union[int, List, Tuple],
-        pos_expansion: FourierExpansion,
-        scale_expansion: FourierExpansion,
+    encode_dim: int,
+    lat: torch.Tensor,
+    lon: torch.Tensor,
+    patch_dims: Union[int, List, Tuple],
+    pos_expansion: FourierExpansion,
+    scale_expansion: FourierExpansion,
 ) -> torch.Tensor:
     """Positional encoding of latitude-longitude data.
 
@@ -493,8 +476,7 @@ def pos_scale_enc(
         grid = torch.stack((lat, lon), dim=0)
     else:
         raise ValueError(
-            f"Latitudes and longitudes must either both be vectors or both be matrices, "
-            f"but have dimensionalities {lat.dim()} and {lon.dim()} respectively."
+            f"Latitudes and longitudes must either both be vectors or both be matrices, " f"but have dimensionalities {lat.dim()} and {lon.dim()} respectively."
         )
 
     grid = grid[None]  # Add batch dimension.
@@ -507,9 +489,7 @@ def pos_scale_enc(
         scale_expansion=scale_expansion,
     )
 
-    return pos_encoding.squeeze(0), scale_encoding.squeeze(
-        0
-    )  # Return without batch dimension.
+    return pos_encoding.squeeze(0), scale_encoding.squeeze(0)  # Return without batch dimension.
 
 
 class LevelPatchEmbed(nn.Module):
@@ -517,13 +497,13 @@ class LevelPatchEmbed(nn.Module):
     embedding."""
 
     def __init__(
-            self,
-            var_names: Tuple[str, str],
-            patch_size: int,
-            embed_dim: int,
-            history_size: int = 1,
-            norm_layer: Optional[nn.Module] = None,
-            flatten: bool = True,
+        self,
+        var_names: Tuple[str, ...],
+        patch_size: int,
+        embed_dim: int,
+        history_size: int = 1,
+        norm_layer: Optional[nn.Module] = None,
+        flatten: bool = True,
     ) -> None:
         """Initialise.
 
@@ -572,9 +552,7 @@ class LevelPatchEmbed(nn.Module):
         #
         #   https://pytorch.org/docs/stable/_modules/torch/nn/modules/conv.html#Conv3d
         #
-        fan_in, _ = nn.init._calculate_fan_in_and_fan_out(
-            next(iter(self.weights.values()))
-        )
+        fan_in, _ = nn.init._calculate_fan_in_and_fan_out(next(iter(self.weights.values())))
         if fan_in != 0:
             bound = 1 / math.sqrt(fan_in)
             nn.init.uniform_(self.bias, -bound, bound)
@@ -597,9 +575,7 @@ class LevelPatchEmbed(nn.Module):
         assert self.kernel_size[0] >= T, f"{T} > {self.kernel_size[0]}."
         assert H % self.kernel_size[1] == 0, f"{H} % {self.kernel_size[0]} != 0."
         assert W % self.kernel_size[2] == 0, f"{W} % {self.kernel_size[1]} != 0."
-        assert len(set(var_names)) == len(
-            var_names
-        ), f"{var_names} contains duplicates."
+        assert len(set(var_names)) == len(var_names), f"{var_names} contains duplicates."
 
         # Select the weights of the variables and history dimensions that are present in the batch.
         weight = torch.cat(
@@ -627,21 +603,21 @@ class Perceiver3DEncoder(nn.Module):
     """Multi-scale multi-source multi-variable encoder based on the Perceiver architecture."""
 
     def __init__(
-            self,
-            surf_vars: Tuple[str, str],
-            static_vars: Union[Tuple[str, str], None],
-            atmos_vars: Tuple[str, str],
-            atmos_levels: Tuple[int,],
-            patch_size: int = 4,
-            latent_levels: int = 8,
-            embed_dim: int = 1024,
-            num_heads: int = 16,
-            head_dim: int = 64,
-            drop_rate: float = 0.1,
-            depth: int = 2,
-            mlp_ratio: float = 4.0,
-            max_history_size: int = 2,
-            perceiver_ln_eps: float = 1e-5,
+        self,
+        surf_vars: Tuple[str, ...],
+        static_vars: Union[Tuple[str, str], None],
+        atmos_vars: Tuple[str, str],
+        atmos_levels: Tuple[int,],
+        patch_size: int = 4,
+        latent_levels: int = 8,
+        embed_dim: int = 1024,
+        num_heads: int = 16,
+        head_dim: int = 64,
+        drop_rate: float = 0.1,
+        depth: int = 2,
+        mlp_ratio: float = 4.0,
+        max_history_size: int = 2,
+        perceiver_ln_eps: float = 1e-5,
     ) -> None:
         """Initialise.
 
@@ -751,9 +727,7 @@ class Perceiver3DEncoder(nn.Module):
         """
         B, _, L, _ = x.shape
         latents = self.atmos_latents.to(dtype=x.dtype)
-        latents = latents.unsqueeze(1).expand(
-            B, -1, L, -1
-        )  # (C_A, D) to (B, C_A, L, D)
+        latents = latents.unsqueeze(1).expand(B, -1, L, -1)  # (C_A, D) to (B, C_A, L, D)
 
         x = torch.einsum("bcld->blcd", x)
         x = x.flatten(0, 1)  # (B * L, C_A, D)
@@ -766,14 +740,14 @@ class Perceiver3DEncoder(nn.Module):
         return x
 
     def forward(
-            self,
-            x_surf: torch.Tensor,
-            x_static: torch.Tensor,
-            x_atmos: torch.Tensor,
-            lead_time: timedelta,
-            lat: torch.Tensor,
-            lon: torch.Tensor,
-            hours: Tuple[int,],
+        self,
+        x_surf: torch.Tensor,
+        x_static: torch.Tensor,
+        x_atmos: torch.Tensor,
+        lead_time: timedelta,
+        lat: torch.Tensor,
+        lon: torch.Tensor,
+        hours: torch.Tensor,
     ) -> torch.Tensor:
         """Peform encoding.
 
@@ -796,9 +770,7 @@ class Perceiver3DEncoder(nn.Module):
         else:
             assert x_static is not None, "Static variables not given."
             x_static = x_static.expand((B, T, -1, -1, -1))
-            x_surf = torch.cat(
-                (x_surf, x_static), dim=2
-            )  # (B, T, V_S + V_Static, H, W)
+            x_surf = torch.cat((x_surf, x_static), dim=2)  # (B, T, V_S + V_Static, H, W)
             surf_vars = self.surf_vars + self.static_vars
 
         check_lat_lon_dtype(lat, lon)
@@ -808,9 +780,7 @@ class Perceiver3DEncoder(nn.Module):
         # Patch embed the surface level.
         x_surf = rearrange(x_surf, "b t v h w -> b v t h w")
         x_surf = self.surf_token_embeds(x_surf, surf_vars)  # (B, L, D)
-        dtype = (
-            x_surf.dtype
-        )  # When using mixed precision, we need to keep track of the dtype.
+        dtype = x_surf.dtype  # When using mixed precision, we need to keep track of the dtype.
 
         # Patch embed the atmospheric levels.
         x_atmos = rearrange(x_atmos, "b t v c h w -> (b c) v t h w")
@@ -825,12 +795,8 @@ class Perceiver3DEncoder(nn.Module):
 
         # Add atmospheric pressure encoding of shape (C_A, D) and subsequent embedding.
         atmos_levels_tensor = torch.tensor(self.atmos_levels, device=x_atmos.device)
-        atmos_levels_encode = levels_expansion(atmos_levels_tensor, self.embed_dim).to(
-            dtype=dtype
-        )
-        atmos_levels_embed = self.atmos_levels_embed(atmos_levels_encode)[
-                             None, :, None, :
-                             ]
+        atmos_levels_encode = levels_expansion(atmos_levels_tensor, self.embed_dim).to(dtype=dtype)
+        atmos_levels_embed = self.atmos_levels_embed(atmos_levels_encode)[None, :, None, :]
         x_atmos = x_atmos + atmos_levels_embed  # (B, C_A, L, D)
 
         # Aggregate over pressure levels.
@@ -859,21 +825,15 @@ class Perceiver3DEncoder(nn.Module):
         # Add lead time embedding.
         lead_hours = lead_time.total_seconds() / 3600
         lead_times = lead_hours * torch.ones(B, dtype=dtype, device=x.device)
-        lead_time_encode = lead_time_expansion(lead_times, self.embed_dim).to(
-            dtype=dtype
-        )
+        lead_time_encode = lead_time_expansion(lead_times, self.embed_dim).to(dtype=dtype)
         lead_time_emb = self.lead_time_embed(lead_time_encode)  # (B, D)
         x = x + lead_time_emb.unsqueeze(1)  # (B, L', D) + (B, 1, D)
 
         # Add absolute time embedding.
         absolute_times_list = [t.timestamp() / 3600 for t in hours]  # Times in hours
-        absolute_times = torch.tensor(
-            absolute_times_list, dtype=torch.float32, device=x.device
-        )
+        absolute_times = torch.tensor(absolute_times_list, dtype=torch.float32, device=x.device)
         absolute_time_encode = absolute_time_expansion(absolute_times, self.embed_dim)
-        absolute_time_embed = self.absolute_time_embed(
-            absolute_time_encode.to(dtype=dtype)
-        )
+        absolute_time_embed = self.absolute_time_embed(absolute_time_encode.to(dtype=dtype))
         x = x + absolute_time_embed.unsqueeze(1)  # (B, L, D) + (B, 1, D)
 
         x = self.pos_drop(x)
@@ -898,7 +858,7 @@ def unpatchify(x: torch.Tensor, V: int, H: int, W: int, P: int) -> torch.Tensor:
     H = H // P
     W = W // P
     assert x.size(1) == H * W
-    assert x.size(-1) == V * P ** 2
+    assert x.size(-1) == V * P**2
 
     x = x.reshape(shape=(B, H, W, C, P, P, V))
     x = rearrange(x, "B H W C P1 P2 V -> B V C H P1 W P2")
@@ -918,7 +878,7 @@ def check_lat_lon_dtype(lat: torch.Tensor, lon: torch.Tensor) -> None:
     ], f"Longitude num. unstable: {lon.dtype}."
 
 
-def init_weights(m: nn.Module):
+def init_weights(m: nn.Module) -> None:
     """Initialise weights of a module with a truncated normal distribution.
 
     `nn.LayerNorm` is initialised with a `weight` of 1 and a `bias` of 0.
@@ -926,9 +886,7 @@ def init_weights(m: nn.Module):
     Args:
         m (torch.nn.Module): Module.
     """
-    if isinstance(
-            m, (nn.Linear, nn.Conv2d, nn.Conv3d, nn.ConvTranspose2d, nn.ConvTranspose3d)
-    ):
+    if isinstance(m, (nn.Linear, nn.Conv2d, nn.Conv3d, nn.ConvTranspose2d, nn.ConvTranspose3d)):
         trunc_normal_(m.weight, std=0.02)
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
@@ -967,11 +925,11 @@ class PerceiverAttention(nn.Module):
     """Cross attention module from the Perceiver architecture."""
 
     def __init__(
-            self,
-            latent_dim: int,
-            context_dim: int,
-            head_dim: int = 64,
-            num_heads: int = 8,
+        self,
+        latent_dim: int,
+        context_dim: int,
+        head_dim: int = 64,
+        num_heads: int = 8,
     ) -> None:
         """Initialise.
 
@@ -1002,9 +960,7 @@ class PerceiverAttention(nn.Module):
 
         attention_weights = torch.nn.functional.softmax(scores, dim=-1)
         if dropout_p > 0.0:
-            attention_weights = torch.nn.functional.dropout(
-                attention_weights, p=dropout_p, training=True
-            )
+            attention_weights = torch.nn.functional.dropout(attention_weights, p=dropout_p, training=True)
 
         output = torch.matmul(attention_weights, value)
         return output
@@ -1036,16 +992,16 @@ class PerceiverResampler(nn.Module):
     """Perceiver Resampler module from the Flamingo paper."""
 
     def __init__(
-            self,
-            latent_dim: int,
-            context_dim: int,
-            depth: int = 1,
-            head_dim: int = 64,
-            num_heads: int = 16,
-            mlp_ratio: float = 4.0,
-            drop: float = 0.0,
-            residual_latent: bool = True,
-            ln_eps: float = 1e-5,
+        self,
+        latent_dim: int,
+        context_dim: int,
+        depth: int = 1,
+        head_dim: int = 64,
+        num_heads: int = 16,
+        mlp_ratio: float = 4.0,
+        drop: float = 0.0,
+        residual_latent: bool = True,
+        ln_eps: float = 1e-5,
     ) -> None:
         """Initialise.
 
@@ -1078,9 +1034,7 @@ class PerceiverResampler(nn.Module):
                             head_dim=head_dim,
                             num_heads=num_heads,
                         ),
-                        MLP(
-                            dim=latent_dim, hidden_features=mlp_hidden_dim, dropout=drop
-                        ),
+                        MLP(dim=latent_dim, hidden_features=mlp_hidden_dim, dropout=drop),
                         nn.LayerNorm(latent_dim, eps=ln_eps),
                         nn.LayerNorm(latent_dim, eps=ln_eps),
                     ]
@@ -1120,7 +1074,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     assert embed_dim % 2 == 0
     omega = np.arange(embed_dim // 2, dtype=np.float)
     omega /= embed_dim / 2.0
-    omega = 1.0 / 10000 ** omega  # (D/2,)
+    omega = 1.0 / 10000**omega  # (D/2,)
 
     pos = pos.reshape(-1)  # (M,)
     out = np.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
@@ -1130,37 +1084,6 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
-
-
-def crps(y_pred, y_true, transform, vars, lat, clim, log_postfix=None, anomaly=None):
-    """
-    Continuous Ranked Probability Score per variable and overall.
-
-    Args:
-        y_pred (Tensor[B, M, V, H, W]): Ensemble predictions.
-        y_true (Tensor[B, V, H, W])
-    """
-    if transform is not None:
-        y_pred = transform(y_pred)
-        y_true = transform(y_true)
-
-    crps_dict = {}
-    with torch.no_grad():
-        for i, var in enumerate(vars):
-            yp = y_pred[:, :, i].cpu().numpy()
-            yt = y_true[:, i].cpu().numpy()
-            da_true = xr.DataArray(yt, dims=["batch", "lat", "lon"])
-            da_pred = xr.DataArray(yp, dims=["batch", "member", "lat", "lon"])
-            crps_var = xs.crps_ensemble(da_true, da_pred).item()
-            crps_dict[f"crps_{var}_{log_postfix}"] = crps_var
-
-        # overall CRPS
-        ytp = y_pred.cpu().numpy()
-        ytt = y_true.cpu().numpy()
-        da_true_all = xr.DataArray(ytt, dims=["batch", "var", "lat", "lon"])
-        da_pred_all = xr.DataArray(ytp, dims=["batch", "member", "var", "lat", "lon"])
-        crps_dict["crps"] = xs.crps_ensemble(da_true_all, da_pred_all).item()
-    return crps_dict
 
 
 class Diffusion(nn.Module):
@@ -1191,19 +1114,19 @@ class Attention(nn.Module):
     """
 
     def __init__(
-            self,
-            dim,
-            num_heads=8,
-            qkv_bias=False,
-            qk_scale=None,
-            attn_drop=0.0,
-            proj_drop=0.0,
-            window_size=None,
+        self,
+        dim,
+        num_heads=8,
+        qkv_bias=False,
+        qk_scale=None,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        window_size=None,
     ):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim ** -0.5
+        self.scale = qk_scale or head_dim**-0.5
         self.window_size = window_size
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -1248,7 +1171,7 @@ class Attention(nn.Module):
         chunk = 256
         out_chunks = []
         for i in range(0, L, chunk):
-            q_c = q[:, :, i: i + chunk, :]
+            q_c = q[:, :, i : i + chunk, :]
             attn = (q_c @ k.transpose(-2, -1)) * self.scale
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
@@ -1260,17 +1183,17 @@ class Block(nn.Module):
     """Transformer block with optional skip and checkpointing."""
 
     def __init__(
-            self,
-            dim,
-            num_heads,
-            mlp_ratio=4.0,
-            qkv_bias=False,
-            qk_scale=None,
-            norm_layer=nn.LayerNorm,
-            skip=False,
-            use_checkpoint=False,
-            img_size=(128, 256),
-            window_size=(8, 8),
+        self,
+        dim,
+        num_heads,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        qk_scale=None,
+        norm_layer=nn.LayerNorm,
+        skip=False,
+        use_checkpoint=False,
+        img_size=(128, 256),
+        window_size=(8, 8),
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -1304,18 +1227,18 @@ class PEDadd_UViT(nn.Module):
     """
 
     def __init__(
-            self,
-            embed_dim=1536,
-            depth=8,
-            num_heads=12,
-            mlp_ratio=4.0,
-            qkv_bias=False,
-            qk_scale=None,
-            norm_layer=nn.LayerNorm,
-            use_checkpoint=False,
-            skip=True,
-            img_size=(128, 256),
-            window_size=(8, 8),
+        self,
+        embed_dim=1536,
+        depth=8,
+        num_heads=12,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        qk_scale=None,
+        norm_layer=nn.LayerNorm,
+        use_checkpoint=False,
+        skip=True,
+        img_size=(128, 256),
+        window_size=(8, 8),
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -1446,9 +1369,7 @@ class PEDadd_UViT(nn.Module):
 
 
 def default_conv(in_channels, out_channels, kernel_size, bias=True):
-    return nn.Conv2d(
-        in_channels, out_channels, kernel_size, padding=(kernel_size // 2), bias=bias
-    )
+    return nn.Conv2d(in_channels, out_channels, kernel_size, padding=(kernel_size // 2), bias=bias)
 
 
 class SpatialAttention(nn.Module):
@@ -1483,9 +1404,7 @@ class ChannelAttention(nn.Module):
 class PixelAttention(nn.Module):
     def __init__(self, dim):
         super(PixelAttention, self).__init__()
-        self.pa2 = nn.Conv2d(
-            2 * dim, dim, 7, padding=3, padding_mode="reflect", groups=dim, bias=True
-        )
+        self.pa2 = nn.Conv2d(2 * dim, dim, 7, padding=3, padding_mode="reflect", groups=dim, bias=True)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x, pattn1):
@@ -1566,18 +1485,18 @@ class Perceiver3DDecoder(nn.Module):
     """
 
     def __init__(
-            self,
-            surf_vars: Tuple[str, str],
-            atmos_vars: Tuple[str, str],
-            atmos_levels: Tuple[int, int],
-            patch_size: int = 4,
-            embed_dim: int = 1024,
-            depth: int = 1,
-            head_dim: int = 64,
-            num_heads: int = 8,
-            mlp_ratio: float = 4.0,
-            drop_rate: float = 0.0,
-            perceiver_ln_eps: float = 1e-5,
+        self,
+        surf_vars: Tuple[str, str],
+        atmos_vars: Tuple[str, str],
+        atmos_levels: Tuple[int, int],
+        patch_size: int = 4,
+        embed_dim: int = 1024,
+        depth: int = 1,
+        head_dim: int = 64,
+        num_heads: int = 8,
+        mlp_ratio: float = 4.0,
+        drop_rate: float = 0.0,
+        perceiver_ln_eps: float = 1e-5,
     ) -> None:
         """Initialise.
 
@@ -1618,20 +1537,14 @@ class Perceiver3DDecoder(nn.Module):
             ln_eps=perceiver_ln_eps,
         )
 
-        self.surf_heads = nn.ParameterDict(
-            {name: nn.Linear(embed_dim, patch_size ** 2) for name in surf_vars}
-        )
-        self.atmos_heads = nn.ParameterDict(
-            {name: nn.Linear(embed_dim, patch_size ** 2) for name in atmos_vars}
-        )
+        self.surf_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size**2) for name in surf_vars})
+        self.atmos_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size**2) for name in atmos_vars})
 
         self.atmos_levels_embed = nn.Linear(embed_dim, embed_dim)
 
         self.apply(init_weights)
 
-    def deaggregate_levels(
-            self, level_embed: torch.Tensor, x: torch.Tensor
-    ) -> torch.Tensor:
+    def deaggregate_levels(self, level_embed: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """Deaggregate pressure level information.
 
         Args:
@@ -1646,9 +1559,7 @@ class Perceiver3DDecoder(nn.Module):
         x = x.flatten(0, 1)  # (BxL, C', D)
         _msg = f"Batch size mismatch. Found {level_embed.size(0)} and {x.size(0)}."
         assert level_embed.size(0) == x.size(0), _msg
-        assert (
-                len(level_embed.shape) == 3
-        ), f"Expected 3 dims, found {level_embed.dims()}."
+        assert len(level_embed.shape) == 3, f"Expected 3 dims, found {level_embed.dims()}."
         assert x.dim() == 3, f"Expected 3 dims, found {x.dim()}."
 
         x = self.level_decoder(level_embed, x)  # (BxL, C, D)
@@ -1656,13 +1567,13 @@ class Perceiver3DDecoder(nn.Module):
         return x
 
     def forward(
-            self,
-            x: torch.Tensor,
-            lat,
-            lon,
-            patch_res: Tuple[int, int, int],
-            lead_time: timedelta,
-    ) -> None:
+        self,
+        x: torch.Tensor,
+        lat: torch.Tensor,
+        lon: torch.Tensor,
+        patch_res: Tuple[int, int, int],
+        lead_time: timedelta,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of MultiScaleEncoder.
 
         Args:
@@ -1693,17 +1604,13 @@ class Perceiver3DDecoder(nn.Module):
         )
 
         # Decode surface vars. Run the head for every surface-level variable.
-        x_surf = torch.stack(
-            [self.surf_heads[name](x[..., :1, :]) for name in self.surf_vars], dim=-1
-        )
+        x_surf = torch.stack([self.surf_heads[name](x[..., :1, :]) for name in self.surf_vars], dim=-1)
         x_surf = x_surf.reshape(*x_surf.shape[:3], -1)  # (B, L, 1, V_S*p*p)
         surf_preds = unpatchify(x_surf, len(self.surf_vars), H, W, self.patch_size)
         surf_preds = surf_preds.squeeze(2)  # (B, V_S, H, W)
 
         # Embed the atmospheric levels.
-        atmos_levels_encode = levels_expansion(
-            torch.tensor(self.atmos_levels, device=x.device), self.embed_dim
-        ).to(dtype=x.dtype)
+        atmos_levels_encode = levels_expansion(torch.tensor(self.atmos_levels, device=x.device), self.embed_dim).to(dtype=x.dtype)
         levels_embed = self.atmos_levels_embed(atmos_levels_encode)  # (C_A, D)
 
         # De-aggregate the hidden levels into the physical levels.
@@ -1711,9 +1618,7 @@ class Perceiver3DDecoder(nn.Module):
         x_atmos = self.deaggregate_levels(levels_embed, x[..., 1:, :])  # (B, L, C_A, D)
 
         # Decode the atmospheric vars.
-        x_atmos = torch.stack(
-            [self.atmos_heads[name](x_atmos) for name in self.atmos_vars], dim=-1
-        )
+        x_atmos = torch.stack([self.atmos_heads[name](x_atmos) for name in self.atmos_vars], dim=-1)
         x_atmos = x_atmos.reshape(*x_atmos.shape[:3], -1)  # (B, L, C_A, V_A*p*p)
         atmos_preds = unpatchify(x_atmos, len(self.atmos_vars), H, W, self.patch_size)
 
@@ -1789,7 +1694,7 @@ def expand_blocks_to_tensor(block_vals, orig_shape, block_size=8):
     idx = 0
     for i in range(0, H, block_size):
         for j in range(0, W, block_size):
-            out[:, :, i:i + block_size, j:j + block_size] = block_vals[:, :, idx].unsqueeze(-1).unsqueeze(-1)
+            out[:, :, i : i + block_size, j : j + block_size] = block_vals[:, :, idx].unsqueeze(-1).unsqueeze(-1)
             idx += 1
     return out
 
@@ -1820,8 +1725,7 @@ def lat_weighted_mse(pred, y, vars, lat, mask=None, anomaly=None, extreme=False,
         ymax, ymin = get_max_min_blocks(y)
         max_err = (pmax - ymax) ** 2
         min_err = (pmin - ymin) ** 2
-        error = (pred - y) ** 2 + 0.1 * expand_blocks_to_tensor(max_err, pred.shape) \
-                + 0.1 * expand_blocks_to_tensor(min_err, pred.shape)
+        error = (pred - y) ** 2 + 0.1 * expand_blocks_to_tensor(max_err, pred.shape) + 0.1 * expand_blocks_to_tensor(min_err, pred.shape)
     elif weight is not None:
         # 确保 weight 也是 Tensor 且在正确的 device 上
         if not isinstance(weight, torch.Tensor):
@@ -1960,7 +1864,7 @@ def lat_weighted_acc(pred, y, transform, vars, lat, clim, log_postfix, anomaly=N
             p = pred_t[:, i] - pred_t[:, i].mean()
             g = y_t[:, i] - y_t[:, i].mean()
             num = (w_lat * p * g).sum()
-            den = torch.sqrt((w_lat * p ** 2).sum() * (w_lat * g ** 2).sum())
+            den = torch.sqrt((w_lat * p**2).sum() * (w_lat * g**2).sum())
             loss_dict[f"acc_{var}_{log_postfix}"] = (num / den).item()
         loss_dict["acc"] = np.mean(list(loss_dict.values()))
     return loss_dict
@@ -2089,20 +1993,20 @@ class TianQuan(BasePredictor):
     """
 
     def __init__(
-            self,
-            default_vars,
-            img_size=(128, 256),
-            window_size=(8, 8),
-            patch_size=2,
-            embed_dim=384,
-            decoder_depth=2,
-            num_heads=12,
-            mlp_ratio=4,
-            drop_path=0.1,
-            drop_rate=0.1,
-            const_chans=0,
-            *args,
-            **kwargs,
+        self,
+        default_vars,
+        img_size=(128, 256),
+        window_size=(8, 8),
+        patch_size=2,
+        embed_dim=384,
+        decoder_depth=2,
+        num_heads=12,
+        mlp_ratio=4,
+        drop_path=0.1,
+        drop_rate=0.1,
+        const_chans=0,
+        *args,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.img_size = img_size
@@ -2120,15 +2024,11 @@ class TianQuan(BasePredictor):
             "relative_humidity",
             "specific_humidity",
         ]
-        self.surface_variables = (
-            ["2m_temperature", "wind_speed_10m"]
-            if img_size == (128, 256)
-            else ["2m_temperature", "10m_wind_speed"]
-        )
+        self.surface_variables = ["2m_temperature", "wind_speed_10m"] if img_size == (128, 256) else ["2m_temperature", "10m_wind_speed"]
         self.static_vars = ["lsm", "slt", "orog"]
 
         # 影响损失函数
-        level_weight = [lvl / sum(self.levels) for lvl in self.levels]
+        # level_weight = [lvl / sum(self.levels) for lvl in self.levels]
         # self.weight = level_weight
 
         # Load static constants (land mask, soil type, topography)
@@ -2171,17 +2071,14 @@ class TianQuan(BasePredictor):
         self.norm = nn.LayerNorm(embed_dim)
 
         # UViT backbone
-        self.backbone = PEDadd_UViT(embed_dim=embed_dim, depth=decoder_depth, qk_scale=True, img_size=img_size,
-                                    window_size=window_size)
+        self.backbone = PEDadd_UViT(embed_dim=embed_dim, depth=decoder_depth, qk_scale=True, img_size=img_size, window_size=window_size)
 
         # Weight initialization
         self.initialize_weights()
 
     def initialize_weights(self):
         """Initialize positional embeddings and layer weights."""
-        pos = get_1d_sincos_pos_embed_from_grid(
-            self.var_embed.shape[-1], np.arange(len(self.default_vars))
-        )
+        pos = get_1d_sincos_pos_embed_from_grid(self.var_embed.shape[-1], np.arange(len(self.default_vars)))
         self.var_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))
         self.apply(self._init_weights)
 
@@ -2200,11 +2097,7 @@ class TianQuan(BasePredictor):
         Load static constant fields (land_mask, soil_type, orography).
         Expects NetCDF files constants_1.40625.nc or constants_5.625.nc.
         """
-        fname = (
-            "constants_1.40625.nc"
-            if self.img_size == (128, 256)
-            else "constants_5.625.nc"
-        )
+        fname = "constants_1.40625.nc" if self.img_size == (128, 256) else "constants_5.625.nc"
         ds = xr.open_dataset(os.path.join(path, fname))
         lsm = torch.from_numpy(ds["lsm"].values.astype(np.float32))
         slt = torch.from_numpy(ds["slt"].values.astype(np.float32))
@@ -2213,9 +2106,7 @@ class TianQuan(BasePredictor):
 
     def create_var_embedding(self, dim):
         """Create learnable embeddings for each variable."""
-        emb = nn.Parameter(
-            torch.zeros(1, len(self.default_vars), dim), requires_grad=True
-        )
+        emb = nn.Parameter(torch.zeros(1, len(self.default_vars), dim), requires_grad=True)
         var_map = {v: i for i, v in enumerate(self.default_vars)}
         return emb, var_map
 
@@ -2238,9 +2129,7 @@ class TianQuan(BasePredictor):
         deltas = pd.to_timedelta(hours.cpu().numpy(), unit="h")
         return (base + deltas).tolist()
 
-    def forward_encoder(
-            self, x, anomaly, hours, variables, lats, lons, region_info, lead_time, const
-    ):
+    def forward_encoder(self, x, anomaly, hours, variables, lats, lons, region_info, lead_time, const):
         """
         Encode inputs via anomaly & data branches, fuse, Perceiver, and UViT backbone.
         Returns tuple of surface and atmospheric predictions.
@@ -2256,9 +2145,7 @@ class TianQuan(BasePredictor):
         fused = rearrange(fused, "(b t) v h w -> b t v h w", t=t)
 
         # Split surface vs atmosphere
-        atmo = fused[:, :, 2:].reshape(
-            b, t, len(self.upper_variables), len(self.levels), h, w
-        )
+        atmo = fused[:, :, 2:].reshape(b, t, len(self.upper_variables), len(self.levels), h, w)
         surf = fused[:, :, :2].reshape(b, t, len(self.surface_variables), h, w)
 
         enc = self.encoder(
@@ -2323,9 +2210,7 @@ class TianQuan(BasePredictor):
         # 一个常量提前弄好
         const = torch.cat([const, const[-1:]], dim=0)
         # 调用你原本的 encoder 前向传播
-        surf_pred, atmo_pred = self.forward_encoder(
-            input, anomaly, hours, self.default_vars, lats, lons, region_info, lead_time, const=const
-        )
+        surf_pred, atmo_pred = self.forward_encoder(input, anomaly, hours, self.default_vars, lats, lons, region_info, lead_time, const=const)
 
         # 拼接输出，恢复成框架期望的 (b, 1, v, h, w) 形状
         # 注意：这里需要根据你的变量顺序把 surf 和 atmo 拼成和 input 一样的顺序
@@ -2362,13 +2247,13 @@ class TianQuan(BasePredictor):
         # 1. 处理 input: 合并 B 和 F 维度进行插值
         B, F_in, C, H, W = input.shape
         input = input.view(B * F_in, C, H, W)  # 变 4D
-        input = F.interpolate(input, size=target_size, mode='bilinear', align_corners=False)
+        input = F.interpolate(input, size=target_size, mode="bilinear", align_corners=False)
         input = input.view(B, F_in, C, *target_size)  # 还原 5D
 
         # 2. 处理 targets: 同样的操作
         B, F_out, C, H, W = targets.shape
         targets = targets.view(B * F_out, C, H, W)
-        targets = F.interpolate(targets, size=target_size, mode='bilinear', align_corners=False)
+        targets = F.interpolate(targets, size=target_size, mode="bilinear", align_corners=False)
         targets = targets.view(B, F_out, C, *target_size)
 
         # 3. 处理静态数据 const (假设是 3D 或 4D)
@@ -2376,10 +2261,10 @@ class TianQuan(BasePredictor):
             # 如果是 (C, H, W)，需要临时补一个 Batch 维变成 4D 才能插值
             if const.dim() == 3:
                 const = const.unsqueeze(0)  # (1, C, H, W)
-                const = F.interpolate(const, size=target_size, mode='bilinear', align_corners=False)
+                const = F.interpolate(const, size=target_size, mode="bilinear", align_corners=False)
                 const = const.squeeze(0)  # (C, 128, 256)
             else:
-                const = F.interpolate(const, size=target_size, mode='bilinear', align_corners=False)
+                const = F.interpolate(const, size=target_size, mode="bilinear", align_corners=False)
         # ------------------------------------------
 
         # 直接进行单步预测
@@ -2396,23 +2281,23 @@ class TianQuan(BasePredictor):
         return loss_dict
 
     def evaluate(
-            self,
-            x,
-            y,
-            anomaly,
-            hours,
-            variables,
-            out_vars,
-            transform,
-            metrics,
-            lats,
-            lons,
-            lat,
-            clim,
-            log_postfix,
-            region_info,
-            partition,
-            lead_time=None,
+        self,
+        x,
+        y,
+        anomaly,
+        hours,
+        variables,
+        out_vars,
+        transform,
+        metrics,
+        lats,
+        lons,
+        lat,
+        clim,
+        log_postfix,
+        region_info,
+        partition,
+        lead_time=None,
     ):
         """
         Compute evaluation metrics (excluding CRPS) on a batch.
@@ -2433,33 +2318,29 @@ class TianQuan(BasePredictor):
         )
         mi, ma = region_info["min_h"], region_info["max_h"]
         mj, mj = region_info["min_w"], region_info["max_w"]
-        y_reg = y[:, :, mi: ma + 1, mj: mj + 1]
-        lat_reg = lat[mi: ma + 1]
-        clim_reg = clim[:, mi: ma + 1, mj: mj + 1]
+        y_reg = y[:, :, mi : ma + 1, mj : mj + 1]
+        lat_reg = lat[mi : ma + 1]
+        clim_reg = clim[:, mi : ma + 1, mj : mj + 1]
 
-        return [
-            m(preds, y_reg, transform, out_vars, lat_reg, clim_reg, log_postfix)
-            for m in metrics
-            if m is not crps
-        ]
+        return [m(preds, y_reg, transform, out_vars, lat_reg, clim_reg, log_postfix) for m in metrics if m is not crps]
 
     def evaluate_ensemble(
-            self,
-            x,
-            y,
-            anomaly,
-            hours,
-            variables,
-            out_vars,
-            transform,
-            metrics,
-            lats,
-            lons,
-            lat,
-            clim,
-            log_postfix,
-            region_info,
-            partition,
+        self,
+        x,
+        y,
+        anomaly,
+        hours,
+        variables,
+        out_vars,
+        transform,
+        metrics,
+        lats,
+        lons,
+        lat,
+        clim,
+        log_postfix,
+        region_info,
+        partition,
     ):
         """
         Ensemble evaluation via Gaussian perturbations.
@@ -2486,16 +2367,14 @@ class TianQuan(BasePredictor):
 
         mi, ma = region_info["min_h"], region_info["max_h"]
         mj, mj = region_info["min_w"], region_info["max_w"]
-        y_reg = y[:, :, mi: ma + 1, mj: mj + 1]
-        lat_reg = lat[mi: ma + 1]
-        clim_reg = clim[:, mi: ma + 1, mj: mj + 1]
+        y_reg = y[:, :, mi : ma + 1, mj : mj + 1]
+        lat_reg = lat[mi : ma + 1]
+        clim_reg = clim[:, mi : ma + 1, mj : mj + 1]
 
         out = []
         for m in metrics:
             if m is crps:
-                out.append(
-                    m(stack, y_reg, transform, out_vars, lat_reg, clim_reg, log_postfix)
-                )
+                out.append(m(stack, y_reg, transform, out_vars, lat_reg, clim_reg, log_postfix))
             else:
                 out.append(
                     m(
@@ -2511,39 +2390,37 @@ class TianQuan(BasePredictor):
         return out
 
     def predict(
-            self,
-            x,
-            anomaly,
-            hours,
-            variables,
-            out_vars,
-            transform,
-            lats,
-            lons,
-            region_info,
-            max_predict_range,
+        self,
+        x,
+        anomaly,
+        hours,
+        variables,
+        out_vars,
+        transform,
+        lats,
+        lons,
+        region_info,
+        max_predict_range,
     ):
         """
         Generate final NetCDF predictions. Saves via `np2nc_preds`.
         """
-        surf_p, atmo_p = self.forward_encoder(
-            x, anomaly, hours, variables, lats, lons, region_info
-        )
+        surf_p, atmo_p = self.forward_encoder(x, anomaly, hours, variables, lats, lons, region_info)
         preds = x.clone()
         # Map upper & surface predictions back into full variable stack
         for i, var in enumerate(self.upper_variables):
             for j, lvl in enumerate(self.levels):
                 idx = self.get_var_ids((f"{var}_{lvl}",), x.device)
-                preds[:, idx] = atmo_p[:, j, i: i + 1]
+                preds[:, idx] = atmo_p[:, j, i : i + 1]
         for i, var in enumerate(self.surface_variables):
             idx = self.get_var_ids((var,), x.device)
-            preds[:, idx] = surf_p[:, i: i + 1]
+            preds[:, idx] = surf_p[:, i : i + 1]
 
         preds = transform(preds)
         out_ids = self.get_var_ids(tuple(out_vars), x.device)
         mi, ma = region_info["min_h"], region_info["max_h"]
         mj, mj = region_info["min_w"], region_info["max_w"]
-        final = preds[:, out_ids, mi: ma + 1, mj: mj + 1].cpu().numpy()
+        final = preds[:, out_ids, mi : ma + 1, mj : mj + 1].cpu().numpy()
 
         return final
 
@@ -2560,14 +2437,14 @@ class TianQuan(BasePredictor):
         # 2. 空间尺寸预处理：将初始输入和常量插值到 (128, 256)
         # 合并 B, F 维度进行插值
         inputs_interp = inputs.view(B * F_in, V, H_orig, W_orig)
-        inputs_interp = F.interpolate(inputs_interp, size=target_size, mode='bilinear', align_corners=False)
+        inputs_interp = F.interpolate(inputs_interp, size=target_size, mode="bilinear", align_corners=False)
         inputs_interp = inputs_interp.view(B, F_in, V, *target_size)
 
         if const is not None:
             if const.dim() == 3:  # (C, H, W)
-                const = F.interpolate(const.unsqueeze(0), size=target_size, mode='bilinear').squeeze(0)
+                const = F.interpolate(const.unsqueeze(0), size=target_size, mode="bilinear").squeeze(0)
             else:  # (B, C, H, W)
-                const = F.interpolate(const, size=target_size, mode='bilinear')
+                const = F.interpolate(const, size=target_size, mode="bilinear")
 
         # 3. 初始化输出容器 (按照原始尺寸返回，以便框架计算指标)
         total_step = max(self.test_frames)
@@ -2595,13 +2472,8 @@ class TianQuan(BasePredictor):
                 # 如果当前步数在 test_frames 记录列表中
                 if (step + 1) in steps_to_save:
                     # 将预测结果插值回原始尺寸 (H_orig, W_orig)
-                    out_rescaled = F.interpolate(
-                        output.squeeze(1),  # (B, V, 128, 256)
-                        size=(H_orig, W_orig),
-                        mode='bilinear',
-                        align_corners=False
-                    )
-                    outputs[:, curr_step_idx: curr_step_idx + 1] += out_rescaled.unsqueeze(1)
+                    out_rescaled = F.interpolate(output.squeeze(1), size=(H_orig, W_orig), mode="bilinear", align_corners=False)  # (B, V, 128, 256)
+                    outputs[:, curr_step_idx : curr_step_idx + 1] += out_rescaled.unsqueeze(1)
                     curr_step_idx += 1
 
         # 5. 如果有多个 step_range，取平均值
@@ -2630,8 +2502,7 @@ class TianQuan(BasePredictor):
         graph = self._build_graph_from_shape(height, width, normed_input.device)
         if self.use_multiscale:
             factors = self.coarse_factors or [2]
-            ms_graph = [self._build_multiscale_from_shape(height, width, factor, normed_input.device) for factor in
-                        factors]
+            ms_graph = [self._build_multiscale_from_shape(height, width, factor, normed_input.device) for factor in factors]
             graph = (*graph, ms_graph)
         output = self.forward_step(normed_input, None, graph, step=0, timestamp=timestamp)
         output = self.inv_normalize(output)
