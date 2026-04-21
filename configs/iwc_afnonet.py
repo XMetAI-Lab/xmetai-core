@@ -81,7 +81,7 @@ test_names = ["z500", "u200", "u850", "msl", "t2m", "sst", "ttr", "tp"]
 test_names = [ch for ch in test_names if ch in out_names]
 test_chans = [out_names.index(n) for n in test_names]
 
-test_frames = np.arange(1, 33).tolist()  # predict 1-8 days ahead with 6-hour frequency
+test_frames = np.arange(1, 33).tolist()  # predict 1-8(32 * 6 / 24) days ahead with 6-hour frequency
 step_range = [max(test_frames)]
 
 in_chans = len(in_names)
