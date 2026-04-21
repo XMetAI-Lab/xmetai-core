@@ -7,9 +7,9 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from xmetai import (
-    MODELS,
     DATASETS,
     METRICS,
+    MODELS,
     LazyConfig,
     build_test_loader,
     build_train_loader,
@@ -93,9 +93,9 @@ embed_dim = 48
 img_size = (120, 240)
 patch_size = (5, 5)
 depth = 12
-mlp_ratio = 4.
+mlp_ratio = 4.0
 drop_rate = 0.1
-drop_path_rate = 0.
+drop_path_rate = 0.0
 num_blocks = 16
 sparsity_threshold = 0.01
 hard_thresholding_fraction = 1.0
