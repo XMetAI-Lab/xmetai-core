@@ -40,7 +40,7 @@ class AFNONet(BasePredictor):
         self.num_blocks = num_blocks
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
-        self.patch_embed = PatchEmbed(img_size=img_size, patch_size=self.patch_size, in_chans=self.in_chans, embed_dim=embed_dim)
+        self.patch_embed = PatchEmbed(img_size=img_size, patch_size=self.patch_size, in_chans=self.in_chans*self.in_frames, embed_dim=embed_dim)
         num_patches = self.patch_embed.num_patches
 
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
@@ -67,16 +67,14 @@ class AFNONet(BasePredictor):
             ]
         )
 
-        self.norm = norm_layer(embed_dim)
-
         self.head = nn.Linear(embed_dim, self.out_chans * self.patch_size[0] * self.patch_size[1], bias=False)
 
     @torch.jit.ignore
     def no_weight_decay(self):
-        return {"pos_embed", "cls_token"}
+        return {"pos_embed"}
 
     def resize_input(self, input):
-        x = rearrange(input, "n t c h w -> (n t) c h w")
+        x = rearrange(input, "n t c h w -> n (t c) h w")
         # 将 ListConfig 转换为普通 tuple[int]
         target_size = self.img_size
         if hasattr(target_size, "__len__"):
@@ -86,13 +84,6 @@ class AFNONet(BasePredictor):
         return x
 
     def resize_output(self, output, input):
-        # patch_h = int(self.patch_size[0]) if hasattr(self.patch_size[0], "__int__") else self.patch_size[0]
-        # patch_w = int(self.patch_size[1]) if hasattr(self.patch_size[1], "__int__") else self.patch_size[1]
-        # img_h = int(self.img_size[0]) if hasattr(self.img_size[0], "__int__") else self.img_size[0]
-        # img_w = int(self.img_size[1]) if hasattr(self.img_size[1], "__int__") else self.img_size[1]
-        #
-        # h_patches = img_h // patch_h
-        # w_patches = img_w // patch_w
         output = rearrange(
             output,
             "b h w (p1 p2 c_out) -> b c_out (h p1) (w p2)",
