@@ -12,21 +12,15 @@ The model splits the full atmospheric state into pressure-level groups, encodes 
 
 For a normalized input window with `in_frames = T_in`, the model takes:
 
-$$
-X_t = [x_{t-T_{in}+1}, \dots, x_t] \in \mathbb{R}^{B \times T_{in} \times C \times H \times W}
-$$
+$$ X_t = [x_{t-T_{in}+1}, \dots, x_t] \in \mathbb{R}^{B \times T_{in} \times C \times H \times W} $$
 
 and a target rollout:
 
-$$
-Y_t = [x_{t+1}, \dots, x_{t+K}] \in \mathbb{R}^{B \times K \times C \times H \times W}.
-$$
+$$ Y_t = [x_{t+1}, \dots, x_{t+K}] \in \mathbb{R}^{B \times K \times C \times H \times W}. $$
 
 `build_level_channel_map(...)` partitions the channel dimension into `G` groups:
 
-$$
-x_t = \{x_t^{(g)}\}_{g=1}^{G}, \qquad x_t^{(g)} \in \mathbb{R}^{C_g \times H \times W}, \qquad \sum_{g=1}^G C_g = C.
-$$
+$$ x_t = \{x_t^{(g)}\}_{g=1}^{G}, \qquad x_t^{(g)} \in \mathbb{R}^{C_g \times H \times W}, \qquad \sum_{g=1}^G C_g = C. $$
 
 In the default setup:
 
@@ -47,41 +41,29 @@ For each group `g`, the model builds three modules:
 
 Each encoder/decoder is a `UTransformer`-based module. The cross-group coupling is handled by:
 
-$$
-\mathcal{M}: \{h^{(g)}\}_{g=1}^{G} \rightarrow \{\tilde{h}^{(g)}\}_{g=1}^{G},
-$$
+$$ \mathcal{M}: \{h^{(g)}\}_{g=1}^{G} \rightarrow \{\tilde{h}^{(g)}\}_{g=1}^{G} $$
 
 implemented by `LatentMixerPredictor`.
 
 At one rollout step, the code constructs:
 
-$$
-h_{t,\text{prior}}^{(g)} = E_p^{(g)}(X_t^{(g)})
-$$
+$$ h_{t,\mathrm{prior}}^{(g)} = E_p^{(g)}(X_t^{(g)}) $$
 
-$$
-h_{t+1,\text{post}}^{(g)} = E_q^{(g)}(\tilde{X}_{t+1}^{(g)})
-$$
+$$ h_{t+1,\mathrm{post}}^{(g)} = E_q^{(g)}(\tilde{X}_{t+1}^{(g)}) $$
 
 where
 
-$$
-\tilde{X}_{t+1} = [x_{t-T_{in}+2}, \dots, x_t, x_{t+1}]
-$$
+$$ \tilde{X}_{t+1} = [x_{t-T_{in}+2}, \dots, x_t, x_{t+1}] $$
 
 is the teacher-forced window `new_target = cat(true_input, target)[:, -in_frames:]`.
 
 The time-conditioning signal used by both the latent mixer and the decoders is the timestamp tuple built in code by `get_timestamp(...)`:
 
-$$
-c_t = (\mathrm{step}_t, \mathrm{hour}_t, \mathrm{doy}_t).
-$$
+$$ c_t = (\mathrm{step}_t, \mathrm{hour}_t, \mathrm{doy}_t). $$
 
 The prior latents are then coupled with the target timestamp condition:
 
-$$
-z_{t+1}^{(g)} = \mathcal{M}\big(\{h_{t,\text{prior}}^{(g)}\}_{g=1}^G, c_{t+1}\big)_g.
-$$
+$$ z_{t+1}^{(g)} = \mathcal{M}\big(\{h_{t,\mathrm{prior}}^{(g)}\}_{g=1}^G, c_{t+1}\big)_g. $$
 
 ## 3. Three Decoding Paths Used in Training
 
@@ -89,21 +71,15 @@ $$
 
 Each prior latent is decoded at the current timestamp:
 
-$$
-\Delta \hat{x}_{t,\text{ae-in}}^{(g)} = D^{(g)}(h_{t,\text{prior}}^{(g)}, c_t).
-$$
+$$ \Delta \hat{x}_{t,\mathrm{aein}}^{(g)} = D^{(g)}(h_{t,\mathrm{prior}}^{(g)}, c_t). $$
 
 The grouped outputs are reassembled into a full-field prediction:
 
-$$
-\Delta \hat{x}_{t,\text{ae-in}} = \text{Reassemble}\Big(\{\Delta \hat{x}_{t,\text{ae-in}}^{(g)}\}_{g=1}^G\Big).
-$$
+$$ \Delta \hat{x}_{t,\mathrm{aein}} = \mathrm{Reassemble}\Big(\{\Delta \hat{x}_{t,\mathrm{aein}}^{(g)}\}_{g=1}^G\Big). $$
 
 If `vae_type` enables residual channels, `_apply_residual(...)` adds the decoded delta only on the configured indices using the previous frame as reference:
 
-$$
-\hat{x}_{t,\text{ae-in}} = \mathcal{R}(\Delta \hat{x}_{t,\text{ae-in}}, x_{t-1}).
-$$
+$$ \hat{x}_{t,\mathrm{aein}} = \mathcal{R}(\Delta \hat{x}_{t,\mathrm{aein}}, x_{t-1}). $$
 
 This branch reconstructs the last frame in the input window, `x_t`.
 
@@ -111,15 +87,11 @@ This branch reconstructs the last frame in the input window, `x_t`.
 
 Each posterior latent is decoded at the target timestamp:
 
-$$
-\Delta \hat{x}_{t+1,\text{ae-tgt}}^{(g)} = D^{(g)}(h_{t+1,\text{post}}^{(g)}, c_{t+1}).
-$$
+$$ \Delta \hat{x}_{t+1,\mathrm{aetgt}}^{(g)} = D^{(g)}(h_{t+1,\mathrm{post}}^{(g)}, c_{t+1}). $$
 
 After reassembly and optional residual restoration:
 
-$$
-\hat{x}_{t+1,\text{ae-tgt}} = \mathcal{R}(\Delta \hat{x}_{t+1,\text{ae-tgt}}, x_t),
-$$
+$$ \hat{x}_{t+1,\mathrm{aetgt}} = \mathcal{R}(\Delta \hat{x}_{t+1,\mathrm{aetgt}}, x_t). $$
 
 which is supervised against the ground-truth next frame `x_{t+1}`.
 
@@ -127,15 +99,11 @@ which is supervised against the ground-truth next frame `x_{t+1}`.
 
 The coupled latent is decoded for each group:
 
-$$
-\Delta \hat{x}_{t+1,\text{pred}}^{(g)} = D^{(g)}(z_{t+1}^{(g)}, c_{t+1}),
-$$
+$$ \Delta \hat{x}_{t+1,\mathrm{pred}}^{(g)} = D^{(g)}(z_{t+1}^{(g)}, c_{t+1}). $$
 
 then reassembled and optionally converted to residual form:
 
-$$
-\hat{x}_{t+1,\text{pred}} = \mathcal{R}\Big(\text{Reassemble}(\{\Delta \hat{x}_{t+1,\text{pred}}^{(g)}\}_{g=1}^G), x_t\Big).
-$$
+$$ \hat{x}_{t+1,\mathrm{pred}} = \mathcal{R}\Big(\mathrm{Reassemble}(\{\Delta \hat{x}_{t+1,\mathrm{pred}}^{(g)}\}_{g=1}^G), x_t\Big). $$
 
 This is the main autoregressive prediction branch. After loss computation, the model rolls the predicted frame into `input`, while the true target frame is rolled into `true_input` for the next teacher-forced posterior window.
 
@@ -147,9 +115,7 @@ The implementation accumulates five main losses:
 
 Code key: `loss_pred_rec`
 
-$$
-\mathcal{L}_{\text{pred}} = \sum_{k \in \mathcal{S}} w_k \cdot \rho\left(\hat{x}_{t+k,\text{pred}}, x_{t+k}\right)
-$$
+$$ \mathcal{L}_{\mathrm{pred}} = \sum_{k \in \mathcal{S}} w_k \cdot \rho\left(\hat{x}_{t+k,\mathrm{pred}}, x_{t+k}\right) $$
 
 where `\rho` is `charbonnier_loss(...)`. If `channel_weights` is registered, the loss uses `self.channel_weights * self.weight`; otherwise it uses `self.weight`.
 
@@ -157,9 +123,7 @@ where `\rho` is `charbonnier_loss(...)`. If `channel_weights` is registered, the
 
 Code key: `loss_vae_input`
 
-$$
-\mathcal{L}_{\text{ae-in}} = \sum_{k \in \mathcal{S}} w_k \cdot \rho\left(\hat{x}_{t+k-1,\text{ae-in}}, x_{t+k-1}\right).
-$$
+$$ \mathcal{L}_{\mathrm{aein}} = \sum_{k \in \mathcal{S}} w_k \cdot \rho\left(\hat{x}_{t+k-1,\mathrm{aein}}, x_{t+k-1}\right). $$
 
 This branch regularizes the prior encoder-decoder path on the current input window.
 
@@ -167,9 +131,7 @@ This branch regularizes the prior encoder-decoder path on the current input wind
 
 Code key: `loss_vae_target`
 
-$$
-\mathcal{L}_{\text{ae-tgt}} = \sum_{k \in \mathcal{S}} w_k \cdot \rho\left(\hat{x}_{t+k,\text{ae-tgt}}, x_{t+k}\right).
-$$
+$$ \mathcal{L}_{\mathrm{aetgt}} = \sum_{k \in \mathcal{S}} w_k \cdot \rho\left(\hat{x}_{t+k,\mathrm{aetgt}}, x_{t+k}\right). $$
 
 This branch anchors the posterior encoder-decoder path on the teacher-forced target window.
 
@@ -177,15 +139,11 @@ This branch anchors the posterior encoder-decoder path on the teacher-forced tar
 
 Code key: `loss_latent_reg`
 
-$$
-\mathcal{L}_{\text{latent-reg}} = \sum_{k \in \mathcal{S}} w_k \sum_{g=1}^{G} \left( \lVert h_{k,\text{prior}}^{(g)} \rVert_2^2 + \lVert h_{k,\text{post}}^{(g)} \rVert_2^2 \right).
-$$
+$$ \mathcal{L}_{\mathrm{latentreg}} = \sum_{k \in \mathcal{S}} w_k \sum_{g=1}^{G} \left( |h_{k,\mathrm{prior}}^{(g)}|_2^2 + |h_{k,\mathrm{post}}^{(g)}|_2^2 \right). $$
 
 In code this is:
 
-$$
-\text{mean}(h_{\text{prior}}^2) + \text{mean}(h_{\text{post}}^2).
-$$
+$$ \mathrm{mean}(h_{\mathrm{prior}}^2) + \mathrm{mean}(h_{\mathrm{post}}^2). $$
 
 This term stabilizes latent magnitude and replaces the role that a KL penalty would play in a stochastic VAE.
 
@@ -193,15 +151,11 @@ This term stabilizes latent magnitude and replaces the role that a KL penalty wo
 
 Code key: `loss_latent_pred_rec`
 
-$$
-\mathcal{L}_{\text{latent-match}} = \sum_{k \in \mathcal{S}} w_k \sum_{g=1}^{G} \rho\left(z_{t+k}^{(g)}, \operatorname{sg}\left(h_{t+k,\text{post}}^{(g)}\right)\right),
-$$
+$$ \mathcal{L}_{\mathrm{latentmatch}} = \sum_{k \in \mathcal{S}} w_k \sum_{g=1}^{G} \rho\left(z_{t+k}^{(g)}, \mathrm{sg}\left(h_{t+k,\mathrm{post}}^{(g)}\right)\right). $$
 
 where `sg(.)` is stop-gradient, matching the code path:
 
-$$
-\texttt{charbonnier\_loss(Z\_coupled[g], h\_posterior[g].detach())}.
-$$
+`charbonnier_loss(Z_coupled[g], h_posterior[g].detach())`
 
 This directly trains the latent mixer to land on the posterior latent state of the next step.
 
@@ -209,17 +163,7 @@ This directly trains the latent mixer to land on the posterior latent state of t
 
 The returned loss dictionary is:
 
-$$
-\begin{aligned}
-\mathcal{L}_{\text{total}} =
-&\ \lambda_{\text{pred}} \mathcal{L}_{\text{pred}}
-+ \lambda_{\text{ae-in}} \mathcal{L}_{\text{ae-in}}
-+ \lambda_{\text{ae-tgt}} \mathcal{L}_{\text{ae-tgt}} \\
-&+ \lambda_{\text{latent-reg}} \mathcal{L}_{\text{latent-reg}}
-+ \lambda_{\text{latent-match}} \mathcal{L}_{\text{latent-match}}
-+ \mathcal{L}_{\text{PINN}} \text{ (optional)}.
-\end{aligned}
-$$
+$$ \mathcal{L}_{\mathrm{total}} = \lambda_{\mathrm{pred}} \mathcal{L}_{\mathrm{pred}} + \lambda_{\mathrm{aein}} \mathcal{L}_{\mathrm{aein}} + \lambda_{\mathrm{aetgt}} \mathcal{L}_{\mathrm{aetgt}} + \lambda_{\mathrm{latentreg}} \mathcal{L}_{\mathrm{latentreg}} + \lambda_{\mathrm{latentmatch}} \mathcal{L}_{\mathrm{latentmatch}} + \mathcal{L}_{\mathrm{PINN}}. $$
 
 The scalar coefficients come from:
 
@@ -253,9 +197,7 @@ If `pinn_enable=True`, `compute_pinn_losses(...)` adds extra entries such as `pi
 
 At rollout index `k`, the base weight is:
 
-$$
-w_k \propto \alpha^k.
-$$
+$$ w_k \propto \alpha^k. $$
 
 `build_loss_steps_and_weights(future_step, alpha, rollout_max)` then:
 
@@ -278,13 +220,7 @@ Supported modes:
 
 Formally, for channel index `c`:
 
-$$
-\hat{x}_c =
-\begin{cases}
-\Delta \hat{x}_c + x^{\text{ref}}_c, & c \in \mathcal{I}_{\text{res}} \\
-\Delta \hat{x}_c, & c \notin \mathcal{I}_{\text{res}}
-\end{cases}
-$$
+$$ \hat{x}_c = \Delta \hat{x}_c + x^{\mathrm{ref}}_c \quad \text{for } c \in \mathcal{I}_{\mathrm{res}}, \qquad \hat{x}_c = \Delta \hat{x}_c \quad \text{for } c \notin \mathcal{I}_{\mathrm{res}}. $$
 
 This lets slow-varying or anomaly-like variables be predicted in residual form without forcing the whole state vector into a residual parameterization.
 

@@ -325,8 +325,7 @@ class Block(nn.Module):
             elif "rotary" in attn_type:
                 max_seq_len = None
                 if input_size is not None and window_size is not None:
-                    # Windowed attention applies RoPE within each local window.
-                    max_seq_len = win_h * win_w
+                    max_seq_len = input_size[0] * input_size[1] if isinstance(input_size, (tuple, list)) else input_size * input_size
                 self.mixer = RotaryAttention(
                     dim=dim,
                     n_heads=num_heads,
