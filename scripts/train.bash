@@ -118,8 +118,9 @@ function setup_environment() {
             export BASE_CONFIG="${CONFIG_FILE_TMP}"
         fi
     else
-        echo "Error: Unsupported model type in config file name: ${config_file_name}"
-        exit 1
+        echo "Error: Unknown dataset type for config file name: ${config_file_name}"
+        export DATA_DIR=""
+        export BASE_CONFIG="${CONFIG_FILE_TMP}"
     fi
 
     # Set logging level based on verbose mode

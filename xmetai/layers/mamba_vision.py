@@ -92,7 +92,7 @@ class MambaVisionMixer(nn.Module):
         dt_init="random",
         dt_scale=1.0,
         dt_init_floor=1e-4,
-        conv_bias=True,
+        conv_bias=False,
         bias=False,
         use_fast_path=True,
         layer_idx=None,
@@ -139,7 +139,7 @@ class MambaVisionMixer(nn.Module):
         self.conv1d_x = nn.Conv1d(
             in_channels=self.d_inner // 2,
             out_channels=self.d_inner // 2,
-            bias=conv_bias // 2,
+            bias=conv_bias,
             kernel_size=d_conv,
             groups=self.d_inner // 2,
             **factory_kwargs,
@@ -147,7 +147,7 @@ class MambaVisionMixer(nn.Module):
         self.conv1d_z = nn.Conv1d(
             in_channels=self.d_inner // 2,
             out_channels=self.d_inner // 2,
-            bias=conv_bias // 2,
+            bias=conv_bias,
             kernel_size=d_conv,
             groups=self.d_inner // 2,
             **factory_kwargs,
@@ -325,8 +325,8 @@ class Block(nn.Module):
             elif "rotary" in attn_type:
                 max_seq_len = None
                 if input_size is not None and window_size is not None:
-                    # For windowed attention, max_seq_len is the window size
-                    max_seq_len = input_size[0] * input_size[1] if isinstance(input_size, (tuple, list)) else input_size * input_size
+                    # Windowed attention applies RoPE within each local window.
+                    max_seq_len = win_h * win_w
                 self.mixer = RotaryAttention(
                     dim=dim,
                     n_heads=num_heads,
@@ -489,7 +489,7 @@ class MambaVisionLayer(nn.Module):
         attn_drop=0.0,
         drop_path=0.0,
         layer_scale=None,
-        transformer_blocks=[],
+        transformer_blocks=None,
         with_embedding=False,
         attn_type="standard",
         window_size=None,
@@ -518,6 +518,7 @@ class MambaVisionLayer(nn.Module):
             attn_type: attention type ('standard' or 'rotary').
         """
         super().__init__()
+        transformer_blocks = [] if transformer_blocks is None else transformer_blocks
         self.with_embedding = with_embedding
         if self.with_embedding:
             self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim, 6 * dim, bias=True))
@@ -553,7 +554,6 @@ class MambaVisionLayer(nn.Module):
 
     def _init_weights(self):
         for name, param in self.named_parameters():
-            # Respect parameters that shouldn't be reinitialized
             if getattr(param, "_no_reinit", False) or getattr(param, "_no_weight_decay", False):
                 continue
             if "norm" in name.lower() or "ln" in name.lower() or "layernorm" in name.lower():

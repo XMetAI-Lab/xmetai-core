@@ -1,291 +1,313 @@
-# 1. 基本符号与数据结构
+# GroupVAE
 
-## 1.1 输入与分组
+`GroupVAEPredictor` is implemented in [xmetai/models/group_vae.py](/Users/douzsh/Desktop/workspace/xionganyuan/cma/xmetai-core/xmetai/models/group_vae.py). Despite the name, the current training path is a grouped deterministic latent autoencoding pipeline with a prior branch, a posterior branch, and a latent mixer. It does not use a KL term or stochastic reparameterization in `forward()`.
 
-设时刻 ( t ) 的完整状态为：
+## Model Architecture
 
-$$
-x_t \in \mathbb{R}^{C \times H \times W}
-$$
+![GroupVAE architecture](assets/group_vae_arch.png)
 
-按照变量物理属性划分为 ( G ) 个 group：
+The model splits the full atmospheric state into pressure-level groups, encodes each group independently, couples the group latents with a global latent mixer, and decodes back to the full field. Training supervises three reconstruction paths plus two latent-space regularizers.
 
-$$
-x_t = \\{ x_t^{(g)} \in \mathbb{R}^{C_g \times H \times W} | g = 1, \dots, G\\}
-$$
+## 1. Grouped State Representation
 
-每个 group 内进一步划分为两类变量：
+For a normalized input window with `in_frames = T_in`, the model takes:
 
 $$
-x_t^{(g)} = \big(x_t^{(g,a)}, x_t^{(g,r)}\big)
+X_t = [x_{t-T_{in}+1}, \dots, x_t] \in \mathbb{R}^{B \times T_{in} \times C \times H \times W}
 $$
 
-其中：
-
-* (a)：absolute variables（绝对量主导）
-* (r)：residual variables（扰动主导）
-
----
-
-## 1.2 显式定义三个核心算子
-
-为避免符号歧义，定义：
-
-### Encoder（逐 group）
-
+and a target rollout:
 
 $$
-\mathcal{E}^{(g)}: \mathbb{R}^{C_g \times H \times W} \rightarrow \mathbb{R}^{D_g \times H' \times W'}
+Y_t = [x_{t+1}, \dots, x_{t+K}] \in \mathbb{R}^{B \times K \times C \times H \times W}.
 $$
 
-### Decoder（逐 group，条件解码）
-
-
-$$
-\mathcal{D}^{(g)}: \mathbb{R}^{D_g \times H' \times W'}
-\rightarrow \mathbb{R}^{C_g \times H \times W}
-$$
-
-### Latent Mixing + Predictor（全局）
-
+`build_level_channel_map(...)` partitions the channel dimension into `G` groups:
 
 $$
-\mathcal{M}: \mathbb{R}^{D \times H' \times W'} \rightarrow \mathbb{R}^{D \times H' \times W'}
+x_t = \{x_t^{(g)}\}_{g=1}^{G}, \qquad x_t^{(g)} \in \mathbb{R}^{C_g \times H \times W}, \qquad \sum_{g=1}^G C_g = C.
 $$
 
-其中：
+In the default setup:
+
+- Group 0: `1000 hPa + surface-fast variables`
+- Group 1: `925, 850, 700, 600, 500, 400 hPa`
+- Group 2: `300, 250, 200, 150, 100, 50 hPa`
+- Optional extra group: slow surface variables such as `sst` when `split_surface=True`
+
+After grouped decoding, channels are concatenated and mapped back to the original full-field order by `group_reassemble_map`.
+
+## 2. Encoders, Latent Mixer, and Decoders
+
+For each group `g`, the model builds three modules:
+
+- `vae_encoder_group[g]`: prior encoder `E_p^{(g)}`
+- `posterior_encoder_group[g]`: posterior encoder `E_q^{(g)}`
+- `decoder_group[g]`: decoder `D^{(g)}`
+
+Each encoder/decoder is a `UTransformer`-based module. The cross-group coupling is handled by:
 
 $$
-D = \sum_{g=1}^{G} D_g
+\mathcal{M}: \{h^{(g)}\}_{g=1}^{G} \rightarrow \{\tilde{h}^{(g)}\}_{g=1}^{G},
 $$
 
----
+implemented by `LatentMixerPredictor`.
 
-# 2. 确定性 Autoencoder（逐 group）
-
-## 2.1 Encoder（确定性隐变量）
-
+At one rollout step, the code constructs:
 
 $$
-h_t^{(g)} = \mathcal{E}^{(g)}(x_t^{(g)})
+h_{t,\text{prior}}^{(g)} = E_p^{(g)}(X_t^{(g)})
 $$
 
 $$
-h_{t+1}^{(g)} = \mathcal{E}^{(g)}(x_{t+1}^{(g)})
+h_{t+1,\text{post}}^{(g)} = E_q^{(g)}(\tilde{X}_{t+1}^{(g)})
 $$
 
----
-
-## 2.2 条件 Decoder 与变量类型算子
-
-先定义 decoder 的原始输出：
-
+where
 
 $$
-y^{(g)} = \mathcal{D}^{(g)}(h^{(g)})
+\tilde{X}_{t+1} = [x_{t-T_{in}+2}, \dots, x_t, x_{t+1}]
 $$
 
-将输出拆分：
+is the teacher-forced window `new_target = cat(true_input, target)[:, -in_frames:]`.
+
+The time-conditioning signal used by both the latent mixer and the decoders is the timestamp tuple built in code by `get_timestamp(...)`:
 
 $$
-y^{(g)} = \big(y^{(g,a)}, y^{(g,r)}\big)
+c_t = (\mathrm{step}_t, \mathrm{hour}_t, \mathrm{doy}_t).
 $$
 
----
-
-### 定义变量类型融合算子
-
-定义融合算子：
+The prior latents are then coupled with the target timestamp condition:
 
 $$
-\mathcal{F}^{(g)}(y^{(g)}, x_t^{(g)}) \rightarrow \hat{x}_{t+1}^{(g)}
+z_{t+1}^{(g)} = \mathcal{M}\big(\{h_{t,\text{prior}}^{(g)}\}_{g=1}^G, c_{t+1}\big)_g.
 $$
 
-其具体形式为：
+## 3. Three Decoding Paths Used in Training
 
+### 3.1 Input-window autoencoding branch
 
-$$
-\hat{x}_{t+1}^{(g,a)} = y^{(g,a)}
-$$
-
+Each prior latent is decoded at the current timestamp:
 
 $$
-\hat{x}_{t+1}^{(g,r)} = x_t^{(g,r)} + y^{(g,r)}
+\Delta \hat{x}_{t,\text{ae-in}}^{(g)} = D^{(g)}(h_{t,\text{prior}}^{(g)}, c_t).
 $$
 
-最终：
+The grouped outputs are reassembled into a full-field prediction:
 
 $$
-\hat{x}_{t+1}^{(g)} =
-\text{concat}\big(\hat{x}_{t+1}^{(g,a)}, \hat{x}_{t+1}^{(g,r)}\big)
+\Delta \hat{x}_{t,\text{ae-in}} = \text{Reassemble}\Big(\{\Delta \hat{x}_{t,\text{ae-in}}^{(g)}\}_{g=1}^G\Big).
 $$
 
----
-
-# 3. Latent Mixing 与时序预测
-
-## 3.1 全局隐变量拼接
-
+If `vae_type` enables residual channels, `_apply_residual(...)` adds the decoded delta only on the configured indices using the previous frame as reference:
 
 $$
-h_t = \text{concat}_g\big(h_t^{(g)}\big)
+\hat{x}_{t,\text{ae-in}} = \mathcal{R}(\Delta \hat{x}_{t,\text{ae-in}}, x_{t-1}).
 $$
 
----
+This branch reconstructs the last frame in the input window, `x_t`.
 
-## 3.2 时空演变预测器（Mixing Predictor）
+### 3.2 Target-window autoencoding branch
 
-显式定义：
-
-
-$$
-\hat{h}_{t+1} = \mathcal{M}(h_t)
-$$
-
-再拆回各 group：
-
+Each posterior latent is decoded at the target timestamp:
 
 $$
-\hat{h}_{t+1}^{(g)} = \text{split}_g(\hat{h}_{t+1})
+\Delta \hat{x}_{t+1,\text{ae-tgt}}^{(g)} = D^{(g)}(h_{t+1,\text{post}}^{(g)}, c_{t+1}).
 $$
 
----
-
-# 4. 三条训练路径（确定性）
-
-## 4.1 输入时刻重建（AE-input）
-
+After reassembly and optional residual restoration:
 
 $$
-\hat{x}_t^{(g)} =
-\mathcal{F}^{(g)}\Big(
-\mathcal{D}^{(g)}(h_t^{(g)}),x_{t-1}^{(g)}
-\Big)
+\hat{x}_{t+1,\text{ae-tgt}} = \mathcal{R}(\Delta \hat{x}_{t+1,\text{ae-tgt}}, x_t),
 $$
 
-损失：
+which is supervised against the ground-truth next frame `x_{t+1}`.
+
+### 3.3 Forecast branch
+
+The coupled latent is decoded for each group:
 
 $$
-\mathcal{L}_{ae}^{input} =
-\sum_g \left| \hat{x}_t^{(g)} - x_t^{(g)} \right|_1
+\Delta \hat{x}_{t+1,\text{pred}}^{(g)} = D^{(g)}(z_{t+1}^{(g)}, c_{t+1}),
 $$
 
----
-
-## 4.2 目标时刻重建（AE-target）
-
+then reassembled and optionally converted to residual form:
 
 $$
-\hat{x}_{t+1}^{(g)} =
-\mathcal{F}^{(g)}\Big(
-\mathcal{D}^{(g)}(h_{t+1}^{(g)}), x_{t}^{(g)}
-\Big)
+\hat{x}_{t+1,\text{pred}} = \mathcal{R}\Big(\text{Reassemble}(\{\Delta \hat{x}_{t+1,\text{pred}}^{(g)}\}_{g=1}^G), x_t\Big).
 $$
 
-损失：
+This is the main autoregressive prediction branch. After loss computation, the model rolls the predicted frame into `input`, while the true target frame is rolled into `true_input` for the next teacher-forced posterior window.
+
+## 4. Losses in `forward()`
+
+The implementation accumulates five main losses:
+
+### 4.1 Forecast reconstruction loss
+
+Code key: `loss_pred_rec`
 
 $$
-\mathcal{L}_{ae}^{target} =
-\sum_g \left| \hat{x}_{t+1}^{(g)} - x_{t+1}^{(g)} \right|_1
+\mathcal{L}_{\text{pred}} = \sum_{k \in \mathcal{S}} w_k \cdot \rho\left(\hat{x}_{t+k,\text{pred}}, x_{t+k}\right)
 $$
 
----
+where `\rho` is `charbonnier_loss(...)`. If `channel_weights` is registered, the loss uses `self.channel_weights * self.weight`; otherwise it uses `self.weight`.
 
-## 4.3 预测路径（核心）
+### 4.2 Input autoencoding loss
 
-
-$$
-\hat{x}_{t+1}^{pred(g)} =
-\mathcal{F}^{(g)}\Big(
-\mathcal{D}^{(g)}(\hat{h}_{t+1}^{(g)}),
-x_t^{(g)}
-\Big)
-$$
-
-损失：
+Code key: `loss_vae_input`
 
 $$
-\mathcal{L}_{pred} =
-\sum_g \left| \hat{x}_{t+1}^{pred(g)} - x_{t+1}^{(g)} \right|_1
+\mathcal{L}_{\text{ae-in}} = \sum_{k \in \mathcal{S}} w_k \cdot \rho\left(\hat{x}_{t+k-1,\text{ae-in}}, x_{t+k-1}\right).
 $$
 
----
+This branch regularizes the prior encoder-decoder path on the current input window.
 
-# 5. 隐空间一致性约束
+### 4.3 Target autoencoding loss
 
-
-$$
-\mathcal{L}_{latent} =
-\sum_g \left| \hat{h}_{t+1}^{(g)} - h_{t+1}^{(g)} \right|_1
-$$
-
-说明：
-
-* 等价于对 $\mathcal{M}$ 的监督学习约束
-* 在确定性框架中替代 VAE 的 KL 项
-
----
-
-# 6. 总体损失函数
-
+Code key: `loss_vae_target`
 
 $$
-\mathcal{L} =
-\lambda_1 \mathcal{L}_{pred} + \lambda_2 \mathcal{L}_{ae}^{input} +
-\lambda_3 \mathcal{L}_{ae}^{target} + \lambda_4 \mathcal{L}_{latent}
+\mathcal{L}_{\text{ae-tgt}} = \sum_{k \in \mathcal{S}} w_k \cdot \rho\left(\hat{x}_{t+k,\text{ae-tgt}}, x_{t+k}\right).
 $$
 
----
+This branch anchors the posterior encoder-decoder path on the teacher-forced target window.
 
-# 7. 前向计算流程（统一表达）
+### 4.4 Latent norm regularization
 
-整体模型可写为组合算子：
-
-
-$$
-\hat{x}_{t+1} =
-\mathcal{F} \circ \mathcal{D} \circ \mathcal{M} \circ \mathcal{E}(x_t)
-$$
-
-展开为：
-
+Code key: `loss_latent_reg`
 
 $$
-x_t
-\xrightarrow{\mathcal{E}}
-h_t
-\xrightarrow{\mathcal{M}}
-\hat{h}_{t+1}
-\xrightarrow{\mathcal{D}}
-y
-\xrightarrow{\mathcal{F}}
-\hat{x}_{t+1}
+\mathcal{L}_{\text{latent-reg}} = \sum_{k \in \mathcal{S}} w_k \sum_{g=1}^{G} \left( \lVert h_{k,\text{prior}}^{(g)} \rVert_2^2 + \lVert h_{k,\text{post}}^{(g)} \rVert_2^2 \right).
 $$
 
----
-
-# 8. 变量类型判定（统计准则）
-
-定义判定指标：
-
+In code this is:
 
 $$
-R = \frac{\mathrm{std}(x_{t+1} - x_t)}{\mathrm{std}(x_t)}, \quad
-\rho = \mathrm{corr}(x_t, x_{t+1})
+\text{mean}(h_{\text{prior}}^2) + \text{mean}(h_{\text{post}}^2).
 $$
 
-判定规则：
+This term stabilizes latent magnitude and replaces the role that a KL penalty would play in a stochastic VAE.
 
+### 4.5 Latent prediction consistency loss
 
-$$
-R < \tau_1 ;\land; \rho > \tau_2
-\Rightarrow \text{residual variable}
-$$
-
-否则为 absolute variable。
-
-典型取值：
+Code key: `loss_latent_pred_rec`
 
 $$
-\tau_1 = 0.2, \quad \tau_2 = 0.98
+\mathcal{L}_{\text{latent-match}} = \sum_{k \in \mathcal{S}} w_k \sum_{g=1}^{G} \rho\left(z_{t+k}^{(g)}, \operatorname{sg}\left(h_{t+k,\text{post}}^{(g)}\right)\right),
 $$
+
+where `sg(.)` is stop-gradient, matching the code path:
+
+$$
+\texttt{charbonnier\_loss(Z\_coupled[g], h\_posterior[g].detach())}.
+$$
+
+This directly trains the latent mixer to land on the posterior latent state of the next step.
+
+## 5. Final Weighted Objective
+
+The returned loss dictionary is:
+
+$$
+\begin{aligned}
+\mathcal{L}_{\text{total}} =
+&\ \lambda_{\text{pred}} \mathcal{L}_{\text{pred}}
++ \lambda_{\text{ae-in}} \mathcal{L}_{\text{ae-in}}
++ \lambda_{\text{ae-tgt}} \mathcal{L}_{\text{ae-tgt}} \\
+&+ \lambda_{\text{latent-reg}} \mathcal{L}_{\text{latent-reg}}
++ \lambda_{\text{latent-match}} \mathcal{L}_{\text{latent-match}}
++ \mathcal{L}_{\text{PINN}} \text{ (optional)}.
+\end{aligned}
+$$
+
+The scalar coefficients come from:
+
+```python
+loss_weight = (
+    vae_input,
+    vae_target,
+    pred_rec,
+    latent_reg,
+    latent_pred,
+)
+```
+
+with the current default:
+
+```python
+(0.2, 0.2, 1.0, 0.01, 0.3)
+```
+
+So the actual returned keys are:
+
+- `loss_pred_rec = loss_weight[2] * loss_pred_rec`
+- `loss_vae_input = loss_weight[0] * loss_vae_input`
+- `loss_vae_target = loss_weight[1] * loss_vae_target`
+- `loss_latent_reg = loss_weight[3] * loss_latent_reg`
+- `loss_latent_pred_rec = loss_weight[4] * loss_latent_pred_rec`
+
+If `pinn_enable=True`, `compute_pinn_losses(...)` adds extra entries such as `pinn_*`, averaged over `future_step`.
+
+## 6. Rollout Weighting and Loss-Step Subsampling
+
+At rollout index `k`, the base weight is:
+
+$$
+w_k \propto \alpha^k.
+$$
+
+`build_loss_steps_and_weights(future_step, alpha, rollout_max)` then:
+
+- keeps all rollout steps when `future_step <= rollout_max` or `rollout_max <= 0`
+- otherwise keeps a deterministic subset of steps
+- always includes the first and last step when `rollout_max > 1`
+- normalizes the retained weights so `\sum_k w_k = 1`
+
+This means long rollouts can be trained with sparse supervision while preserving a consistent weighting schedule.
+
+## 7. Residual Reconstruction Mode
+
+The helper `_apply_residual(pred, ref)` only adds residual corrections on `self.residual_vae_indices`.
+
+Supported modes:
+
+- `vae_type="absolute"`: no residual restoration, decoder outputs absolute values
+- `vae_type="residual"`: all channels are residual channels
+- `vae_type="index"`: only a selected subset is residual, either user-specified or derived from `RESIDUAL_VARS_24H` / `RESIDUAL_VARS_6H`
+
+Formally, for channel index `c`:
+
+$$
+\hat{x}_c =
+\begin{cases}
+\Delta \hat{x}_c + x^{\text{ref}}_c, & c \in \mathcal{I}_{\text{res}} \\
+\Delta \hat{x}_c, & c \notin \mathcal{I}_{\text{res}}
+\end{cases}
+$$
+
+This lets slow-varying or anomaly-like variables be predicted in residual form without forcing the whole state vector into a residual parameterization.
+
+## 8. Inference Path
+
+`test_cascade(...)` uses only the prior path:
+
+1. Slice current input window by group
+2. Encode with `vae_encoder_group`
+3. Mix latents with `latent_mixer`
+4. Decode per group
+5. Reassemble to the full field
+6. Apply residual restoration if enabled
+7. Roll the prediction back into the autoregressive input buffer
+
+The posterior encoder and the two autoencoding losses are training-only components.
+
+## 9. Practical Reading of the Design
+
+The current `GroupVAEPredictor` can be read as a grouped latent world model with three complementary constraints:
+
+- field-space supervision on the actual forecast
+- field-space supervision on prior/posterior autoencoding quality
+- latent-space supervision that aligns the mixed prior latent with the next-step posterior latent
+
+That combination is the core training pipeline used by the implementation today.

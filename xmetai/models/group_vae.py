@@ -37,7 +37,7 @@ from xmetai.models.utransformer import UTransformer
 __all__ = ["GroupVAEPredictor", "GroupEncoder", "GroupDecoder"]
 
 LEVELS_13 = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
-PL_VARS = ["z", "t", "u", "v", "q"]
+PL_VARS = ["z", "t", "u", "v", "q", "gh", "wz", "r"]
 NUM_PL_VARS = len(PL_VARS)
 NUM_LEVELS = len(LEVELS_13)
 
@@ -84,6 +84,7 @@ def build_level_channel_map(
     in_names: list[str],
     level_groups: list[list[int]],
     split_surface: bool = False,
+    plevels: list[int] = LEVELS_13,
 ) -> tuple[list[list[int]], list[int]]:
     """Build per-level and per-group channel index mappings.
 
@@ -91,19 +92,21 @@ def build_level_channel_map(
         in_names: list of input variable names
         level_groups: grouping of level indices, e.g. [[0], [1..6], [7..12]]
         split_surface: whether to split stable surface variables into a separate group
+        plevels: list of pressure levels available in the data
 
     Returns:
         group_slice_indices: list of channel indices for each group (for slicing input)
         group_reassemble_map: permutation indices mapping each original channel index
                               to its position in the concatenated grouped-channel order.
     """
+    num_levels = len(plevels)
     # Step 1: Build per-level channel indices
-    level_indices: list[list[int]] = [[] for _ in range(NUM_LEVELS)]
+    level_indices: list[list[int]] = [[] for _ in range(num_levels)]
     surface_fast_indices: list[int] = []
     surface_slow_indices: list[int] = []
 
     pl_set = set()
-    for li, level in enumerate(LEVELS_13):
+    for li, level in enumerate(plevels):
         for var in PL_VARS:
             name = f"{var}{level}"
             if name in in_names:
@@ -358,6 +361,7 @@ class GroupVAEPredictor(BasePredictor):
         ffn_type: str = "gegluffn",
         level_groups: list[list[int]] | None = None,
         split_surface: bool = False,
+        plevels: list[int] | None = None,
         vt_attn_type: str = "std",
         vt_window_size: int | None = None,
         vt_num_heads: int = 4,
@@ -383,7 +387,10 @@ class GroupVAEPredictor(BasePredictor):
 
         if level_groups is None:
             level_groups = DEFAULT_LEVEL_GROUPS
-        self.group_slice_indices, self.group_reassemble_map = build_level_channel_map(list(self.in_names), level_groups, split_surface)
+        if plevels is None:
+            plevels = LEVELS_13
+
+        self.group_slice_indices, self.group_reassemble_map = build_level_channel_map(list(self.in_names), level_groups, split_surface, plevels=plevels)
         self.num_groups = len(self.group_slice_indices)
 
         if isinstance(embed_dim, int):
