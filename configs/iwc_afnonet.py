@@ -1,7 +1,7 @@
 """
 Author: Zhaohan && hanzhao1228@gmail.com
 Date: 2026-04-21 10:28:00
-Description: subseasonal to seasonal deterministic model with FourcastNet.
+Description: Iwc deterministic model with FourcastNet.
 Copyright (c) 2025 by XMetAI/zhaohan, All Rights Reserved.
 """
 

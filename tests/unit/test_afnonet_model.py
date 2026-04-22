@@ -7,7 +7,7 @@ from xmetai.models.afnonet import AFNONet
 
 def test_afnonet_forward_loss():
     torch.manual_seed(0)
-    bsz, t_in, chans, height, width = 2, 1, 3, 120, 240
+    bsz, t_in, chans, height, width = 2, 2, 3, 120, 240
     inputs = torch.randn(bsz, t_in, chans, height, width)
     targets = torch.randn(bsz, 1, chans, height, width)
     times = torch.tensor([946684800000000000, 946684800000000000])
@@ -48,7 +48,7 @@ def test_afnonet_forward_loss():
 
 
 def test_afnonet_test_cascade():
-    bsz, t_in, chans, height, width = 1, 1, 3, 120, 240
+    bsz, t_in, chans, height, width = 1, 2, 3, 120, 240
     inputs = torch.randn(bsz, t_in, chans, height, width)
     times = torch.tensor([946684800000000000])
 
