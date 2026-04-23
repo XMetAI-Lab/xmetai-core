@@ -552,6 +552,10 @@ class GroupVAEPredictor(BasePredictor):
                 kl_weight = max_weight * (1.0 - (cycle_pos - 0.5) / 0.5)
         else:
             raise ValueError(f"Unknown KL schedule mode: {mode}. Use 'cosine' or 'cyclical'.")
+
+        if current_iter % cycle_iters == 0:
+            self.logger.info(f"KL/Reg loss boundary: iter={current_iter}, mode={mode}, weight={float(kl_weight):.4f}")
+
         return float(kl_weight)
 
     def forward(self, data):
