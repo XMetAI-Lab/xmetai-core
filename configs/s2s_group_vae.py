@@ -42,6 +42,8 @@ from xmetai import LazyCall as L
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
 
+if os.path.exists(f"{output_dir}/model_best.pth"):
+    train.init_checkpoint = f"{output_dir}/model_best.pth"
 loss_weight = (0.2, 0.2, 1.0, 0.01, 0.3)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
 if load_from_pretrain:
     # freeze upper-level VAE to preserve pretrained dynamics, only fine-tune lower-level VAE and main predictor.
@@ -81,7 +83,7 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     decoder_depths=depths[-2:-1],
     num_heads=16,
     drop_mcmc=0.05,
-    attn_type="rotary_flash",
+    attn_type="v2",
     mask_type="h",
     head_type="2fc",
     norm_type="adaln",
@@ -93,9 +95,9 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     # Vertical transformer settings for VAE latent prediction
     vt_num_heads=24,
     vt_num_layers=depths[-1],
-    vt_layer_type="mamba_met",
-    vt_window_size=None,
-    vt_attn_type="std",
+    vt_layer_type="mamba3_met_embed",
+    vt_window_size=10,
+    vt_attn_type="rotary_flash",
     vt_use_proj=True,
     # Overall model settings
     alpha=0.9,

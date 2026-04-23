@@ -20,6 +20,7 @@ Channel layout (s2s 76-channel):
 Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
 
+import math
 from typing import Any
 
 import numpy as np
@@ -33,6 +34,7 @@ from xmetai.layers import AdaptiveLN, EarthConvTranspose2d
 from xmetai.loss import charbonnier_loss
 from xmetai.models.base_predictor import BasePredictor
 from xmetai.models.utransformer import UTransformer
+from xmetai.utils.events import get_event_storage
 
 __all__ = ["GroupVAEPredictor", "GroupEncoder", "GroupDecoder"]
 
@@ -531,6 +533,27 @@ class GroupVAEPredictor(BasePredictor):
         decoder = self.decoder_group[gi]
         return decoder(h_state, timestamp=timestamp, const=const)
 
+    def _get_kl_weight(self, mode: str = "cyclical", max_weight: float = 50.0, cycle_iters: int = 20000) -> float:
+        try:
+            current_iter = get_event_storage().iter
+        except AssertionError:
+            return float(max_weight)
+        cycle_iters = max(1, int(cycle_iters))
+        cycle_pos = (current_iter % cycle_iters) / cycle_iters
+
+        if mode == "cosine":
+            # Smooth monotonic warmup: 0 -> max_weight.
+            kl_weight = 0.5 * max_weight * (1.0 - math.cos(math.pi * cycle_pos))
+        elif mode == "cyclical":
+            # Linear 0 -> max_weight -> 0 cycle.
+            if cycle_pos < 0.5:
+                kl_weight = max_weight * (cycle_pos / 0.5)
+            else:
+                kl_weight = max_weight * (1.0 - (cycle_pos - 0.5) / 0.5)
+        else:
+            raise ValueError(f"Unknown KL schedule mode: {mode}. Use 'cosine' or 'cyclical'.")
+        return float(kl_weight)
+
     def forward(self, data):
         if not self.training:
             return self.test(data)
@@ -637,11 +660,12 @@ class GroupVAEPredictor(BasePredictor):
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
             true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
 
+        kl_weight = self._get_kl_weight(mode="cosine", max_weight=20.0, cycle_iters=40000)
         loss_dict = {
             "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
             "loss_vae_input": self.loss_weight[0] * loss_vae_input,
             "loss_vae_target": self.loss_weight[1] * loss_vae_target,
-            "loss_latent_reg": self.loss_weight[3] * loss_latent_reg,
+            "loss_latent_reg": self.loss_weight[3] * loss_latent_reg * kl_weight,
             "loss_latent_pred_rec": self.loss_weight[4] * loss_latent_pred_rec,
         }
         if len(pinn_acc) > 0:
