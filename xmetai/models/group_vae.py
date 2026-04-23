@@ -533,13 +533,16 @@ class GroupVAEPredictor(BasePredictor):
         decoder = self.decoder_group[gi]
         return decoder(h_state, timestamp=timestamp, const=const)
 
-    def _get_kl_weight(self, mode: str = "cyclical", max_weight: float = 50.0, cycle_iters: int = 20000) -> float:
+    def _get_kl_weight(self, mode: str = "cyclical", max_weight: float = 100.0, cycle_iters: int = 20000) -> float:
         try:
             current_iter = get_event_storage().iter
         except AssertionError:
             return float(max_weight)
         cycle_iters = max(1, int(cycle_iters))
-        cycle_pos = (current_iter % cycle_iters) / cycle_iters
+        if mode == "cosine" and current_iter >= cycle_iters:
+            cycle_pos = 1.0
+        else:
+            cycle_pos = (current_iter % cycle_iters) / cycle_iters
 
         if mode == "cosine":
             # Smooth monotonic warmup: 0 -> max_weight.
@@ -664,7 +667,7 @@ class GroupVAEPredictor(BasePredictor):
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
             true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
 
-        kl_weight = self._get_kl_weight(mode="cosine", max_weight=20.0, cycle_iters=40000)
+        kl_weight = self._get_kl_weight(mode="cosine", cycle_iters=40000)
         loss_dict = {
             "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
             "loss_vae_input": self.loss_weight[0] * loss_vae_input,
