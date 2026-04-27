@@ -4,7 +4,7 @@
 
 ## Model Architecture
 
-![GroupVAE architecture](assets/group_vae_arch.png)
+![GroupVAE architecture](assets/group_vae_arch.svg)
 
 The model splits the full atmospheric state into pressure-level groups, encodes each group independently, couples the group latents with a global latent mixer, and decodes back to the full field. Training supervises three reconstruction paths plus two latent-space regularizers.
 

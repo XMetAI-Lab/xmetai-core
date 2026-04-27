@@ -20,8 +20,9 @@ Channel layout (s2s 76-channel):
 Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
 
+import logging
 import math
-from typing import Any
+from typing import Any, final
 
 import numpy as np
 import torch
@@ -375,6 +376,11 @@ class GroupVAEPredictor(BasePredictor):
         alpha: float = 1.0,
         loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
         rollout_max: int = 50,
+        pretrain: bool = False,
+        pretrain_mask_ratio: float = 0.15,
+        pretrain_temporal_mix_prob: float = 0.5,
+        pretrain_metric_temp: float = 0.001,
+        pretrain_metric_tokens: int = 128,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -386,6 +392,17 @@ class GroupVAEPredictor(BasePredictor):
         self.loss_weight = loss_weight
         self.const_chans = const_chans
         self.rollout_max = rollout_max
+        if pretrain:
+            self.pretrain = True
+            self.pretrain_mask_ratio = float(pretrain_mask_ratio)
+            self.pretrain_temporal_mix_prob = float(pretrain_temporal_mix_prob)
+            self.pretrain_metric_temp = float(pretrain_metric_temp)
+            self.pretrain_metric_tokens = int(pretrain_metric_tokens)
+            self.pretrain_metric_weight = loss_weight[1]
+            self.pretrain_aug_rec_weight = loss_weight[4]
+            self.pretrain_latent_reg_weight = loss_weight[3]
+        else:
+            self.pretrain = False
 
         if level_groups is None:
             level_groups = DEFAULT_LEVEL_GROUPS
@@ -525,15 +542,93 @@ class GroupVAEPredictor(BasePredictor):
         flat = F.interpolate(flat.float(), size=target_hw, mode="bilinear", align_corners=False).to(pred)
         return flat.view(B, T, C, *target_hw)
 
+    @final
     def _encode_group(self, x_group: torch.Tensor, gi: int, timestamp: dict, is_prior: bool = True, const: torch.Tensor | None = None) -> torch.Tensor:
-        encoder = self.vae_encoder_group[gi] if is_prior else self.posterior_encoder_group[gi]
-        return encoder(x_group, timestamp, const=const)
+        return (self.vae_encoder_group[gi] if is_prior else self.posterior_encoder_group[gi])(x_group, timestamp, const=const)
 
+    @final
     def _decode_group(self, h_state: torch.Tensor, gi: int, timestamp: dict, const: torch.Tensor | None = None) -> torch.Tensor:
-        decoder = self.decoder_group[gi]
-        return decoder(h_state, timestamp=timestamp, const=const)
+        return self.decoder_group[gi](h_state, timestamp=timestamp, const=const)
 
-    def _get_kl_weight(self, mode: str = "cyclical", max_weight: float = 100.0, cycle_iters: int = 20000) -> float:
+    @final
+    def _encode_all_groups(
+        self,
+        x: torch.Tensor,
+        timestamp: dict,
+        const: torch.Tensor | None = None,
+        is_prior: bool = True,
+    ) -> list:
+        """Encode all groups from input tensor.
+
+        This method returns per-group latent states produced by the fixed
+        internal encoder path.
+
+        Args:
+            x: Input tensor (B, T, C, H, W)
+            timestamp: Timestamp dict
+            const: Optional constant tensor
+            is_prior: Whether to use prior or posterior encoder
+
+        Returns:
+            List of latent states from _encode_group.
+        """
+        results_by_group = []
+        for gi in range(self.num_groups):
+            x_group = self._slice_group(x, gi)
+            result = self._encode_group(x_group, gi, timestamp, is_prior=is_prior, const=const)
+            results_by_group.append(result)
+        return results_by_group
+
+    @final
+    def _decode_all_groups(
+        self,
+        h_states: list[torch.Tensor],
+        timestamp: dict,
+        const: torch.Tensor | None = None,
+    ) -> list[torch.Tensor]:
+        """Decode all groups from latent states.
+
+        This path assumes each entry in `h_states` is directly consumable by
+        `_decode_group`.
+
+        Args:
+            h_states: List of latent states (B, N, D) for each group
+            timestamp: Timestamp dict
+            const: Optional constant tensor
+
+        Returns:
+            List of decoded outputs (B, 1, C_g, H, W) for each group
+        """
+        outputs_by_group = []
+        for gi in range(len(h_states)):
+            out_group = self._decode_group(h_states[gi], gi, timestamp, const=const)
+            outputs_by_group.append(out_group)
+        return outputs_by_group
+
+    def _assemble_prediction(
+        self,
+        decoded_groups: list[torch.Tensor],
+        reference_input: torch.Tensor,
+        target_hw: tuple[int, int] | None = None,
+    ) -> torch.Tensor:
+        """Reassemble decoded group outputs to full field and apply residual.
+
+        Args:
+            decoded_groups: List of decoded outputs from _decode_all_groups
+            reference_input: Reference input for residual application (B, T, C, H, W)
+            target_hw: Optional target height/width for resizing
+
+        Returns:
+            Full-field output with residual applied (B, 1, C, H, W)
+        """
+        full_output = self._reassemble(decoded_groups, reference_input)
+        if target_hw is None:
+            target_hw = (int(reference_input.shape[-2]), int(reference_input.shape[-1]))
+        full_output = self._resize_pred(full_output, target_hw)
+        output = self._apply_residual(full_output, reference_input[:, -1:])
+        return output
+
+    def _get_kl_weight(self, mode: str = "cyclical", max_weight: float = 100.0, cycle_iters: int = 20000, min_weight: float = 0.0) -> float:
         try:
             current_iter = get_event_storage().iter
         except AssertionError:
@@ -543,16 +638,16 @@ class GroupVAEPredictor(BasePredictor):
             cycle_pos = 1.0
         else:
             cycle_pos = (current_iter % cycle_iters) / cycle_iters
-
+        weight_span = max(max_weight - min_weight, 0.0)
         if mode == "cosine":
-            # Smooth monotonic warmup: 0 -> max_weight.
-            kl_weight = 0.5 * max_weight * (1.0 - math.cos(math.pi * cycle_pos))
+            # Smooth monotonic warmup: min_weight -> max_weight.
+            kl_weight = min_weight + 0.5 * weight_span * (1.0 - math.cos(math.pi * cycle_pos))
         elif mode == "cyclical":
-            # Linear 0 -> max_weight -> 0 cycle.
+            # Linear min_weight -> max_weight -> min_weight cycle.
             if cycle_pos < 0.5:
-                kl_weight = max_weight * (cycle_pos / 0.5)
+                kl_weight = min_weight + weight_span * (cycle_pos / 0.5)
             else:
-                kl_weight = max_weight * (1.0 - (cycle_pos - 0.5) / 0.5)
+                kl_weight = min_weight + weight_span * (1.0 - (cycle_pos - 0.5) / 0.5)
         else:
             raise ValueError(f"Unknown KL schedule mode: {mode}. Use 'cosine' or 'cyclical'.")
 
@@ -561,9 +656,163 @@ class GroupVAEPredictor(BasePredictor):
 
         return float(kl_weight)
 
+    def _pretrain_augment(
+        self,
+        x: torch.Tensor,
+        mask_ratio: float,
+        temporal_mix_prob: float,
+    ) -> torch.Tensor:
+        """Build an augmented view for VAE pretraining.
+
+        Augmentations are lightweight and weather-aware:
+        1) Channel masking: randomly masks a subset of variables across all frames.
+        2) Temporal-near mixing: blends the latest frame with its adjacent frame.
+        """
+        if x.ndim != 5:
+            raise ValueError(f"Expected 5D input (B,T,C,H,W), got shape={x.shape}")
+
+        aug = x.clone()
+        bsz, t_len, n_chans, _, _ = aug.shape
+
+        if mask_ratio > 0.0:
+            mask_ratio = max(0.0, min(1.0, float(mask_ratio)))
+            n_mask = max(1, int(round(n_chans * mask_ratio)))
+            keep_prob = 1.0 - mask_ratio
+            channel_gate = torch.rand(bsz, n_chans, device=aug.device) < keep_prob
+
+            # Ensure every sample keeps at least one channel to avoid degenerate zero inputs.
+            for bi in range(bsz):
+                if not bool(channel_gate[bi].any()):
+                    keep_idx = torch.randint(0, n_chans, (1,), device=aug.device)
+                    channel_gate[bi, keep_idx] = True
+
+            # Additionally mask a fixed number of channels for stronger variable-drop regularization.
+            rand_perm = torch.stack([torch.randperm(n_chans, device=aug.device)[:n_mask] for _ in range(bsz)], dim=0)
+            hard_mask = torch.ones(bsz, n_chans, device=aug.device, dtype=torch.bool)
+            hard_mask.scatter_(1, rand_perm, False)
+            channel_gate = channel_gate & hard_mask
+            aug = aug * channel_gate[:, None, :, None, None].to(dtype=aug.dtype)
+
+        if t_len > 1 and temporal_mix_prob > 0.0:
+            temporal_mix_prob = max(0.0, min(1.0, float(temporal_mix_prob)))
+            do_mix = (torch.rand(bsz, device=aug.device) < temporal_mix_prob).to(dtype=aug.dtype)
+            do_mix = do_mix[:, None, None, None]
+            mix_w = torch.empty(bsz, 1, 1, 1, device=aug.device, dtype=aug.dtype).uniform_(0.4, 0.9)
+            mixed_last = mix_w * aug[:, -1] + (1.0 - mix_w) * aug[:, -2]
+            aug[:, -1] = do_mix * mixed_last + (1.0 - do_mix) * aug[:, -1]
+
+        return aug
+
+    def _latent_metric_nce(
+        self,
+        anchors: list[torch.Tensor],
+        positives: list[torch.Tensor],
+        temperature: float,
+        max_tokens: int = 128,
+    ) -> torch.Tensor:
+        """Symmetric InfoNCE over sampled spatial tokens.
+
+        This stays non-degenerate even when the batch size is 1, because the
+        negatives come from other sampled spatial locations rather than only
+        from other batch elements.
+        """
+        if len(anchors) != len(positives):
+            raise ValueError(f"anchors and positives must have same length, got {len(anchors)} vs {len(positives)}")
+        if len(anchors) == 0:
+            raise ValueError("anchors cannot be empty")
+
+        nce_loss = anchors[0].new_zeros(())
+
+        for h_anchor, h_pos in zip(anchors, positives):
+            if h_anchor.shape != h_pos.shape:
+                raise ValueError(f"Anchor/positive shapes must match, got {h_anchor.shape} vs {h_pos.shape}")
+
+            batch_size, num_tokens, hidden_dim = h_anchor.shape
+            if num_tokens < 2:
+                continue
+
+            token_count = min(int(max_tokens), num_tokens)
+            token_indices = torch.randperm(num_tokens, device=h_anchor.device)[:token_count]
+            anchor_tokens = h_anchor[:, token_indices].reshape(batch_size * token_count, hidden_dim)
+            pos_tokens = h_pos[:, token_indices].reshape(batch_size * token_count, hidden_dim)
+
+            anchor_tokens = F.normalize(anchor_tokens, dim=-1)
+            pos_tokens = F.normalize(pos_tokens, dim=-1)
+
+            logits = anchor_tokens @ pos_tokens.transpose(0, 1)
+            logits = logits / temperature
+            labels = torch.arange(logits.size(0), device=logits.device)
+            nce_loss = nce_loss + 0.5 * (F.cross_entropy(logits, labels) + F.cross_entropy(logits.transpose(0, 1), labels))
+
+        return nce_loss / len(anchors)
+
+    def forward_pre_stage(self, data):
+        """VAE-only pretraining stage.
+
+        Uses two-frame (or in_frames) inputs to reconstruct the latest frame only.
+        No latent mixer prediction path is involved.
+        """
+        data = self.process_data(data)
+        input = data["input"]
+        times = data["times"]
+        const = data["const"] if self.const_chans > 0 else None
+
+        input = self.reset_input(input)
+        timestamp = self.get_timestamp(input, times, self.start_frames)
+
+        aug_input = self._pretrain_augment(input, mask_ratio=self.pretrain_mask_ratio, temporal_mix_prob=self.pretrain_temporal_mix_prob)
+
+        # Encode both clean and augmented inputs using reusable method
+        h_clean_by_group = self._encode_all_groups(input, timestamp, const=const, is_prior=False)
+        h_aug_by_group = self._encode_all_groups(aug_input, timestamp, const=const, is_prior=False)
+
+        # Decode both latent representations using reusable method
+        rec_clean_by_group = self._decode_all_groups(h_clean_by_group, timestamp, const=const)
+        rec_aug_by_group = self._decode_all_groups(h_aug_by_group, timestamp, const=const)
+
+        # Reassemble and apply residual for reconstructions
+        recon_base = input[:, -2:-1] if input.shape[1] > 1 else input[:, -1:]
+        recon_clean = self._assemble_prediction(rec_clean_by_group, recon_base)
+        recon_aug = self._assemble_prediction(rec_aug_by_group, recon_base)
+
+        # Prepare weight for loss computation
+        rec_weight = None
+        base_weight = self._buffers.get("weight", None)
+        channel_weight = self._buffers.get("channel_weights", None)
+        if base_weight is not None:
+            rec_weight = base_weight
+            if channel_weight is not None:
+                rec_weight = channel_weight * base_weight
+
+        # Compute losses
+        recon_target = input[:, -1:]
+        loss_rec_clean = charbonnier_loss(recon_clean, recon_target, weight=rec_weight)
+        loss_rec_aug = charbonnier_loss(recon_aug, recon_target, weight=rec_weight)
+        loss_metric = self._latent_metric_nce(
+            h_clean_by_group,
+            h_aug_by_group,
+            temperature=self.pretrain_metric_temp,
+            max_tokens=self.pretrain_metric_tokens,
+        )
+
+        loss_latent_reg = input.new_zeros(())
+        for h_clean, h_aug in zip(h_clean_by_group, h_aug_by_group):
+            loss_latent_reg = loss_latent_reg + torch.mean(h_clean**2) + torch.mean(h_aug**2)
+        loss_latent_reg = loss_latent_reg / self.num_groups
+
+        return {
+            "loss_pre_rec": loss_rec_clean + self.pretrain_aug_rec_weight * loss_rec_aug,
+            "loss_pre_metric": self.pretrain_metric_weight * loss_metric,
+            "loss_pre_latent_reg": self.pretrain_latent_reg_weight * loss_latent_reg,
+        }
+
     def forward(self, data):
         if not self.training:
             return self.test(data)
+
+        # Pretraining stage for VAE reconstruction only.
+        if self.pretrain:
+            return self.forward_pre_stage(data)
 
         data = self.process_data(data)
         input = data["input"]
@@ -597,61 +846,51 @@ class GroupVAEPredictor(BasePredictor):
 
             new_target = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
 
-            h_prior_states_by_group = []
-            h_posterior_states_by_group = []
-            vae_rec_input_outputs_by_group = []
-            vae_rec_target_outputs_by_group = []
+            h_prior_states_by_group = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
+            h_posterior_states_by_group = self._encode_all_groups(new_target, timestamp_target, const=const, is_prior=False)
+            vae_rec_input_outputs_by_group = self._decode_all_groups(
+                h_prior_states_by_group,
+                timestamp,
+                const=const,
+            )
+            vae_rec_target_outputs_by_group = self._decode_all_groups(
+                h_posterior_states_by_group,
+                timestamp_target,
+                const=const,
+            )
 
-            for gi in range(self.num_groups):
-                x_input_group = self._slice_group(input, gi)
-                h_input = self._encode_group(x_input_group, gi, timestamp, is_prior=True, const=const)
-                self.logger.debug(
-                    f"Group {gi} prior encoding output shape: {h_input.shape} with min {h_input.min().item():.4f} and max {h_input.max().item():.4f}"
-                )
-                h_prior_states_by_group.append(h_input)
-                vae_input_out = self._decode_group(h_input, gi, timestamp, const=const)
-                vae_rec_input_outputs_by_group.append(vae_input_out)
-
-                x_target_group = self._slice_group(new_target, gi)
-                h_target = self._encode_group(x_target_group, gi, timestamp_target, is_prior=False, const=const)
-                self.logger.debug(
-                    f"Group {gi} posterior encoding output shape: {h_target.shape} with min {h_target.min().item():.4f} and max {h_target.max().item():.4f}"
-                )
-                h_posterior_states_by_group.append(h_target)
-                vae_target_out = self._decode_group(h_target, gi, timestamp_target, const=const)
-                vae_rec_target_outputs_by_group.append(vae_target_out)
-
-            Z_coupled = self.latent_mixer(h_prior_states_by_group, timestamp_target)
+            if self.logger.isEnabledFor(logging.DEBUG):
+                prior_stats = [
+                    f"G{gi}: shape={h_state.shape}, min={h_state.min().item():.4f}, max={h_state.max().item():.4f}"
+                    for gi, h_state in enumerate(h_prior_states_by_group)
+                ]
+                posterior_stats = [
+                    f"G{gi}: shape={h_state.shape}, min={h_state.min().item():.4f}, max={h_state.max().item():.4f}"
+                    for gi, h_state in enumerate(h_posterior_states_by_group)
+                ]
+                self.logger.debug("Prior states | %s", " ; ".join(prior_stats))
+                self.logger.debug("Posterior states | %s", " ; ".join(posterior_stats))
 
             if loss_available:
                 # Constrain latent space to prevent norm explosion
                 for h_prior, h_posterior in zip(h_prior_states_by_group, h_posterior_states_by_group):
                     loss_latent_reg += torch.mean(h_prior**2) + torch.mean(h_posterior**2)
 
-                vae_input_delta = self._reassemble(vae_rec_input_outputs_by_group, input)
-                vae_input_delta = self._resize_pred(vae_input_delta, (int(input.shape[-2]), int(input.shape[-1])))
-
                 # reference should be x_{t-1} based on formula x_t = F(h_t, x_{t-1})
                 vae_input_base = true_input[:, -2:-1] if true_input.shape[1] > 1 else true_input[:, -1:]
-                vae_input_recon = self._apply_residual(vae_input_delta, vae_input_base)
+                vae_input_recon = self._assemble_prediction(vae_rec_input_outputs_by_group, vae_input_base)
                 vae_input_target = true_input[:, -1:]
                 loss_vae_input += rolling_weights[k] * charbonnier_loss(vae_input_recon, vae_input_target, weight=self.weight)
 
-                vae_target_delta = self._reassemble(vae_rec_target_outputs_by_group, new_target)
-                vae_target_delta = self._resize_pred(vae_target_delta, (int(new_target.shape[-2]), int(new_target.shape[-1])))
-                vae_target_recon = self._apply_residual(vae_target_delta, true_input)
+                vae_target_recon = self._assemble_prediction(vae_rec_target_outputs_by_group, true_input)
                 loss_vae_target += rolling_weights[k] * charbonnier_loss(vae_target_recon, target, weight=self.weight)
 
-            group_outputs = []
-            for gi in range(self.num_groups):
-                if loss_available:
+            Z_coupled = self.latent_mixer(h_prior_states_by_group, timestamp_target)
+            if loss_available:
+                for gi in range(self.num_groups):
                     loss_latent_pred_rec += rolling_weights[k] * charbonnier_loss(Z_coupled[gi], h_posterior_states_by_group[gi].detach())
-                out_group = self._decode_group(Z_coupled[gi], gi, timestamp_target, const=const)
-                group_outputs.append(out_group)
-
-            pred = self._reassemble(group_outputs, input)
-            pred = self._resize_pred(pred, (int(input.shape[-2]), int(input.shape[-1])))
-            output = self._apply_residual(pred, input)
+            group_outputs = self._decode_all_groups(Z_coupled, timestamp_target, const=const)
+            output = self._assemble_prediction(group_outputs, input)
 
             if loss_available:
                 if "channel_weights" in self._buffers:
@@ -702,22 +941,11 @@ class GroupVAEPredictor(BasePredictor):
                 timestamp = self.get_timestamp(new_input, times, t)
                 timestamp_target = self.get_timestamp(new_input, times, t + 1)
 
-                h_states = []
-                for gi in range(self.num_groups):
-                    x_group = self._slice_group(new_input, gi)
-                    h_state = self._encode_group(x_group, gi, timestamp, is_prior=True, const=const)
-                    h_states.append(h_state)
+                h_states = self._encode_all_groups(new_input, timestamp, const=const, is_prior=True)
 
                 Z_coupled = self.latent_mixer(h_states, timestamp_target)
-
-                group_outputs = []
-                for gi in range(self.num_groups):
-                    out_group = self._decode_group(Z_coupled[gi], gi, timestamp_target, const=const)
-                    group_outputs.append(out_group)
-
-                pred = self._reassemble(group_outputs, new_input)
-                pred = self._resize_pred(pred, (int(new_input.shape[-2]), int(new_input.shape[-1])))
-                output = self._apply_residual(pred, new_input)
+                group_outputs = self._decode_all_groups(Z_coupled, timestamp_target, const=const)
+                output = self._assemble_prediction(group_outputs, new_input)
                 new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames :]
 
                 if t + 1 in steps:
@@ -761,22 +989,11 @@ class GroupVAEPredictor(BasePredictor):
             doy=((doy + day_rollover * (1.0 / 365.0)) % 1.0).to(new_input),
         )
 
-        h_states = []
-        for gi in range(self.num_groups):
-            x_group = self._slice_group(new_input, gi)
-            h_state = self._encode_group(x_group, gi, timestamp, is_prior=True, const=const)
-            h_states.append(h_state)
+        h_states = self._encode_all_groups(new_input, timestamp, const=const, is_prior=True)
 
         Z_coupled = self.latent_mixer(h_states, timestamp_target)
-
-        group_outputs = []
-        for gi in range(self.num_groups):
-            out_group = self._decode_group(Z_coupled[gi], gi, timestamp_target, const=const)
-            group_outputs.append(out_group)
-
-        pred = self._reassemble(group_outputs, new_input)
-        pred = self._resize_pred(pred, (int(new_input.shape[-2]), int(new_input.shape[-1])))
-        output = self._apply_residual(pred, new_input)
+        group_outputs = self._decode_all_groups(Z_coupled, timestamp_target, const=const)
+        output = self._assemble_prediction(group_outputs, new_input)
 
         output = self.inv_normalize(output)
         return output

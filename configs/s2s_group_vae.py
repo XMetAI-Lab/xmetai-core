@@ -44,7 +44,11 @@ logging.basicConfig(level=logging.INFO)
 
 if os.path.exists(f"{output_dir}/model_best.pth"):
     train.init_checkpoint = f"{output_dir}/model_best.pth"
-loss_weight = (0.2, 0.2, 1.0, 0.01, 0.3)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
+if os.path.exists(f"{output_dir}/model_posterior_fix.pth"):
+    train.init_checkpoint = f"{output_dir}/model_posterior_fix.pth"
+    train.freeze = ("posterior_encoder_group",)
+
+loss_weight = (0.2, 0.2, 1.0, 0.002, 1.0)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
 if load_from_pretrain:
     # freeze upper-level VAE to preserve pretrained dynamics, only fine-tune lower-level VAE and main predictor.
     train.teacher_forcing.teach_start = 2
