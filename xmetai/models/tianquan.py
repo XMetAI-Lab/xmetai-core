@@ -26,6 +26,7 @@ import pandas as pd
 import xarray as xr
 import xskillscore as xs
 from scipy import stats
+from xmetai.loss import charbonnier_loss
 
 # NumPy 兼容性处理 (针对旧代码调用 np.float 的补丁)
 if not hasattr(np, "float"):
@@ -262,7 +263,8 @@ class FourierExpansion(nn.Module):
         in_range = torch.logical_and(self.lower <= x.abs(), torch.all(x.abs() <= self.upper))
         in_range_or_zero = torch.all(torch.logical_or(in_range, x == 0))  # Allow zeros to pass through.
         if self.assert_range and not in_range_or_zero:
-            raise AssertionError(f"The input tensor is not within the configured range" f" `[{self.lower}, {self.upper}]`.")
+            raise AssertionError(
+                f"The input tensor is not within the configured range" f" `[{self.lower}, {self.upper}]`.")
 
         # We will use half of the dimensionality for `sin` and the other half for `cos`.
         if not (d % 2 == 0):
@@ -321,10 +323,10 @@ absolute_time_expansion = FourierExpansion(1, 24 * 365.25, assert_range=False)
 
 
 def patch_root_area(
-    lat_min: torch.Tensor,
-    lon_min: torch.Tensor,
-    lat_max: torch.Tensor,
-    lon_max: torch.Tensor,
+        lat_min: torch.Tensor,
+        lon_min: torch.Tensor,
+        lat_max: torch.Tensor,
+        lon_max: torch.Tensor,
 ) -> torch.Tensor:
     """For a rectangular patch on a sphere, compute the square root of the area of the patch in
     units km^2. The root is taken to return units of km, and thus stay scalable between different
@@ -353,18 +355,19 @@ def patch_root_area(
     assert (abs(lat_max) <= 90.0).all() and (abs(lat_min) <= 90.0).all()
     assert (lon_max <= 360.0).all() and (lon_min <= 360.0).all()
     assert (lon_max >= 0.0).all() and (lon_min >= 0.0).all()
-    area = 6371**2 * torch.pi * (torch.sin(torch.deg2rad(lat_max)) - torch.sin(torch.deg2rad(lat_min))) * (torch.deg2rad(lon_max) - torch.deg2rad(lon_min))
+    area = 6371 ** 2 * torch.pi * (torch.sin(torch.deg2rad(lat_max)) - torch.sin(torch.deg2rad(lat_min))) * (
+                torch.deg2rad(lon_max) - torch.deg2rad(lon_min))
 
     assert (area > 0.0).all()
     return torch.sqrt(area)
 
 
 def pos_scale_enc_grid(
-    encode_dim: int,
-    grid: torch.Tensor,
-    patch_dims: Tuple,
-    pos_expansion: FourierExpansion,
-    scale_expansion: FourierExpansion,
+        encode_dim: int,
+        grid: torch.Tensor,
+        patch_dims: Tuple,
+        pos_expansion: FourierExpansion,
+        scale_expansion: FourierExpansion,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Compute the position and scale encoding for a latitude-longitude grid.
 
@@ -444,12 +447,12 @@ def lat_lon_meshgrid(lat: torch.Tensor, lon: torch.Tensor) -> torch.Tensor:
 
 
 def pos_scale_enc(
-    encode_dim: int,
-    lat: torch.Tensor,
-    lon: torch.Tensor,
-    patch_dims: Union[int, List, Tuple],
-    pos_expansion: FourierExpansion,
-    scale_expansion: FourierExpansion,
+        encode_dim: int,
+        lat: torch.Tensor,
+        lon: torch.Tensor,
+        patch_dims: Union[int, List, Tuple],
+        pos_expansion: FourierExpansion,
+        scale_expansion: FourierExpansion,
 ) -> torch.Tensor:
     """Positional encoding of latitude-longitude data.
 
@@ -497,13 +500,13 @@ class LevelPatchEmbed(nn.Module):
     embedding."""
 
     def __init__(
-        self,
-        var_names: Tuple[str, ...],
-        patch_size: int,
-        embed_dim: int,
-        history_size: int = 1,
-        norm_layer: Optional[nn.Module] = None,
-        flatten: bool = True,
+            self,
+            var_names: Tuple[str, ...],
+            patch_size: int,
+            embed_dim: int,
+            history_size: int = 1,
+            norm_layer: Optional[nn.Module] = None,
+            flatten: bool = True,
     ) -> None:
         """Initialise.
 
@@ -603,21 +606,21 @@ class Perceiver3DEncoder(nn.Module):
     """Multi-scale multi-source multi-variable encoder based on the Perceiver architecture."""
 
     def __init__(
-        self,
-        surf_vars: Tuple[str, ...],
-        static_vars: Union[Tuple[str, str], None],
-        atmos_vars: Tuple[str, str],
-        atmos_levels: Tuple[int,],
-        patch_size: int = 4,
-        latent_levels: int = 8,
-        embed_dim: int = 1024,
-        num_heads: int = 16,
-        head_dim: int = 64,
-        drop_rate: float = 0.1,
-        depth: int = 2,
-        mlp_ratio: float = 4.0,
-        max_history_size: int = 2,
-        perceiver_ln_eps: float = 1e-5,
+            self,
+            surf_vars: Tuple[str, ...],
+            static_vars: Union[Tuple[str, str], None],
+            atmos_vars: Tuple[str, str],
+            atmos_levels: Tuple[int,],
+            patch_size: int = 4,
+            latent_levels: int = 8,
+            embed_dim: int = 1024,
+            num_heads: int = 16,
+            head_dim: int = 64,
+            drop_rate: float = 0.1,
+            depth: int = 2,
+            mlp_ratio: float = 4.0,
+            max_history_size: int = 2,
+            perceiver_ln_eps: float = 1e-5,
     ) -> None:
         """Initialise.
 
@@ -740,14 +743,14 @@ class Perceiver3DEncoder(nn.Module):
         return x
 
     def forward(
-        self,
-        x_surf: torch.Tensor,
-        x_static: torch.Tensor,
-        x_atmos: torch.Tensor,
-        lead_time: timedelta,
-        lat: torch.Tensor,
-        lon: torch.Tensor,
-        hours: torch.Tensor,
+            self,
+            x_surf: torch.Tensor,
+            x_static: torch.Tensor,
+            x_atmos: torch.Tensor,
+            lead_time: timedelta,
+            lat: torch.Tensor,
+            lon: torch.Tensor,
+            hours: torch.Tensor,
     ) -> torch.Tensor:
         """Peform encoding.
 
@@ -858,7 +861,7 @@ def unpatchify(x: torch.Tensor, V: int, H: int, W: int, P: int) -> torch.Tensor:
     H = H // P
     W = W // P
     assert x.size(1) == H * W
-    assert x.size(-1) == V * P**2
+    assert x.size(-1) == V * P ** 2
 
     x = x.reshape(shape=(B, H, W, C, P, P, V))
     x = rearrange(x, "B H W C P1 P2 V -> B V C H P1 W P2")
@@ -925,11 +928,11 @@ class PerceiverAttention(nn.Module):
     """Cross attention module from the Perceiver architecture."""
 
     def __init__(
-        self,
-        latent_dim: int,
-        context_dim: int,
-        head_dim: int = 64,
-        num_heads: int = 8,
+            self,
+            latent_dim: int,
+            context_dim: int,
+            head_dim: int = 64,
+            num_heads: int = 8,
     ) -> None:
         """Initialise.
 
@@ -992,16 +995,16 @@ class PerceiverResampler(nn.Module):
     """Perceiver Resampler module from the Flamingo paper."""
 
     def __init__(
-        self,
-        latent_dim: int,
-        context_dim: int,
-        depth: int = 1,
-        head_dim: int = 64,
-        num_heads: int = 16,
-        mlp_ratio: float = 4.0,
-        drop: float = 0.0,
-        residual_latent: bool = True,
-        ln_eps: float = 1e-5,
+            self,
+            latent_dim: int,
+            context_dim: int,
+            depth: int = 1,
+            head_dim: int = 64,
+            num_heads: int = 16,
+            mlp_ratio: float = 4.0,
+            drop: float = 0.0,
+            residual_latent: bool = True,
+            ln_eps: float = 1e-5,
     ) -> None:
         """Initialise.
 
@@ -1074,7 +1077,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     assert embed_dim % 2 == 0
     omega = np.arange(embed_dim // 2, dtype=np.float)
     omega /= embed_dim / 2.0
-    omega = 1.0 / 10000**omega  # (D/2,)
+    omega = 1.0 / 10000 ** omega  # (D/2,)
 
     pos = pos.reshape(-1)  # (M,)
     out = np.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
@@ -1114,19 +1117,19 @@ class Attention(nn.Module):
     """
 
     def __init__(
-        self,
-        dim,
-        num_heads=8,
-        qkv_bias=False,
-        qk_scale=None,
-        attn_drop=0.0,
-        proj_drop=0.0,
-        window_size=None,
+            self,
+            dim,
+            num_heads=8,
+            qkv_bias=False,
+            qk_scale=None,
+            attn_drop=0.0,
+            proj_drop=0.0,
+            window_size=None,
     ):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim**-0.5
+        self.scale = qk_scale or head_dim ** -0.5
         self.window_size = window_size
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
@@ -1171,7 +1174,7 @@ class Attention(nn.Module):
         chunk = 256
         out_chunks = []
         for i in range(0, L, chunk):
-            q_c = q[:, :, i : i + chunk, :]
+            q_c = q[:, :, i: i + chunk, :]
             attn = (q_c @ k.transpose(-2, -1)) * self.scale
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
@@ -1183,17 +1186,17 @@ class Block(nn.Module):
     """Transformer block with optional skip and checkpointing."""
 
     def __init__(
-        self,
-        dim,
-        num_heads,
-        mlp_ratio=4.0,
-        qkv_bias=False,
-        qk_scale=None,
-        norm_layer=nn.LayerNorm,
-        skip=False,
-        use_checkpoint=False,
-        img_size=(128, 256),
-        window_size=(8, 8),
+            self,
+            dim,
+            num_heads,
+            mlp_ratio=4.0,
+            qkv_bias=False,
+            qk_scale=None,
+            norm_layer=nn.LayerNorm,
+            skip=False,
+            use_checkpoint=False,
+            img_size=(128, 256),
+            window_size=(8, 8),
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -1227,18 +1230,18 @@ class PEDadd_UViT(nn.Module):
     """
 
     def __init__(
-        self,
-        embed_dim=1536,
-        depth=8,
-        num_heads=12,
-        mlp_ratio=4.0,
-        qkv_bias=False,
-        qk_scale=None,
-        norm_layer=nn.LayerNorm,
-        use_checkpoint=False,
-        skip=True,
-        img_size=(128, 256),
-        window_size=(8, 8),
+            self,
+            embed_dim=1536,
+            depth=8,
+            num_heads=12,
+            mlp_ratio=4.0,
+            qkv_bias=False,
+            qk_scale=None,
+            norm_layer=nn.LayerNorm,
+            use_checkpoint=False,
+            skip=True,
+            img_size=(128, 256),
+            window_size=(8, 8),
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -1485,18 +1488,18 @@ class Perceiver3DDecoder(nn.Module):
     """
 
     def __init__(
-        self,
-        surf_vars: Tuple[str, str],
-        atmos_vars: Tuple[str, str],
-        atmos_levels: Tuple[int, int],
-        patch_size: int = 4,
-        embed_dim: int = 1024,
-        depth: int = 1,
-        head_dim: int = 64,
-        num_heads: int = 8,
-        mlp_ratio: float = 4.0,
-        drop_rate: float = 0.0,
-        perceiver_ln_eps: float = 1e-5,
+            self,
+            surf_vars: Tuple[str, str],
+            atmos_vars: Tuple[str, str],
+            atmos_levels: Tuple[int, int],
+            patch_size: int = 4,
+            embed_dim: int = 1024,
+            depth: int = 1,
+            head_dim: int = 64,
+            num_heads: int = 8,
+            mlp_ratio: float = 4.0,
+            drop_rate: float = 0.0,
+            perceiver_ln_eps: float = 1e-5,
     ) -> None:
         """Initialise.
 
@@ -1537,8 +1540,8 @@ class Perceiver3DDecoder(nn.Module):
             ln_eps=perceiver_ln_eps,
         )
 
-        self.surf_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size**2) for name in surf_vars})
-        self.atmos_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size**2) for name in atmos_vars})
+        self.surf_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size ** 2) for name in surf_vars})
+        self.atmos_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size ** 2) for name in atmos_vars})
 
         self.atmos_levels_embed = nn.Linear(embed_dim, embed_dim)
 
@@ -1567,12 +1570,12 @@ class Perceiver3DDecoder(nn.Module):
         return x
 
     def forward(
-        self,
-        x: torch.Tensor,
-        lat: torch.Tensor,
-        lon: torch.Tensor,
-        patch_res: Tuple[int, int, int],
-        lead_time: timedelta,
+            self,
+            x: torch.Tensor,
+            lat: torch.Tensor,
+            lon: torch.Tensor,
+            patch_res: Tuple[int, int, int],
+            lead_time: timedelta,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of MultiScaleEncoder.
 
@@ -1610,7 +1613,8 @@ class Perceiver3DDecoder(nn.Module):
         surf_preds = surf_preds.squeeze(2)  # (B, V_S, H, W)
 
         # Embed the atmospheric levels.
-        atmos_levels_encode = levels_expansion(torch.tensor(self.atmos_levels, device=x.device), self.embed_dim).to(dtype=x.dtype)
+        atmos_levels_encode = levels_expansion(torch.tensor(self.atmos_levels, device=x.device), self.embed_dim).to(
+            dtype=x.dtype)
         levels_embed = self.atmos_levels_embed(atmos_levels_encode)  # (C_A, D)
 
         # De-aggregate the hidden levels into the physical levels.
@@ -1694,7 +1698,7 @@ def expand_blocks_to_tensor(block_vals, orig_shape, block_size=8):
     idx = 0
     for i in range(0, H, block_size):
         for j in range(0, W, block_size):
-            out[:, :, i : i + block_size, j : j + block_size] = block_vals[:, :, idx].unsqueeze(-1).unsqueeze(-1)
+            out[:, :, i: i + block_size, j: j + block_size] = block_vals[:, :, idx].unsqueeze(-1).unsqueeze(-1)
             idx += 1
     return out
 
@@ -1725,7 +1729,8 @@ def lat_weighted_mse(pred, y, vars, lat, mask=None, anomaly=None, extreme=False,
         ymax, ymin = get_max_min_blocks(y)
         max_err = (pmax - ymax) ** 2
         min_err = (pmin - ymin) ** 2
-        error = (pred - y) ** 2 + 0.1 * expand_blocks_to_tensor(max_err, pred.shape) + 0.1 * expand_blocks_to_tensor(min_err, pred.shape)
+        error = (pred - y) ** 2 + 0.1 * expand_blocks_to_tensor(max_err, pred.shape) + 0.1 * expand_blocks_to_tensor(
+            min_err, pred.shape)
     elif weight is not None:
         # 确保 weight 也是 Tensor 且在正确的 device 上
         if not isinstance(weight, torch.Tensor):
@@ -1864,7 +1869,7 @@ def lat_weighted_acc(pred, y, transform, vars, lat, clim, log_postfix, anomaly=N
             p = pred_t[:, i] - pred_t[:, i].mean()
             g = y_t[:, i] - y_t[:, i].mean()
             num = (w_lat * p * g).sum()
-            den = torch.sqrt((w_lat * p**2).sum() * (w_lat * g**2).sum())
+            den = torch.sqrt((w_lat * p ** 2).sum() * (w_lat * g ** 2).sum())
             loss_dict[f"acc_{var}_{log_postfix}"] = (num / den).item()
         loss_dict["acc"] = np.mean(list(loss_dict.values()))
     return loss_dict
@@ -1993,22 +1998,25 @@ class TianQuan(BasePredictor):
     """
 
     def __init__(
-        self,
-        default_vars,
-        img_size=(128, 256),
-        window_size=(8, 8),
-        patch_size=2,
-        embed_dim=384,
-        decoder_depth=2,
-        num_heads=12,
-        mlp_ratio=4,
-        drop_path=0.1,
-        drop_rate=0.1,
-        const_chans=0,
-        *args,
-        **kwargs,
+            self,
+            default_vars,
+            img_size=(128, 256),
+            window_size=(8, 8),
+            patch_size=2,
+            embed_dim=384,
+            decoder_depth=2,
+            num_heads=12,
+            mlp_ratio=4,
+            drop_path=0.1,
+            drop_rate=0.1,
+            const_chans=0,
+            needed_ids=None,
+            *args,
+            **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        if needed_ids is None:
+            needed_ids = []
         self.img_size = img_size
         self.patch_size = patch_size
         self.embed_dim = embed_dim
@@ -2024,8 +2032,9 @@ class TianQuan(BasePredictor):
             "relative_humidity",
             "specific_humidity",
         ]
-        self.surface_variables = ["2m_temperature", "wind_speed_10m"] if img_size == (128, 256) else ["2m_temperature", "10m_wind_speed"]
-        self.static_vars = ["lsm", "slt", "orog"]
+        self.surface_variables = ["2m_temperature", "wind_speed_10m"] if img_size == (128, 256) else ["2m_temperature",
+                                                                                                      "10m_wind_speed"]
+        self.static_vars = ["lsm", "orog"]
 
         # 影响损失函数
         # level_weight = [lvl / sum(self.levels) for lvl in self.levels]
@@ -2033,6 +2042,11 @@ class TianQuan(BasePredictor):
 
         # Load static constants (land mask, soil type, topography)
         # self.constants = self.load_constants(os.path.join(root_dir, "constants"))
+        self.needed_ids = needed_ids
+
+        # climit mean
+        self.climate_zarr = "/mnt/d/cla.zarr"
+        self.climate_mean = xr.open_zarr(self.climate_zarr, consolidated=True)  # (time, channel, h, w)
 
         # Data fusion and anomaly branches
         self.anomaly_decoder = DEConv(default_conv, len(default_vars), 3)
@@ -2071,7 +2085,8 @@ class TianQuan(BasePredictor):
         self.norm = nn.LayerNorm(embed_dim)
 
         # UViT backbone
-        self.backbone = PEDadd_UViT(embed_dim=embed_dim, depth=decoder_depth, qk_scale=True, img_size=img_size, window_size=window_size)
+        self.backbone = PEDadd_UViT(embed_dim=embed_dim, depth=decoder_depth, qk_scale=True, img_size=img_size,
+                                    window_size=window_size)
 
         # Weight initialization
         self.initialize_weights()
@@ -2185,119 +2200,261 @@ class TianQuan(BasePredictor):
 
         return torch.tensor(hours, dtype=torch.int64)
 
-    def forward_step(self, input, const=None, times=None, step=None, timestamp=None):
-        """
-        这个方法是为了兼容 XMetAI 框架的单步预测逻辑。
-        框架可能会调用这个函数来进行自回归滚动预测。
-        """
-        b, t, v, h, w = input.size()
+    def resize_input(self, input):
+        from einops import rearrange
+        import torch.nn.functional as F
 
-        # XMetAI 框架的数据集可能没有提供 anomaly，我们先用全 0 代替，保证模型能跑
-        anomaly = torch.zeros_like(input)
+        # 1. 记录原始的 batch (n) 和 time (t) 维度大小，方便后面还原
+        n, t = input.shape[0], input.shape[1]
 
-        # 我们随机生成输入，将来会改
-        H, W = h, w
-        # batch中每个样本的绝对时间
+        # 2. 压平成 4 维以适配 interpolate
+        x = rearrange(input, "n t c h w -> (n t) c h w")
+
+        # 3. 将 ListConfig 强制转换为标准的整数元组
+        target_size = tuple(int(i) for i in self.img_size)
+
+        # 4. 用转换后的 target_size 进行对比和插值
+        if x.shape[-2:] != target_size:
+            x = F.interpolate(
+                x.float(),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False
+            ).to(input.dtype)
+
+        # 5. 核心修复：将形状从 4 维恢复回 5 维
+        x = rearrange(x, "(n t) c h w -> n t c h w", n=n, t=t)
+
+        return x
+
+    def resize_output(self, output, input):
+        """
+        将 output (B, C, H, W) 插值到 input 的空间尺寸 (H2, W2)
+        input 的形状为 (B, T, C', H2, W2)
+        """
+        # 提取 input 的最后两个维度作为目标尺寸 (H2, W2)
+        target_size = input.shape[-2:]
+
+        # 如果 output 的空间尺寸不等于目标尺寸，则进行插值
+        if output.shape[-2:] != target_size:
+            output = F.interpolate(
+                output.float(),  # 插值操作通常需要浮点型
+                size=target_size,
+                mode="bilinear",
+                align_corners=False
+            ).to(output.dtype)  # 还原回原有的数据类型（防止原来是 half 精度）
+
+        return output
+
+    def resize_const(self, const):
+        if const is not None:
+            target_size = tuple(int(i) for i in self.img_size)
+            if const.dim() == 3:
+                # 形状: (C, H, W)
+                c_tmp = const.unsqueeze(0).float()
+                c_tmp = F.interpolate(c_tmp, size=target_size, mode="bilinear", align_corners=False)
+                resized_const = c_tmp.squeeze(0).to(const.dtype)
+            elif const.dim() == 4:
+                # 形状: (B, C, H, W)
+                resized_const = F.interpolate(const.float(), size=target_size, mode="bilinear", align_corners=False).to(
+                    const.dtype)
+            else:
+                # 如果出现其他意外维度，也可以尝试直接走你自己的 resize_input 或者报错
+                resized_const = const
+        else:
+            resized_const = None
+        return resized_const
+
+    def replace_year_with_reference(self, idx, year=1979):
+        replaced = []
+        for ts in idx:
+            try:
+                # 尝试直接替换年份
+                new_ts = ts.replace(year=year)
+            except ValueError:
+                # 如果触发 ValueError，检查是否是闰年 2 月 29 日的越界问题
+                if ts.month == 2 and ts.day == 29:
+                    # 如果目标参考年份不是闰年，将其平移到 2月 28日
+                    new_ts = ts.replace(year=year, day=28)
+                else:
+                    # 如果是其他原因导致的 ValueError，则正常向上抛出
+                    raise
+            replaced.append(new_ts)
+
+        return replaced
+
+    def forward_step(self, input, const=None, times=None, step=None, climate_tensor=None, timestamp=None):
+        """
+        兼容 XMetAI 框架的单步预测逻辑。
+        完全仿照 UTransformer 的规范进行前向传播处理，包含数据变换、特征前向与残差输出。
+        """
+        if hasattr(self, "logger"):
+            self.logger.debug(f"Processing step: {step}, times: {times}")
+
+        if hasattr(self, "in_frames"):
+            input = input[:, -self.in_frames:]  # 例如 bxTxcxhxw 或 bxtxvxhxw
+
+        batch_size = input.shape[0]
+        # 保留你原始的通道数v，方便后面裁剪
+        v = input.shape[2]
+        resized_input = self.resize_input(input)
+        # resize
+        resize_const = self.resize_const(const)
+        resized_climate_tensor = self.resize_input(climate_tensor)
+
+        if hasattr(self, "training") and (self.training or getattr(self, "use_pertub", False)):
+            if getattr(self, "pertub_mixup", 0) > 0 and batch_size > 1:
+                alpha = torch.rand(1, device=resized_input.device) * self.pertub_mixup
+                indices = torch.randperm(batch_size, device=resized_input.device)
+                resized_input = resized_input * (1 - alpha) + resized_input[indices] * alpha
+                if hasattr(self, "logger"):
+                    self.logger.debug(f"Applied input mixup with alpha: {alpha.item():.3f}")
+
+        # 获取 resize 之后的宽高
+        H, W = resized_input.shape[-2], resized_input.shape[-1]
+
+        anomaly = resized_climate_tensor
+
         hours = self._times_to_hours(times).to(self.device)
-        # 预测 6 小时，即 21600 分钟
-        lead_time = timedelta(hours=6)
-        # 固定值，数据集真实区域
+        lead_time = timedelta(hours=24)
         lats = torch.linspace(-90, 90, H).view(-1, 1).repeat(1, W).to(self.device)
         lons = torch.linspace(0, 360, W).view(1, -1).repeat(H, 1).to(self.device)
-
-        # 计算损失需要
         region_info = {"min_h": 0, "max_h": H - 1, "min_w": 0, "max_w": W - 1}
-        # 一个常量提前弄好
-        const = torch.cat([const, const[-1:]], dim=0)
-        # 调用你原本的 encoder 前向传播
-        surf_pred, atmo_pred = self.forward_encoder(input, anomaly, hours, self.default_vars, lats, lons, region_info, lead_time, const=const)
 
-        # 拼接输出，恢复成框架期望的 (b, 1, v, h, w) 形状
-        # 注意：这里需要根据你的变量顺序把 surf 和 atmo 拼成和 input 一样的顺序
-        # 为了最小改动能跑通，这里我们强制 reshape 并拼凑
-        preds = torch.cat([surf_pred, atmo_pred.reshape(b, -1, h, w)], dim=1)
+        surf_pred, atmo_pred = self.forward_encoder(
+            resized_input, anomaly, hours, self.default_vars,
+            lats, lons, region_info, lead_time, const=resize_const
+        )
+
+        # 拼接并 reshape 输出
+        output = torch.cat([surf_pred, atmo_pred.reshape(batch_size, -1, H, W)], dim=1)
 
         # 确保输出和输入变量数一致，补齐或者裁剪
-        if preds.shape[1] > v:
-            preds = preds[:, :v]
-        elif preds.shape[1] < v:
-            pad = torch.zeros(b, v - preds.shape[1], h, w, device=preds.device)
-            preds = torch.cat([preds, pad], dim=1)
+        if output.shape[1] > v:
+            output = output[:, :v]
+        elif output.shape[1] < v:
+            pad = torch.zeros(batch_size, v - output.shape[1], H, W, device=output.device)
+            output = torch.cat([output, pad], dim=1)
 
-        return preds.unsqueeze(1)  # 返回形状: (B, 1, V, H, W)
+        if hasattr(self, "logger"):
+            self.logger.debug(f"head output shape (before resize): {output.shape}")
+
+        # 调用你的方法将输出还原为原尺寸
+        output = self.resize_output(output, input)
+
+        if hasattr(self, "logger"):
+            self.logger.debug(
+                f"final output shape: {output.shape}, min: {output.min().item()}, max: {output.max().item()}")
+
+        output = output.unsqueeze(1) + input[:, -1:]
+        return output
+
+    def compute_step_loss(self, output, target, step):
+        if "channel_weights" in self._buffers:
+            loss_rec = charbonnier_loss(output, target, weight=self.channel_weights * self.weight)
+        else:
+            loss_rec = charbonnier_loss(output, target, weight=self.weight)
+        step_losses = {"loss_rec": loss_rec}
+        # accumulate PINN losses per-step when enabled
+        if self.pinn_enable:
+            pinn_losses = self.compute_pinn_losses(output, target)
+            for k, v in pinn_losses.items():
+                step_losses[k] = v
+        return step_losses
 
     def forward(self, data):
         """
         框架标准入口，统一接收 data 字典。
+        结合了自定义的空间尺寸变换与框架的自回归多步训练逻辑。
         """
-        # 测试/推理模式
+        # 1. 测试/推理模式
         if not self.training:
             return self.test(data)
 
-        # 训练模式，预处理数据
+        # 2. 训练模式，预处理数据解包
         data = self.process_data(data)
-        input = data["input"]  # shape: (B, in_frames, C, H, W)
-        targets = data["targets"]  # shape: (B, out_frames, C, H, W)
+        input = data["input"]
         times = data["times"]
+        targets = data["targets"]
         const = data.get("const", None) if self.const_chans > 0 else None
 
-        # --- 空间尺寸变换逻辑
-        target_size = tuple(int(x) for x in self.img_size)  # 强制转数字
+        # 3. 规范的日志记录
+        self.logger.debug(f"input shape: {input.shape}, target shape: {targets.shape}")
+        self.logger.debug(
+            f"input data min: {input.min():.3f}, max: {input.max():.3f}, target min: {targets.min():.3f}, max: {targets.max():.3f}")
 
-        # 1. 处理 input: 合并 B 和 F 维度进行插值
-        B, F_in, C, H, W = input.shape
-        input = input.view(B * F_in, C, H, W)  # 变 4D
-        input = F.interpolate(input, size=target_size, mode="bilinear", align_corners=False)
-        input = input.view(B, F_in, C, *target_size)  # 还原 5D
+        # 4. 准备自回归循环变量
+        future_frames = targets.size(1)
+        total_frames = self.start_frames + future_frames
+        loss_dict = {}
 
-        # 2. 处理 targets: 同样的操作
-        B, F_out, C, H, W = targets.shape
-        targets = targets.view(B * F_out, C, H, W)
-        targets = F.interpolate(targets, size=target_size, mode="bilinear", align_corners=False)
-        targets = targets.view(B, F_out, C, *target_size)
+        # 5. 严格仿照的自回归多步预测循环
+        for t in range(self.start_frames, total_frames):
+            k = t - self.start_frames
+            # 切片获取当前步的 target
+            target = targets[:, k: k + self.out_frames]
 
-        # 3. 处理静态数据 const (假设是 3D 或 4D)
-        if const is not None:
-            # 如果是 (C, H, W)，需要临时补一个 Batch 维变成 4D 才能插值
-            if const.dim() == 3:
-                const = const.unsqueeze(0)  # (1, C, H, W)
-                const = F.interpolate(const, size=target_size, mode="bilinear", align_corners=False)
-                const = const.squeeze(0)  # (C, 128, 256)
-            else:
-                const = F.interpolate(const, size=target_size, mode="bilinear", align_corners=False)
-        # ------------------------------------------
+            self.reset_input(input)
+            # 读取 climate_tensor
+            curr_climate_time = self.replace_year_with_reference([t + pd.Timedelta(hours=k * self.freq) for t in times],
+                                                                 year=1979)
+            pred_climate_time = self.replace_year_with_reference(
+                [t + pd.Timedelta(hours=(k + 1) * self.freq) for t in times],year=1979)
 
-        # 直接进行单步预测
-        output = self.forward_step(input, const, times=times)
+            curr_climate_tensor = torch.stack(
+                [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(input, non_blocking=True) for idx in
+                 curr_climate_time],
+                dim=0,
+            )
 
-        # 计算 Loss (由于我们要最少改动接入框架，我们直接用基类的 loss_dict 机制)
-        # 假设只预测 1 步 (out_frames=1)
-        target = targets[:, 0:1]
+            pred_climate_tensor = torch.stack(
+                [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(input, non_blocking=True) for idx in
+                 pred_climate_time],
+                dim=0,
+            )  # (bxchannelxhxw)
 
-        # 简单的 MSE 损失，你也可以换成你自定义的 lat_weighted_mse
-        loss_rec = torch.nn.functional.mse_loss(output, target)
+            climate_tensor = torch.stack([curr_climate_tensor, pred_climate_tensor], dim=1)
 
-        loss_dict = {"loss_rec": loss_rec}
+            # 单步预测 (注意这里严格传递了 step=t，要求你的 forward_step 支持该 kwargs)
+            output = self.forward_step(input, const=const, times=times, step=t, climate_tensor=climate_tensor)
+
+            # 计算当前步的 Loss
+            step_losses = self.compute_step_loss(output, target, step=k)
+
+            # 累加 Loss
+            for k_loss, v_loss in step_losses.items():
+                loss_dict[k_loss] = loss_dict.get(k_loss, 0) + v_loss
+
+            self.logger.debug(
+                f"step {k} loss_rec: {step_losses.get('loss_rec', 0)} with future frames {future_frames}.")
+
+            # 准备下一步输入 (将当前 output 拼接到 input 后面，并截取最新的 in_frames 帧)
+            input = torch.cat([input, output], dim=1)[:, -self.in_frames:]
+
+        # 6. Loss 平均并返回
+        for k_loss, v_loss in loss_dict.items():
+            loss_dict[k_loss] = v_loss / future_frames
+
         return loss_dict
 
     def evaluate(
-        self,
-        x,
-        y,
-        anomaly,
-        hours,
-        variables,
-        out_vars,
-        transform,
-        metrics,
-        lats,
-        lons,
-        lat,
-        clim,
-        log_postfix,
-        region_info,
-        partition,
-        lead_time=None,
+            self,
+            x,
+            y,
+            anomaly,
+            hours,
+            variables,
+            out_vars,
+            transform,
+            metrics,
+            lats,
+            lons,
+            lat,
+            clim,
+            log_postfix,
+            region_info,
+            partition,
+            lead_time=None,
     ):
         """
         Compute evaluation metrics (excluding CRPS) on a batch.
@@ -2318,29 +2475,29 @@ class TianQuan(BasePredictor):
         )
         mi, ma = region_info["min_h"], region_info["max_h"]
         mj, mj = region_info["min_w"], region_info["max_w"]
-        y_reg = y[:, :, mi : ma + 1, mj : mj + 1]
-        lat_reg = lat[mi : ma + 1]
-        clim_reg = clim[:, mi : ma + 1, mj : mj + 1]
+        y_reg = y[:, :, mi: ma + 1, mj: mj + 1]
+        lat_reg = lat[mi: ma + 1]
+        clim_reg = clim[:, mi: ma + 1, mj: mj + 1]
 
         return [m(preds, y_reg, transform, out_vars, lat_reg, clim_reg, log_postfix) for m in metrics if m is not crps]
 
     def evaluate_ensemble(
-        self,
-        x,
-        y,
-        anomaly,
-        hours,
-        variables,
-        out_vars,
-        transform,
-        metrics,
-        lats,
-        lons,
-        lat,
-        clim,
-        log_postfix,
-        region_info,
-        partition,
+            self,
+            x,
+            y,
+            anomaly,
+            hours,
+            variables,
+            out_vars,
+            transform,
+            metrics,
+            lats,
+            lons,
+            lat,
+            clim,
+            log_postfix,
+            region_info,
+            partition,
     ):
         """
         Ensemble evaluation via Gaussian perturbations.
@@ -2367,9 +2524,9 @@ class TianQuan(BasePredictor):
 
         mi, ma = region_info["min_h"], region_info["max_h"]
         mj, mj = region_info["min_w"], region_info["max_w"]
-        y_reg = y[:, :, mi : ma + 1, mj : mj + 1]
-        lat_reg = lat[mi : ma + 1]
-        clim_reg = clim[:, mi : ma + 1, mj : mj + 1]
+        y_reg = y[:, :, mi: ma + 1, mj: mj + 1]
+        lat_reg = lat[mi: ma + 1]
+        clim_reg = clim[:, mi: ma + 1, mj: mj + 1]
 
         out = []
         for m in metrics:
@@ -2390,17 +2547,17 @@ class TianQuan(BasePredictor):
         return out
 
     def predict(
-        self,
-        x,
-        anomaly,
-        hours,
-        variables,
-        out_vars,
-        transform,
-        lats,
-        lons,
-        region_info,
-        max_predict_range,
+            self,
+            x,
+            anomaly,
+            hours,
+            variables,
+            out_vars,
+            transform,
+            lats,
+            lons,
+            region_info,
+            max_predict_range,
     ):
         """
         Generate final NetCDF predictions. Saves via `np2nc_preds`.
@@ -2411,72 +2568,106 @@ class TianQuan(BasePredictor):
         for i, var in enumerate(self.upper_variables):
             for j, lvl in enumerate(self.levels):
                 idx = self.get_var_ids((f"{var}_{lvl}",), x.device)
-                preds[:, idx] = atmo_p[:, j, i : i + 1]
+                preds[:, idx] = atmo_p[:, j, i: i + 1]
         for i, var in enumerate(self.surface_variables):
             idx = self.get_var_ids((var,), x.device)
-            preds[:, idx] = surf_p[:, i : i + 1]
+            preds[:, idx] = surf_p[:, i: i + 1]
 
         preds = transform(preds)
         out_ids = self.get_var_ids(tuple(out_vars), x.device)
         mi, ma = region_info["min_h"], region_info["max_h"]
         mj, mj = region_info["min_w"], region_info["max_w"]
-        final = preds[:, out_ids, mi : ma + 1, mj : mj + 1].cpu().numpy()
+        final = preds[:, out_ids, mi: ma + 1, mj: mj + 1].cpu().numpy()
 
         return final
 
     @torch.no_grad()
     def test_cascade(self, data):
+        """
+        自回归推理 / 测试入口。
+        结合了 forward 中的动态 climate_tensor 读取逻辑，
+        并依赖 forward_step 内部的 resize 机制处理空间分辨率。
+        """
         # 1. 提取基础数据与配置
-        inputs = data["input"]  # (B, F_in, V, H_orig, W_orig)
+        # 注意：不再在外部进行插值，而是保留原始尺寸传入 forward_step
+        inputs = data["input"]  # (B, in_frames, V, H_orig, W_orig)
         times = data["times"]
         const = data.get("const", None) if self.const_chans > 0 else None
 
-        target_size = (128, 256)
         B, F_in, V, H_orig, W_orig = inputs.shape
 
-        # 2. 空间尺寸预处理：将初始输入和常量插值到 (128, 256)
-        # 合并 B, F 维度进行插值
-        inputs_interp = inputs.view(B * F_in, V, H_orig, W_orig)
-        inputs_interp = F.interpolate(inputs_interp, size=target_size, mode="bilinear", align_corners=False)
-        inputs_interp = inputs_interp.view(B, F_in, V, *target_size)
-
-        if const is not None:
-            if const.dim() == 3:  # (C, H, W)
-                const = F.interpolate(const.unsqueeze(0), size=target_size, mode="bilinear").squeeze(0)
-            else:  # (B, C, H, W)
-                const = F.interpolate(const, size=target_size, mode="bilinear")
-
-        # 3. 初始化输出容器 (按照原始尺寸返回，以便框架计算指标)
+        # 2. 初始化输出容器
         total_step = max(self.test_frames)
         steps_to_save = np.array(self.test_frames) // self.out_frames
-        # 这里的输出 channel 通常对应 V
+
+        # 按照原始尺寸返回，以便框架计算指标
         outputs = inputs.new_zeros(B, len(steps_to_save), V, H_orig, W_orig)
 
-        # 4. 级联预测逻辑
-        # step_range 通常为 [1]，如果存在多轮级联则累加取平均
+        # 3. 级联预测逻辑
+        # step_range 通常为 [1]，如果存在多轮级联扰动等则累加取平均
         for num_step in self.step_range:
             curr_step_idx = 0
-            # 复制一份插值后的输入用于本轮滚动
-            rolling_inputs = inputs_interp.clone()
+            # 复制一份原始输入用于本轮滚动预测
+            rolling_inputs = inputs.clone()
 
             for step in range(total_step):
-                # 执行单步预测。注意参数顺序需对应你定义的 forward_step
-                # forward_step(input, const, times, step, ...)
-                output = self.forward_step(rolling_inputs, const, times=times, step=step)
-                # output 形状: (B, 1, V, 128, 256)
+                # ==========================================
+                # A. 仿照 forward 构造动态 climate_tensor
+                # ==========================================
+                curr_climate_time = self.replace_year_with_reference(
+                    [t + pd.Timedelta(hours=step * self.freq) for t in times],
+                    year=1979
+                )
+                pred_climate_time = self.replace_year_with_reference(
+                    [t + pd.Timedelta(hours=(step + 1) * self.freq) for t in times],
+                    year=1979
+                )
 
-                # 更新滚动窗口：去掉最旧的一帧，拼接最新预测的一帧
-                # 假设模型是滑窗模式：(B, in_frames, V, H, W)
-                rolling_inputs = torch.cat([rolling_inputs, output], dim=1)[:, 1:]
+                # 从 zarr/dataset 中取出对应时间的气候态并转为 tensor (bxchannelxhxw)
+                curr_climate_tensor = torch.stack(
+                    [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(inputs,
+                                                                                                       non_blocking=True)
+                     for idx in curr_climate_time],
+                    dim=0,
+                )
+                pred_climate_tensor = torch.stack(
+                    [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(inputs,
+                                                                                                       non_blocking=True)
+                     for idx in pred_climate_time],
+                    dim=0,
+                )
 
-                # 如果当前步数在 test_frames 记录列表中
+                # (B, 2, C, H, W)
+                climate_tensor = torch.stack([curr_climate_tensor, pred_climate_tensor], dim=1)
+
+                # ==========================================
+                # B. 执行单步前向推理
+                # ==========================================
+                # forward_step 内部已包含 self.resize_input 和 self.resize_output
+                # 因此输出的 output 尺寸直接是 (B, 1, V, H_orig, W_orig)
+                output = self.forward_step(
+                    rolling_inputs,
+                    const=const,
+                    times=times,
+                    step=step,
+                    climate_tensor=climate_tensor
+                )
+
+                # ==========================================
+                # C. 滚动更新输入窗口
+                # ==========================================
+                # 拼接最新预测帧，并根据 in_frames 截取最新的历史数据
+                rolling_inputs = torch.cat([rolling_inputs, output], dim=1)[:, -self.in_frames:]
+
+                # ==========================================
+                # D. 按需记录结果
+                # ==========================================
                 if (step + 1) in steps_to_save:
-                    # 将预测结果插值回原始尺寸 (H_orig, W_orig)
-                    out_rescaled = F.interpolate(output.squeeze(1), size=(H_orig, W_orig), mode="bilinear", align_corners=False)  # (B, V, 128, 256)
-                    outputs[:, curr_step_idx : curr_step_idx + 1] += out_rescaled.unsqueeze(1)
+                    # 此时的 output 已经是残差相加且还原尺寸后的张量，直接累加即可
+                    outputs[:, curr_step_idx: curr_step_idx + 1] += output
                     curr_step_idx += 1
 
-        # 5. 如果有多个 step_range，取平均值
+        # 4. 如果有多个 step_range (例如 multi-ensemble / 扰动测试)，取平均值
         outputs = outputs / len(self.step_range)
 
         return outputs
@@ -2502,7 +2693,8 @@ class TianQuan(BasePredictor):
         graph = self._build_graph_from_shape(height, width, normed_input.device)
         if self.use_multiscale:
             factors = self.coarse_factors or [2]
-            ms_graph = [self._build_multiscale_from_shape(height, width, factor, normed_input.device) for factor in factors]
+            ms_graph = [self._build_multiscale_from_shape(height, width, factor, normed_input.device) for factor in
+                        factors]
             graph = (*graph, ms_graph)
         output = self.forward_step(normed_input, None, graph, step=0, timestamp=timestamp)
         output = self.inv_normalize(output)
