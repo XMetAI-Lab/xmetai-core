@@ -141,11 +141,47 @@ def build_level_channel_map(
         group_slice_indices.append(group_chans)
 
     # Step 3: Build reassemble map, mapping sequential group output channels back to full channel indices.
-    group_reassemble_map: list[int] = []
-    group_mapping = sum(group_slice_indices, [])  # flatten list of lists
-    group_reassemble_map = [group_mapping.index(i) for i in range(len(in_names))]  # map full channel index to group output index
+    group_reassemble_map = _build_reassemble_map(group_slice_indices, len(in_names))
 
     return group_slice_indices, group_reassemble_map
+
+
+def build_variable_channel_map(in_names: list[str]) -> tuple[list[list[int]], list[int]]:
+    """Build channel groups by variable prefix instead of by pressure level.
+
+    The groups are ordered as: z, t, uv, q, others.
+    Pressure-level channels must be named like z500/t850/u200/v200/q700; all
+    non-matching channels fall into the others group.
+    """
+    group_slice_indices: list[list[int]] = [[] for _ in range(5)]
+
+    for idx, name in enumerate(in_names):
+        if name.startswith("z") and name[1:].isdigit():
+            group_slice_indices[0].append(idx)
+        elif name.startswith("t") and name[1:].isdigit():
+            group_slice_indices[1].append(idx)
+        elif (name.startswith("u") or name.startswith("v")) and name[1:].isdigit():
+            group_slice_indices[2].append(idx)
+        elif name.startswith("q") and name[1:].isdigit():
+            group_slice_indices[3].append(idx)
+        else:
+            group_slice_indices[4].append(idx)
+
+    group_reassemble_map = _build_reassemble_map(group_slice_indices, len(in_names))
+    return group_slice_indices, group_reassemble_map
+
+
+def _build_reassemble_map(group_slice_indices: list[list[int]], num_channels: int) -> list[int]:
+    flattened = [idx for group in group_slice_indices for idx in group]
+    if len(flattened) != num_channels or len(set(flattened)) != num_channels:
+        raise ValueError(
+            f"group slices must partition all {num_channels} channels exactly once, got {len(flattened)} entries and {len(set(flattened))} unique indices"
+        )
+
+    reassemble_map = [0] * num_channels
+    for group_pos, chan_idx in enumerate(flattened):
+        reassemble_map[chan_idx] = group_pos
+    return reassemble_map
 
 
 @MODELS.register()
@@ -362,6 +398,7 @@ class GroupVAEPredictor(BasePredictor):
         head_type: str = "2fc",
         norm_type: str = "adaln",
         ffn_type: str = "gegluffn",
+        group_by: str = "level",
         level_groups: list[list[int]] | None = None,
         split_surface: bool = False,
         plevels: list[int] | None = None,
@@ -404,12 +441,16 @@ class GroupVAEPredictor(BasePredictor):
         else:
             self.pretrain = False
 
-        if level_groups is None:
-            level_groups = DEFAULT_LEVEL_GROUPS
-        if plevels is None:
-            plevels = LEVELS_13
-
-        self.group_slice_indices, self.group_reassemble_map = build_level_channel_map(list(self.in_names), level_groups, split_surface, plevels=plevels)
+        if group_by == "level":
+            if level_groups is None:
+                level_groups = DEFAULT_LEVEL_GROUPS
+            if plevels is None:
+                plevels = LEVELS_13
+            self.group_slice_indices, self.group_reassemble_map = build_level_channel_map(list(self.in_names), level_groups, split_surface, plevels=plevels)
+        elif group_by == "variable":
+            self.group_slice_indices, self.group_reassemble_map = build_variable_channel_map(list(self.in_names))
+        else:
+            raise ValueError("group_by must be one of {'level', 'variable'}.")
         self.num_groups = len(self.group_slice_indices)
 
         if isinstance(embed_dim, int):
