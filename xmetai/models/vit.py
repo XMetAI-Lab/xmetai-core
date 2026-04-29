@@ -183,11 +183,11 @@ class ViTModel(BasePredictor):
         output = self.encoder.head(h)  # B, N, C_out*P*P
         self.logger.debug(f"head output shape: {output.shape}")
 
-        output = self.encoder.resize_output(output, input)
+        output = self.encoder.resize_output(output, input, unsqueeze=True)  # B, 1, C_out, H, W
 
         # decode output is only a residual, so we add the last input frame
         self.logger.debug(f"final output shape: {output.shape}, min: {output.min().item()}, max: {output.max().item()}")
-        output = output.unsqueeze(1) + input[:, -1:]
+        output = output + input[:, -1:]
         return output
 
     @torch.no_grad()

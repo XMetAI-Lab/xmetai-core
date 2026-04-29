@@ -42,10 +42,11 @@ from xmetai import LazyCall as L
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
 
+vae_type = "absolute"
 if os.path.exists(f"{output_dir}/model_best.pth"):
     train.init_checkpoint = f"{output_dir}/model_best.pth"
-if os.path.exists(f"{output_dir}/model_posterior_fix.pth"):
-    train.init_checkpoint = f"{output_dir}/model_posterior_fix.pth"
+if os.path.exists(f"{output_dir}/model_posterior_fix_{vae_type}.pth"):
+    train.init_checkpoint = f"{output_dir}/model_posterior_fix_{vae_type}.pth"
     train.freeze = ("posterior_encoder_group",)
 
 loss_weight = (0.2, 0.2, 1.0, 0.002, 1.0)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
@@ -93,7 +94,7 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     norm_type="adaln",
     ffn_type="gegluffn",
     # VAE settings
-    vae_type="index",
+    vae_type=vae_type,
     level_groups=[[0], [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
     split_surface=False,
     # Vertical transformer settings for VAE latent prediction

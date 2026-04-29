@@ -262,7 +262,7 @@ class GroupDecoder(UTransformer):
             ).to(latent_h)
 
         if pred.dim() == 4:
-            pred = pred.unsqueeze(1)
+            pred = rearrange(pred, "n (t c) h w -> n t c h w", c=self.out_chans)
         elif pred.dim() != 5:
             raise ValueError(f"Unexpected pred dim: {pred.shape}")
 
@@ -483,6 +483,7 @@ class GroupVAEPredictor(BasePredictor):
         )
         common_decoder_kwargs = dict(
             image_size=image_size,
+            out_frames=self.out_frames,
             window_size=window_size,
             patch_size=patch_size,
             down_times=down_times,
@@ -512,7 +513,7 @@ class GroupVAEPredictor(BasePredictor):
             posterior_encoder_list.append(posterior_encoder)
 
             decoder = GroupDecoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, in_frames=self.in_frames, **common_decoder_kwargs)
-            decoder.head = ConvHead(group_embed_dim, group_chans, patch_size=patch_size)
+            decoder.head = ConvHead(group_embed_dim, group_chans * self.out_frames, patch_size=patch_size)
             decoder_list.append(decoder)
 
         self.vae_encoder_group = nn.ModuleList(vae_encoder_list)

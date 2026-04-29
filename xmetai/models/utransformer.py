@@ -68,9 +68,10 @@ class UTransformer(nn.Module):
         self,
         in_chans,
         out_chans,
-        in_frames,
         embed_dim,
         image_size,
+        in_frames,
+        out_frames=1,
         const_chans=0,
         window_size=8,
         patch_size=4,
@@ -97,9 +98,10 @@ class UTransformer(nn.Module):
             norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
         self.in_chans = in_chans
-        self.in_frames = in_frames
         self.out_chans = out_chans
         self.const_chans = const_chans
+        self.in_frames = in_frames
+        self.out_frames = out_frames
         self.embed_dim = embed_dim
         self.image_size = tuple(image_size)
         self.patch_size = patch_size
@@ -228,13 +230,13 @@ class UTransformer(nn.Module):
 
         if head_type == "1fc":
             self.logger.info(f"Using 1fc head with embed_dim: {embed_dim}, out_chans: {out_chans}, patch_size: {patch_size}")
-            self.head = nn.Linear(embed_dim, out_chans * patch_size * patch_size)
+            self.head = nn.Linear(embed_dim, out_chans * out_frames * patch_size * patch_size)
         elif head_type == "2fc":
             self.logger.info(f"Using 2fc head with embed_dim: {embed_dim}, out_chans: {out_chans}, patch_size: {patch_size}")
             self.head = nn.Sequential(
                 nn.Linear(embed_dim, embed_dim),
                 nn.GELU(),
-                nn.Linear(embed_dim, out_chans * patch_size * patch_size),
+                nn.Linear(embed_dim, out_chans * out_frames * patch_size * patch_size),
             )
         elif head_type == "plsf":
             pl_chans = 65
@@ -253,7 +255,7 @@ class UTransformer(nn.Module):
         self.logger.info(
             f"Initialized {self.__class__.__name__} with args: "
             # Data dimensions
-            f"in_chans={in_chans}, out_chans={out_chans}, const_chans={const_chans}, in_frames={in_frames}, "
+            f"in_chans={in_chans}, out_chans={out_chans}, const_chans={const_chans}, in_frames={in_frames}, out_frames={out_frames}, "
             # Spatial and patch configurations
             f"image_size={image_size}, patch_size={patch_size}, window_size={window_size}, stride_size={stride_size}, down_times={down_times}, "
             # Architecture and layers
@@ -270,7 +272,7 @@ class UTransformer(nn.Module):
             x = F.interpolate(x.float(), size=self.image_size, mode="bilinear", align_corners=False).to(input)
         return x
 
-    def resize_output(self, output, input):
+    def resize_output(self, output, input, unsqueeze=False):
         output = rearrange(
             output,
             "n (h w) (p1 p2 c) -> n c (h p1) (w p2)",
@@ -287,6 +289,8 @@ class UTransformer(nn.Module):
                 align_corners=False,
             ).to(input)
 
+        if unsqueeze:
+            output = rearrange(output, "n (t c) h w -> n t c h w", t=self.out_frames)
         return output
 
     def get_embed(self, timestamp):
