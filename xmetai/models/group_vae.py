@@ -661,7 +661,7 @@ class GroupVAEPredictor(BasePredictor):
             target_hw: Optional target height/width for resizing
 
         Returns:
-            Full-field output with residual applied (B, 1, C, H, W)
+            Full-field output with residual applied (B, out_frames, C, H, W)
         """
         full_output = self._reassemble(decoded_groups, reference_input)
         if target_hw is None:
@@ -966,11 +966,12 @@ class GroupVAEPredictor(BasePredictor):
         input = data["input"]
         times = data["times"]
         const = data["const"] if self.const_chans > 0 else None
-        total_step = max(self.test_frames)
+        total_step = max(self.test_frames) // self.out_frames + self.start_frames
         steps = np.array(self.test_frames) // self.out_frames
+        self.logger.debug(f"Testing cascade: total_step={total_step}, steps={steps}, input.shape={input.shape}")
 
         hw = list(input.shape[-2:])
-        outputs = input.new_zeros(input.shape[0], len(steps), len(self.test_chans), *hw)
+        outputs = input.new_zeros(input.shape[0], len(self.test_frames), len(self.test_chans), *hw)
 
         self.members = 1  # disable ensembling for testing to save time; can be re-enabled if desired
         for member in range(self.members):
@@ -991,8 +992,9 @@ class GroupVAEPredictor(BasePredictor):
                 new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames :]
 
                 if t + 1 in steps:
-                    outputs[:, curr_step : curr_step + 1] += output[:, :, self.test_chans].detach()
-                    curr_step += 1
+                    outputs[:, curr_step : curr_step + self.out_frames] += output[:, :, self.test_chans].detach()
+                    curr_step += self.out_frames
+                    self.logger.debug(f"Step {t}: output shape={output.shape}, updated outputs shape={outputs.shape}")
 
         outputs /= self.members
         return outputs

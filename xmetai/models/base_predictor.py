@@ -252,22 +252,18 @@ class BasePredictor(Meta):
 
     def reset_input(self, input):
         if len(self.accumid) > 0 and self.zero_accum:
-            self.logger.debug(f"Resetting accumulate channels: {self.accumid}")
             input[:, :, self.accumid] *= 0
         if len(self.maskid) > 0:
-            self.logger.debug(f"Applying mask to channels: {self.maskid}")
             if hasattr(self, "mask_shift"):
                 input[:, :, self.maskid] *= self.mask_shift
             else:
                 input[:, :, self.maskid] *= self.mask
         if len(self.landid) > 0:
-            self.logger.debug(f"Applying land mask to channels: {self.landid}")
             if hasattr(self, "land_mask_shift"):
                 input[:, :, self.landid] *= self.land_mask_shift
             else:
                 input[:, :, self.landid] *= self.land_mask
         if len(self.logid) > 0:
-            self.logger.debug(f"Applying clamp to log channels: {self.logid}")
             input[:, :, self.logid] = input[:, :, self.logid].clamp(min=0, max=7)
         return input
 
