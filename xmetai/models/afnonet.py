@@ -69,12 +69,8 @@ class AFNONet(BasePredictor):
 
         self.head = nn.Linear(embed_dim, self.out_chans * self.patch_size[0] * self.patch_size[1], bias=False)
 
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        return {"pos_embed"}
-
     def resize_input(self, input):
-        x = rearrange(input, "n t c h w -> n (t c) h w")
+        x = rearrange(input, "n t c h w -> (n t) c h w")
         # 将 ListConfig 转换为普通 tuple[int]
         target_size = self.img_size
         if hasattr(target_size, "__len__"):
@@ -156,9 +152,9 @@ class AFNONet(BasePredictor):
     def forward_step(self, input):
 
         input = input[:, -self.in_frames :]  # bxTxcxhxw
-        resized_input = self.resize_input(input)
-
-        B = resized_input.shape[0]
+        B = input.shape[0]
+        resized_input = self.resize_input(input)  # (b,t,c,h,w)
+        resized_input = rearrange(resized_input, "(n t) c h w -> n (t c) h w", n=B)
         x = self.patch_embed(resized_input)
         x = x + self.pos_embed
         x = self.pos_drop(x)
@@ -169,7 +165,7 @@ class AFNONet(BasePredictor):
 
         x = self.head(x)
         output = self.resize_output(x, input)
-        output = output.unsqueeze(1)
+        output = output.unsqueeze(1) + input[:, -1:]
         return output
 
     @torch.no_grad()
