@@ -6,3 +6,6 @@ from .group_vae import GroupVAEPredictor
 from .onnx_infer import OnnxInferModel
 from .vit import ViTModel
 from .vit_ens import ViTModelEns
+from .vit_ens import ViTModelEns
+from .phyvae import Phy3DRQVAE
+from .phycast import PhyCast
