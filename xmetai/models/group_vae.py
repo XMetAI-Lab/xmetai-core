@@ -83,6 +83,28 @@ RESIDUAL_VARS_6H = (
 SLOW_SFCS = ["sst"]
 
 
+def ensemble_schedule(max_members: int = 72, max_step: int = 65, freq: int = 6) -> list[int]:
+    """Build lead-time-dependent ensemble size schedule.
+
+    Uses the same exponential growth logic as `ens_latent_pertub`, but supports
+    both 6-hour and 24-hour cadence by scaling lead time in hours via `t * freq`.
+    """
+    if freq not in (6, 24):
+        raise ValueError(f"Only freq in (6, 24) is supported, got freq={freq}.")
+
+    n0 = 4
+    t0 = 36  # hours when nonlinear error starts to dominate
+    lam = 0.015  # per-hour growth rate
+    n_max = max_members
+    ensemble_sizes: list[int] = []
+
+    for t in range(1, max_step + 1):
+        n_t = math.ceil(n0 * math.exp(lam * (t * freq - t0)))
+        ensemble_sizes.append(min(max(n_t, 1), n_max))
+
+    return ensemble_sizes
+
+
 def build_level_channel_map(
     in_names: list[str],
     level_groups: list[list[int]],
@@ -536,6 +558,23 @@ class GroupVAEPredictor(BasePredictor):
         )
         self.logger.info(
             f"Initialized GroupVAEPredictor with {self.num_groups} groups, embed_dims={self.embed_dims}, vae_type={self.vae_type}, residual_indices={self.residual_vae_indices}"
+        )
+
+        # Build evaluation ensemble schedule once during initialization so test
+        # and subclasses can reuse the same step-wise member plan directly.
+        self.eval_total_step = max(self.test_frames) // self.out_frames + self.start_frames
+        if self.freq in (6, 24):
+            self.ensemble_sizes = ensemble_schedule(
+                max_members=self.members,
+                max_step=self.eval_total_step,
+                freq=self.freq,
+            )
+        else:
+            self.ensemble_sizes = [self.members] * self.eval_total_step
+
+        self.logger.info(
+            f"Evaluation ensemble schedule initialized: freq={self.freq}, members={self.members}, "
+            f"total_step={self.eval_total_step}, ensemble_sizes={self.ensemble_sizes}"
         )
         self.logger.info(f"Group VAE with members={self.members}, alpha={self.alpha}, loss_weight={self.loss_weight}, rollout_max={self.rollout_max}")
 
@@ -992,8 +1031,14 @@ class GroupVAEPredictor(BasePredictor):
         hw = list(input.shape[-2:])
         outputs = input.new_zeros(input.shape[0], len(self.test_frames), len(self.test_chans), *hw)
 
-        self.members = 1  # disable ensembling for testing to save time; can be re-enabled if desired
-        for member in range(self.members):
+        assert total_step <= len(self.ensemble_sizes), f"Total steps {total_step} exceeds precomputed ensemble schedule length {len(self.ensemble_sizes)}"
+        ensemble_sizes = self.ensemble_sizes[:total_step]
+        effective_members = max(ensemble_sizes)
+        ensemble_counts = [0] * len(self.test_frames)
+
+        self.logger.debug(f"Testing with dynamic ensemble size: freq={self.freq}, max_members={effective_members}.")
+
+        for _ in range(effective_members):
             new_input = input.clone()
             new_input[~torch.isfinite(new_input)] = 0.0
             curr_step = 0
@@ -1011,11 +1056,17 @@ class GroupVAEPredictor(BasePredictor):
                 new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames :]
 
                 if t + 1 in steps:
-                    outputs[:, curr_step : curr_step + self.out_frames] += output[:, :, self.test_chans].detach()
+                    step_member_limit = ensemble_sizes[t] if t < len(ensemble_sizes) else effective_members
+                    if ensemble_counts[curr_step] < step_member_limit:
+                        outputs[:, curr_step : curr_step + self.out_frames] += output[:, :, self.test_chans].detach()
+                        for fi in range(curr_step, min(curr_step + self.out_frames, len(ensemble_counts))):
+                            ensemble_counts[fi] += 1
                     curr_step += self.out_frames
                     self.logger.debug(f"Step {t}: output shape={output.shape}, updated outputs shape={outputs.shape}")
 
-        outputs /= self.members
+        denom = torch.tensor(ensemble_counts, device=outputs.device, dtype=outputs.dtype).view(1, -1, 1, 1, 1)
+        denom = torch.clamp(denom, min=1.0)
+        outputs = outputs / denom
         return outputs
 
     @torch.no_grad()
