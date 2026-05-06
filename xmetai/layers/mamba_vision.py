@@ -18,7 +18,7 @@ from xmetai.layers.attention import Attention, WindowAttention, WindowAttentionV
 from xmetai.layers.rotary_attention import RotaryAttention
 from xmetai.layers.swin import window_partition, window_reverse
 
-__all__ = ["MambaVisionLayer"]
+__all__ = ["MambaVisionLayer", "MambaVisionMixer", "MambaMetMixer"]
 
 
 # define symbolic function for SelectiveScanFn

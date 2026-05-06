@@ -42,28 +42,20 @@ from xmetai import LazyCall as L
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
 
-vae_type = "absolute"
+vae_type = "index"
 if os.path.exists(f"{output_dir}/model_best.pth"):
     train.init_checkpoint = f"{output_dir}/model_best.pth"
-if os.path.exists(f"{output_dir}/model_posterior_fix_{vae_type}.pth"):
-    train.init_checkpoint = f"{output_dir}/model_posterior_fix_{vae_type}.pth"
-    train.freeze = ("posterior_encoder_group",)
-
-loss_weight = (0.2, 0.2, 1.0, 0.002, 1.0)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
+loss_weight = (0.2, 0.2, 1.0, 0.002, 0.8)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
 if load_from_pretrain:
     # freeze upper-level VAE to preserve pretrained dynamics, only fine-tune lower-level VAE and main predictor.
     train.teacher_forcing.teach_start = 2
-    train.teacher_forcing.teach_steps = 10
+    train.teacher_forcing.teach_steps = 20
     train.freeze = (
+        "posterior_encoder_group.1",
         "posterior_encoder_group.2",
+        "vae_encoder_group.1",
         "vae_encoder_group.2",
     )
-    # train.teacher_forcing.teach_start = 10
-    # train.teacher_forcing.teach_steps = 20
-    # train.freeze = (
-    #    "posterior_encoder_group.1",
-    #    "vae_encoder_group.1",
-    # )
     rollout_steps = train.teacher_forcing.teach_steps - train.teacher_forcing.teach_start + 1
     train.teacher_forcing.teach_iters = train.max_iter // rollout_steps
     train.eval_period = train.teacher_forcing.teach_iters
@@ -71,6 +63,11 @@ if load_from_pretrain:
     scheduler.end_value = 1e-2
     scheduler.period = 1.0 / rollout_steps
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
+else:
+    if os.path.exists(f"{output_dir}/model_posterior_fix_{vae_type}.pth"):
+        train.init_checkpoint = f"{output_dir}/model_posterior_fix_absolute.pth"
+        train.freeze = ("posterior_encoder_group",)
+
 
 ######################################################################
 # Model settings
@@ -95,6 +92,7 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     ffn_type="gegluffn",
     # VAE settings
     vae_type=vae_type,
+    vae_residual_indices=["sst", "t2m"],
     level_groups=[[0], [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
     split_surface=False,
     # Vertical transformer settings for VAE latent prediction
@@ -126,6 +124,7 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     # pinn_coeffs=pinn_coeffs,
     # pinn_use_denorm=True,
     save_dir=output_dir + "/pred/",
+    rollout_max=12,
 )
 
 model.members = members

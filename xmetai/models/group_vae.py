@@ -592,6 +592,11 @@ class GroupVAEPredictor(BasePredictor):
     def _decode_group(self, h_state: torch.Tensor, gi: int, timestamp: dict, const: torch.Tensor | None = None) -> torch.Tensor:
         return self.decoder_group[gi](h_state, timestamp=timestamp, const=const)
 
+    def _is_group_frozen(self, gi: int, is_prior: bool = True) -> bool:
+        """Check if a group encoder is frozen (has no trainable parameters)."""
+        encoder = self.vae_encoder_group[gi] if is_prior else self.posterior_encoder_group[gi]
+        return not any(p.requires_grad for p in encoder.parameters())
+
     @final
     def _encode_all_groups(
         self,
@@ -603,7 +608,8 @@ class GroupVAEPredictor(BasePredictor):
         """Encode all groups from input tensor.
 
         This method returns per-group latent states produced by the fixed
-        internal encoder path.
+        internal encoder path. For frozen groups, encoding is done in no_grad
+        context to avoid storing activations.
 
         Args:
             x: Input tensor (B, T, C, H, W)
@@ -617,7 +623,13 @@ class GroupVAEPredictor(BasePredictor):
         results_by_group = []
         for gi in range(self.num_groups):
             x_group = self._slice_group(x, gi)
-            result = self._encode_group(x_group, gi, timestamp, is_prior=is_prior, const=const)
+            # Use no_grad for frozen encoders to skip activation storage (major memory savings)
+            if self._is_group_frozen(gi, is_prior=is_prior):
+                with torch.no_grad():
+                    result = self._encode_group(x_group, gi, timestamp, is_prior=is_prior, const=const)
+                    result = result.detach()
+            else:
+                result = self._encode_group(x_group, gi, timestamp, is_prior=is_prior, const=const)
             results_by_group.append(result)
         return results_by_group
 
@@ -631,7 +643,8 @@ class GroupVAEPredictor(BasePredictor):
         """Decode all groups from latent states.
 
         This path assumes each entry in `h_states` is directly consumable by
-        `_decode_group`.
+        `_decode_group`. For frozen decoders, h_states are detached to prevent
+        gradient flow into frozen decoder parameters, saving activation memory.
 
         Args:
             h_states: List of latent states (B, N, D) for each group
@@ -642,8 +655,14 @@ class GroupVAEPredictor(BasePredictor):
             List of decoded outputs (B, 1, C_g, H, W) for each group
         """
         outputs_by_group = []
-        for gi in range(len(h_states)):
-            out_group = self._decode_group(h_states[gi], gi, timestamp, const=const)
+        for gi, h_state in enumerate(h_states):
+            # For frozen decoders, detach h_states to avoid gradient accumulation in frozen parameters
+            # This saves activation memory while allowing gradients to backprop through the model
+            if not any(p.requires_grad for p in self.decoder_group[gi].parameters()):
+                h_input = h_state.detach()
+            else:
+                h_input = h_state
+            out_group = self._decode_group(h_input, gi, timestamp, const=const)
             outputs_by_group.append(out_group)
         return outputs_by_group
 

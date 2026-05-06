@@ -14,9 +14,9 @@ train = dict(
     freeze=set(),
     ddp=dict(  # options for DistributedDataParallel
         broadcast_buffers=False,
-        find_unused_parameters=True,
+        find_unused_parameters=False,
         fp16_compression=False,
-        static_graph=True,
+        static_graph=False,
     ),
     fsdp=dict(  # options for FullyShardedDataParallel
         cpu_offload=False,
