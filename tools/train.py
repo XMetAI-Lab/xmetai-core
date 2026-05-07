@@ -46,6 +46,25 @@ except ImportError as e:
 logger = logging.getLogger("xmetai")
 
 
+def _normalize_cli_flags(args):
+    if not getattr(args, "opts", None):
+        return
+
+    cleaned_opts = []
+    for opt in args.opts:
+        if opt == "--resume":
+            args.resume = True
+            continue
+        if opt == "--eval":
+            args.eval = True
+            continue
+        if opt == "--export":
+            args.export = True
+            continue
+        cleaned_opts.append(opt)
+    args.opts = cleaned_opts
+
+
 def build_model(cfg):
     model = instantiate(cfg.model)
     if comm.is_main_process():
@@ -53,24 +72,26 @@ def build_model(cfg):
     model.freeze(cfg.train.freeze)
     model.to(cfg.train.device_type)
     mods = [SwinLayer, torch.nn.TransformerEncoderLayer, GraphCastLayer, GraphCastEncoder, GraphCastDecoder]
-    if HAS_MAMBA:
-        mods.append(MambaVisionLayer)
+    # mods += [WindowAttention, WindowAttentionV2, RotaryAttention, Attention]
+    if HAS_MAMBA and "mamba3" not in str(cfg.model):
+        mods.extend([MambaVisionLayer])
     mods = tuple(mods)
     cfg.train.fsdp.mods = mods
     # Apply activation checkpointing
     if cfg.train.activation_checkpointing:
-        # Determine if we are using Mamba3 to set the proper checkpoint implementation
-        checkpoint_info = CheckpointImpl.REENTRANT if "mamba3" in str(cfg.model) else CheckpointImpl.NO_REENTRANT
 
         def wrap_f1(module):
             return checkpoint_wrapper(
                 module,
-                checkpoint_impl=checkpoint_info,
-                preserve_rng_state=False,
+                checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+                preserve_rng_state=True,
             )
 
+        def has_trainable_params(module):
+            return any(p.requires_grad for p in module.parameters())
+
         def check_fn(submodule):
-            return isinstance(submodule, mods)
+            return isinstance(submodule, mods) and has_trainable_params(submodule)
 
         apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap_f1, check_fn=check_fn)
 
@@ -268,6 +289,7 @@ def do_export(
 
 
 def main(args):
+    _normalize_cli_flags(args)
     cfg = LazyConfig.load(args.config_file)
     cfg = LazyConfig.apply_overrides(cfg, args.opts)
     default_setup(cfg, args)

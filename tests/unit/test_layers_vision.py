@@ -5,6 +5,7 @@ Tests windowed attention, rotary embeddings, and mamba blocks.
 
 import pytest
 import torch
+import torch.nn as nn
 
 # Prefer package exports; otherwise import directly from modules.
 try:
@@ -195,6 +196,19 @@ class TestBlock:
         output = block(x)
         assert output.shape == x.shape
 
+    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    def test_mamba_mixer_conv_bias_flag(self, torch_seed):
+        """Test Mamba mixer honors the conv bias flag."""
+        from xmetai.layers.mamba_vision import MambaVisionMixer
+
+        mixer_with_bias = MambaVisionMixer(d_model=64, conv_bias=True)
+        mixer_without_bias = MambaVisionMixer(d_model=64, conv_bias=False)
+
+        assert mixer_with_bias.conv1d_x.bias is not None
+        assert mixer_with_bias.conv1d_z.bias is not None
+        assert mixer_without_bias.conv1d_x.bias is None
+        assert mixer_without_bias.conv1d_z.bias is None
+
 
 class TestMambaVisionLayer:
     """Test complete MambaVisionLayer with depth > 1."""
@@ -259,11 +273,33 @@ class TestMambaVisionLayer:
             input_size=input_size,
         )
 
-        try:
-            output = layer(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
-            assert output.shape == x.shape
-        except AssertionError:
-            pytest.skip("RotaryAttention requires matching precompute layout; skipping if incompatible")
+        assert isinstance(layer.blocks[0].mixer, nn.Module)
+        assert layer.blocks[0].mixer.max_seq_len == seq_len
+
+        output = layer(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
+        assert output.shape == x.shape
+
+    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    def test_mamba_vision_layer_preserves_mamba_init(self, torch_seed):
+        """Test layer construction does not clobber Mamba mixer initialization."""
+        from xmetai.layers.mamba_vision import MambaVisionLayer, MambaVisionMixer
+
+        torch.manual_seed(1234)
+        expected_mixer = MambaVisionMixer(d_model=64, d_state=8, d_conv=3, expand=1)
+        expected_dt_proj_weight = expected_mixer.dt_proj.weight.detach().clone()
+        expected_out_proj_weight = expected_mixer.out_proj.weight.detach().clone()
+
+        torch.manual_seed(1234)
+        layer = MambaVisionLayer(
+            dim=64,
+            depth=1,
+            num_heads=8,
+            transformer_blocks=[],
+        )
+        mixer = layer.blocks[0].mixer
+
+        assert torch.allclose(mixer.dt_proj.weight, expected_dt_proj_weight)
+        assert torch.allclose(mixer.out_proj.weight, expected_out_proj_weight)
 
     @pytest.mark.gpu
     def test_mamba_vision_layer_mixed_blocks(self, torch_seed):
