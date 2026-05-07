@@ -65,7 +65,7 @@ if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
 else:
     if os.path.exists(f"{output_dir}/model_posterior_fix_{vae_type}.pth"):
-        train.init_checkpoint = f"{output_dir}/model_posterior_fix_absolute.pth"
+        train.init_checkpoint = f"{output_dir}/model_posterior_fix_{vae_type}.pth"
         train.freeze = ("posterior_encoder_group",)
 
 
@@ -124,7 +124,7 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     # pinn_coeffs=pinn_coeffs,
     # pinn_use_denorm=True,
     save_dir=output_dir + "/pred/",
-    rollout_max=12,
+    rollout_max=10,
 )
 
 model.members = members
