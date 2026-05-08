@@ -137,7 +137,9 @@ class RotaryAttention(nn.Module):
 
         if mask is not None:
             mask = mask.to(xq).unsqueeze(1).contiguous()
-            mask = mask.repeat([bsz // ns, 1, 1, 1])
+            if mask.shape[0] != bsz:
+                assert bsz % mask.shape[0] == 0, f"Attention mask batch {mask.shape[0]} must divide input batch {bsz}"
+                mask = mask.repeat([bsz // mask.shape[0], 1, 1, 1])
 
         # flash implementation
         if self.flash:

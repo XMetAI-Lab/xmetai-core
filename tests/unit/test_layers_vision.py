@@ -154,7 +154,7 @@ class TestBlock:
         window_size = (8, 8)
         input_size = (H, W)
         head_dim = C // 8
-        seq_len = window_size[0] * window_size[1]
+        seq_len = H * W
         freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, seq_len)
 
         block = Block(
@@ -260,7 +260,7 @@ class TestMambaVisionLayer:
         window_size = (8, 8)
         input_size = (H, W)
         head_dim = C // 8
-        seq_len = window_size[0] * window_size[1]
+        seq_len = H * W
         freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, seq_len)
 
         layer = MambaVisionLayer(
