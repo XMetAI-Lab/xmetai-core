@@ -114,6 +114,8 @@ class TestUTransformer:
         assert hasattr(model, "freqs_sin")
         assert model.freqs_cos is not None
         assert model.freqs_sin is not None
+        assert model.freqs_cos.shape[0] == (32 // 4) * (64 // 4)
+        assert model.freqs_sin.shape[0] == (32 // 4) * (64 // 4)
 
     @pytest.mark.gpu
     def test_utransformer_dropout(self, torch_seed):

@@ -728,6 +728,19 @@ class GroupVAEPredictor(BasePredictor):
         output = self._apply_residual(full_output, reference_input[:, -1:])
         return output
 
+    @final
+    def _predict_next(self, input: torch.Tensor, times: Any, t: int, const: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        input = self.reset_input(input)
+        timestamp = self.get_timestamp(input, times, t)
+        timestamp_target = self.get_timestamp(input, times, t + 1)
+
+        h_states = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
+        Z_coupled = self.latent_mixer(h_states, timestamp_target)
+        group_outputs = self._decode_all_groups(Z_coupled, timestamp_target, const=const)
+        output = self._assemble_prediction(group_outputs, input)
+        next_input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
+        return output, next_input
+
     def _get_kl_weight(self, mode: str = "cyclical", max_weight: float = 100.0, cycle_iters: int = 20000, min_weight: float = 0.0) -> float:
         try:
             current_iter = get_event_storage().iter
@@ -937,6 +950,17 @@ class GroupVAEPredictor(BasePredictor):
             loss_available = k in loss_steps
             target = targets[:, k : k + self.out_frames]
 
+            if not loss_available:
+                with torch.no_grad():
+                    input = input.detach()
+                    true_input = self.reset_input(true_input)
+
+                    self.logger.debug(f"Time step {t}: input.shape={input.shape}, target.shape={target.shape}, rollout loss skipped")
+                    _, input = self._predict_next(input, times, t, const=const)
+                    input = input.detach()
+                    true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
+                continue
+
             input = self.reset_input(input)
             true_input = self.reset_input(true_input)
 
@@ -1044,16 +1068,7 @@ class GroupVAEPredictor(BasePredictor):
             curr_step = 0
 
             for t in range(self.start_frames, total_step):
-                new_input = self.reset_input(new_input)
-                timestamp = self.get_timestamp(new_input, times, t)
-                timestamp_target = self.get_timestamp(new_input, times, t + 1)
-
-                h_states = self._encode_all_groups(new_input, timestamp, const=const, is_prior=True)
-
-                Z_coupled = self.latent_mixer(h_states, timestamp_target)
-                group_outputs = self._decode_all_groups(Z_coupled, timestamp_target, const=const)
-                output = self._assemble_prediction(group_outputs, new_input)
-                new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames :]
+                output, new_input = self._predict_next(new_input, times, t, const=const)
 
                 if t + 1 in steps:
                     step_member_limit = ensemble_sizes[t] if t < len(ensemble_sizes) else effective_members
