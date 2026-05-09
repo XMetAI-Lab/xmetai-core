@@ -11,7 +11,9 @@ try:
     from xmetai.layers import (
         Attention,
         CubeEmbed,
+        GeGLUFFN,
         LayerNorm,
+        Mlp,
         RotaryAttention,
         TimestepEmbed,
         precompute_freqs_cis,
@@ -42,12 +44,33 @@ except Exception:
         from xmetai.layers.attention import AttentionBlock as Attention
 
     from xmetai.layers.embed import CubeEmbed, TimestepEmbed
+    from xmetai.layers.mlp import GeGLUFFN, Mlp
     from xmetai.layers.norm import LayerNorm
     from xmetai.layers.rotary_attention import (
         RotaryAttention,
         precompute_freqs_cis,
         precompute_freqs_cis_2d,
     )
+
+
+class TestMlp:
+    """Test reusable MLP layers."""
+
+    def test_mlp_forward_shape(self, torch_seed):
+        x = torch.randn(2, 16, 32)
+        mlp = Mlp(in_features=32, hidden_features=64, out_features=48)
+
+        output = mlp(x)
+
+        assert output.shape == (2, 16, 48)
+
+    def test_geglu_ffn_forward_shape(self, torch_seed):
+        x = torch.randn(2, 16, 32)
+        mlp = GeGLUFFN(in_features=32, hidden_features=64, out_features=48)
+
+        output = mlp(x)
+
+        assert output.shape == (2, 16, 48)
 
 
 class TestAttention:
