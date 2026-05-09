@@ -1,7 +1,15 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.autograd import Function
 
-__all__ = ["trunc_exp"]
+__all__ = ["GEGLU", "trunc_exp"]
+
+
+class GEGLU(nn.Module):
+    def forward(self, x):
+        x, gate = x.chunk(2, dim=-1)
+        return F.gelu(gate) * x
 
 
 class TruncExp(Function):
