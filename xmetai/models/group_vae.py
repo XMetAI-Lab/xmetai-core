@@ -733,10 +733,9 @@ class GroupVAEPredictor(BasePredictor):
         input = self.reset_input(input)
         timestamp = self.get_timestamp(input, times, t)
         timestamp_target = self.get_timestamp(input, times, t + 1)
-
         h_states = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
-        Z_coupled = self.latent_mixer(h_states, timestamp_target)
-        group_outputs = self._decode_all_groups(Z_coupled, timestamp_target, const=const)
+        z_coupled = self.latent_mixer(h_states, timestamp_target)
+        group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const)
         output = self._assemble_prediction(group_outputs, input)
         next_input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
         return output, next_input
@@ -1068,7 +1067,19 @@ class GroupVAEPredictor(BasePredictor):
             curr_step = 0
 
             for t in range(self.start_frames, total_step):
-                output, new_input = self._predict_next(new_input, times, t, const=const)
+                if self.pretrain and "targets" in data:
+                    k = t - self.start_frames
+                    target = data["targets"][:, k : k + self.out_frames].to(new_input)
+                    target_input = torch.cat([new_input, target], dim=1)[:, -self.in_frames :]
+                    target_input = self.reset_input(target_input)
+                    timestamp_target = self.get_timestamp(new_input, times, t + 1)
+                    h_states = self._encode_all_groups(target_input, timestamp_target, const=const, is_prior=False)
+                    group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const)
+                    recon_base = target_input[:, -2:-1] if target_input.shape[1] > 1 else target_input[:, -1:]
+                    output = self._assemble_prediction(group_outputs, recon_base)
+                    new_input = target_input
+                else:
+                    output, new_input = self._predict_next(new_input, times, t, const=const)
 
                 if t + 1 in steps:
                     step_member_limit = ensemble_sizes[t] if t < len(ensemble_sizes) else effective_members
