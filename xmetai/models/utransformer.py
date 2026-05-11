@@ -220,7 +220,7 @@ class UTransformer(nn.Module):
 
         self.layers = nn.ModuleList(layers)
 
-        if norm_type == "adaln":
+        if norm_type == "adaln" or self.num_layers == 0:
             self.fpn = None
         else:
             self.fpn = nn.Sequential(
