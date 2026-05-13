@@ -20,7 +20,6 @@ Channel layout (s2s 76-channel):
 Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
 
-import logging
 import math
 from typing import Any, final
 
@@ -577,6 +576,22 @@ class GroupVAEPredictor(BasePredictor):
             f"total_step={self.eval_total_step}, ensemble_sizes={self.ensemble_sizes}"
         )
         self.logger.info(f"Group VAE with members={self.members}, alpha={self.alpha}, loss_weight={self.loss_weight}, rollout_max={self.rollout_max}")
+        if self.pretrain:
+            self._configure_pretrain_trainable()
+
+    def _configure_pretrain_trainable(self) -> None:
+        """Keep only posterior encoder and decoder trainable during pretraining.
+
+        `forward_pre_stage` does not use the prior encoder or latent mixer. Freezing
+        the unused branches avoids DDP unused-parameter reduction errors while
+        matching the intended posterior-encoder + decoder pretraining objective.
+        """
+        for param in self.parameters():
+            param.requires_grad = False
+        for module in (self.posterior_encoder_group, self.decoder_group):
+            for param in module.parameters():
+                param.requires_grad = True
+        self.logger.info("Pretrain mode: only posterior_encoder_group and decoder_group are trainable.")
 
     def _build_residual_indices(self, vae_type: str, vae_residual_indices: list[str] | None) -> list[int]:
         if vae_type == "absolute":
@@ -953,7 +968,6 @@ class GroupVAEPredictor(BasePredictor):
                 with torch.no_grad():
                     input = input.detach()
                     true_input = self.reset_input(true_input)
-
                     self.logger.debug(f"Time step {t}: input.shape={input.shape}, target.shape={target.shape}, rollout loss skipped")
                     _, input = self._predict_next(input, times, t, const=const)
                     input = input.detach()
@@ -962,69 +976,42 @@ class GroupVAEPredictor(BasePredictor):
 
             input = self.reset_input(input)
             true_input = self.reset_input(true_input)
-
+            new_target = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
             timestamp = self.get_timestamp(input, times, t)
             timestamp_target = self.get_timestamp(input, times, t + 1)
             self.logger.debug(f"Time step {t}: input.shape={input.shape}, target.shape={target.shape}")
 
-            new_target = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
-
             h_prior_states_by_group = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
             h_posterior_states_by_group = self._encode_all_groups(new_target, timestamp_target, const=const, is_prior=False)
-            vae_rec_input_outputs_by_group = self._decode_all_groups(
-                h_prior_states_by_group,
-                timestamp,
-                const=const,
-            )
-            vae_rec_target_outputs_by_group = self._decode_all_groups(
-                h_posterior_states_by_group,
-                timestamp_target,
-                const=const,
-            )
+            vae_rec_input_outputs_by_group = self._decode_all_groups(h_prior_states_by_group, timestamp, const=const)
+            vae_rec_target_outputs_by_group = self._decode_all_groups(h_posterior_states_by_group, timestamp_target, const=const)
 
-            if self.logger.isEnabledFor(logging.DEBUG):
-                prior_stats = [
-                    f"G{gi}: shape={h_state.shape}, min={h_state.min().item():.4f}, max={h_state.max().item():.4f}"
-                    for gi, h_state in enumerate(h_prior_states_by_group)
-                ]
-                posterior_stats = [
-                    f"G{gi}: shape={h_state.shape}, min={h_state.min().item():.4f}, max={h_state.max().item():.4f}"
-                    for gi, h_state in enumerate(h_posterior_states_by_group)
-                ]
-                self.logger.debug("Prior states | %s", " ; ".join(prior_stats))
-                self.logger.debug("Posterior states | %s", " ; ".join(posterior_stats))
+            # Constrain latent space to prevent norm explosion
+            for h_prior, h_posterior in zip(h_prior_states_by_group, h_posterior_states_by_group):
+                loss_latent_reg += torch.mean(h_prior**2) + torch.mean(h_posterior**2)
 
-            if loss_available:
-                # Constrain latent space to prevent norm explosion
-                for h_prior, h_posterior in zip(h_prior_states_by_group, h_posterior_states_by_group):
-                    loss_latent_reg += torch.mean(h_prior**2) + torch.mean(h_posterior**2)
+            vae_input_recon = self._assemble_prediction(vae_rec_input_outputs_by_group, true_input[:, -2:-1])
+            vae_input_target = true_input[:, -1:]
+            loss_vae_input += rolling_weights[k] * charbonnier_loss(vae_input_recon, vae_input_target, weight=self.weight)
 
-                # reference should be x_{t-1} based on formula x_t = F(h_t, x_{t-1})
-                vae_input_base = true_input[:, -2:-1] if true_input.shape[1] > 1 else true_input[:, -1:]
-                vae_input_recon = self._assemble_prediction(vae_rec_input_outputs_by_group, vae_input_base)
-                vae_input_target = true_input[:, -1:]
-                loss_vae_input += rolling_weights[k] * charbonnier_loss(vae_input_recon, vae_input_target, weight=self.weight)
+            vae_target_recon = self._assemble_prediction(vae_rec_target_outputs_by_group, true_input)
+            loss_vae_target += rolling_weights[k] * charbonnier_loss(vae_target_recon, target, weight=self.weight)
 
-                vae_target_recon = self._assemble_prediction(vae_rec_target_outputs_by_group, true_input)
-                loss_vae_target += rolling_weights[k] * charbonnier_loss(vae_target_recon, target, weight=self.weight)
+            z_coupled = self.latent_mixer(h_prior_states_by_group, timestamp_target)
+            for gi in range(self.num_groups):
+                loss_latent_pred_rec += rolling_weights[k] * charbonnier_loss(z_coupled[gi], h_posterior_states_by_group[gi].detach())
 
-            Z_coupled = self.latent_mixer(h_prior_states_by_group, timestamp_target)
-            if loss_available:
-                for gi in range(self.num_groups):
-                    loss_latent_pred_rec += rolling_weights[k] * charbonnier_loss(Z_coupled[gi], h_posterior_states_by_group[gi].detach())
-            group_outputs = self._decode_all_groups(Z_coupled, timestamp_target, const=const)
+            group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const)
             output = self._assemble_prediction(group_outputs, input)
+            if "channel_weights" in self._buffers:
+                loss_pred_rec += rolling_weights[k] * charbonnier_loss(output, target, weight=self.channel_weights * self.weight)
+            else:
+                loss_pred_rec += rolling_weights[k] * charbonnier_loss(output, target, weight=self.weight)
 
-            if loss_available:
-                if "channel_weights" in self._buffers:
-                    loss_pred_rec += rolling_weights[k] * charbonnier_loss(output, target, weight=self.channel_weights * self.weight)
-                else:
-                    loss_pred_rec += rolling_weights[k] * charbonnier_loss(output, target, weight=self.weight)
-
-                if self.pinn_enable:
-                    pinn_losses = self.compute_pinn_losses(output, target)
-                    for loss_name, loss_val in pinn_losses.items():
-                        pinn_acc[loss_name] = pinn_acc.get(loss_name, 0) + rolling_weights[k] * loss_val
+            if self.pinn_enable:
+                pinn_losses = self.compute_pinn_losses(output, target)
+                for loss_name, loss_val in pinn_losses.items():
+                    pinn_acc[loss_name] = pinn_acc.get(loss_name, 0) + rolling_weights[k] * loss_val
 
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
             true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
@@ -1075,8 +1062,7 @@ class GroupVAEPredictor(BasePredictor):
                     timestamp_target = self.get_timestamp(new_input, times, t + 1)
                     h_states = self._encode_all_groups(target_input, timestamp_target, const=const, is_prior=False)
                     group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const)
-                    recon_base = target_input[:, -2:-1] if target_input.shape[1] > 1 else target_input[:, -1:]
-                    output = self._assemble_prediction(group_outputs, recon_base)
+                    output = self._assemble_prediction(group_outputs, target_input[:, -2:-1])
                     new_input = target_input
                 else:
                     output, new_input = self._predict_next(new_input, times, t, const=const)
