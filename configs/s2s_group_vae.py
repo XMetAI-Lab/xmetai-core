@@ -21,6 +21,7 @@ from s2s_base import (  # noqa: F401
     buffers,
     dataloader,
     depths,
+    freq,
     in_chans,
     in_names,
     load_from_pretrain,
@@ -64,9 +65,12 @@ if load_from_pretrain:
     scheduler.period = 1.0 / rollout_steps
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
 else:
-    if os.path.exists(f"{output_dir}/model_posterior_fix_{vae_type}.pth"):
-        train.init_checkpoint = f"{output_dir}/model_posterior_fix_{vae_type}.pth"
-        train.freeze = ("posterior_encoder_group",)
+    test_frames = [1, 2]
+    dataloader.test.dataset.fcst_frames = test_frames
+    dataloader.evaluator[0].test_times = [t * freq for t in test_frames]
+    # if os.path.exists(f"{output_dir}/model_posterior_fix_{vae_type}.pth"):
+    #    train.init_checkpoint = f"{output_dir}/model_posterior_fix_{vae_type}.pth"
+    #    train.freeze = ("posterior_encoder_group",)
 
 
 ######################################################################
