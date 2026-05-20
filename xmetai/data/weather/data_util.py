@@ -232,6 +232,7 @@ def make_onnx(
     device="cuda",
     forward_name="export_onnx",
     embed_types=["step", "hour", "doy"],
+    extra_inputs=None,
 ):
     dataloader = instantiate(dataloader_cfg)
     input_data = make_input(dataloader, in_names, mean, std)
@@ -248,6 +249,8 @@ def make_onnx(
 
     for embed_type in embed_types:
         data[embed_type] = np.random.rand(batch_size).astype(np.float32)
+    if extra_inputs is not None:
+        data.update(extra_inputs)
 
     model.export_kwargs = dict(
         data=data,
