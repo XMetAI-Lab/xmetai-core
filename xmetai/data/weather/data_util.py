@@ -261,7 +261,6 @@ def make_onnx(
 
     # set environment variable for torch cpu mode
     torch.set_num_threads(os.cpu_count())
-    torch.set_num_interop_threads(os.cpu_count())
     # set environment variable for numpy cpu mode
     os.environ["OMP_NUM_THREADS"] = str(os.cpu_count())
     os.environ["MKL_NUM_THREADS"] = str(os.cpu_count())

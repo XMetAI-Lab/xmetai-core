@@ -484,6 +484,10 @@ class _BaseGroupVAE(BasePredictor):
         pretrain_temporal_mix_prob: float = 0.5,
         pretrain_metric_temp: float = 0.001,
         pretrain_metric_tokens: int = 128,
+        kl_schedule_mode: str = "cosine",
+        kl_min_weight: float = 0.0,
+        kl_max_weight: float = 100.0,
+        kl_cycle_iters: int = 40000,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -495,6 +499,12 @@ class _BaseGroupVAE(BasePredictor):
         self.loss_weight = loss_weight
         self.const_chans = const_chans
         self.rollout_max = rollout_max
+        self.kl_schedule_mode = kl_schedule_mode
+        self.kl_min_weight = float(kl_min_weight)
+        self.kl_max_weight = float(kl_max_weight)
+        self.kl_cycle_iters = int(kl_cycle_iters)
+        if self.kl_cycle_iters <= 0:
+            raise ValueError(f"kl_cycle_iters must be positive, got {self.kl_cycle_iters}.")
         if pretrain:
             self.pretrain = True
             self.pretrain_mask_ratio = float(pretrain_mask_ratio)
@@ -776,7 +786,17 @@ class _BaseGroupVAE(BasePredictor):
         next_input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
         return output, next_input
 
-    def _get_kl_weight(self, mode: str = "cyclical", max_weight: float = 100.0, cycle_iters: int = 20000, min_weight: float = 0.0) -> float:
+    def _get_kl_weight(
+        self,
+        mode: str | None = None,
+        max_weight: float | None = None,
+        cycle_iters: int | None = None,
+        min_weight: float | None = None,
+    ) -> float:
+        mode = self.kl_schedule_mode if mode is None else mode
+        max_weight = self.kl_max_weight if max_weight is None else float(max_weight)
+        min_weight = self.kl_min_weight if min_weight is None else float(min_weight)
+        cycle_iters = self.kl_cycle_iters if cycle_iters is None else int(cycle_iters)
         try:
             current_iter = get_event_storage().iter
         except AssertionError:
@@ -1037,7 +1057,7 @@ class _BaseGroupVAE(BasePredictor):
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
             true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
 
-        kl_weight = self._get_kl_weight(mode="cosine", cycle_iters=40000)
+        kl_weight = self._get_kl_weight()
         loss_dict = {
             "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
             "loss_vae_input": self.loss_weight[0] * loss_vae_input,
