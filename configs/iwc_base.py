@@ -102,8 +102,8 @@ depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 ######################################################################
 dataloader = OmegaConf.create()
 
-train_times = ("19500101-00", "20231231-18")
-test_times = ("20240101-18", "20251231-18")
+train_times = ("19500101-00", "20221231-18")
+test_times = ("20230101-18", "20231231-18")
 # test_times = ("20050101-18", "20250502-18")
 dataloader.train = L(build_train_loader)(
     dataset=L(DATASETS.get("ERA5"))(

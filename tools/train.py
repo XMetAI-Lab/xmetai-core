@@ -266,6 +266,7 @@ def do_export(
         output_names=["pred"],
         opset_version=opset_version,
         do_constant_folding=False,
+        custom_opsets={"xmetai_plugins": 1},
     )
     logger.info(f"Exported model to {save_name}")
 
