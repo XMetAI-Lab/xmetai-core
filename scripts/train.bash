@@ -50,6 +50,47 @@ Options:
 EOF
 }
 
+function setup_onnxruntime() {
+    echo "Setting up ONNX Runtime..."
+    local pkg_dir ort_dir ort_real_so ort_so
+
+    # Get installed onnxruntime package directory using python import (more reliable than pip show)
+    pkg_dir=$(python -c "import onnxruntime, os; print(os.path.dirname(onnxruntime.__file__))" 2>/dev/null || true)
+    if [[ -z "${pkg_dir}" ]]; then
+        echo "ERROR: onnxruntime package not found in current Python environment."
+        return 1
+    fi
+    echo "Found onnxruntime package at: ${pkg_dir}"
+
+    ort_dir="${pkg_dir}/capi"
+    ort_so="${ort_dir}/libonnxruntime.so.1"
+
+    # Find the real SONAME file
+    ort_real_so=$(find "${ort_dir}" -maxdepth 1 -type f -name 'libonnxruntime.so.1.*' -print -quit 2>/dev/null || true)
+    if [[ -z "${ort_real_so}" ]]; then
+        echo "ERROR: libonnxruntime.so.1.* was not found under ${ort_dir}."
+        return 1
+    fi
+    echo "Found ONNX Runtime library: ${ort_real_so}"
+
+    # Ensure symlink exists; create atomically from inside directory
+    if [[ ! -e "${ort_so}" ]]; then
+        if ! (cd "${ort_dir}" && ln -sf "$(basename "${ort_real_so}")" "$(basename "${ort_so}")"); then
+            echo "ERROR: failed to create symlink ${ort_so}."
+            return 1
+        fi
+    fi
+    echo "Using ONNX Runtime library: ${ort_real_so} (symlink: ${ort_so})"
+
+    # Prepend ort_dir to LD_LIBRARY_PATH if not already present
+    case ":${LD_LIBRARY_PATH:-}:" in
+        *":${ort_dir}:"*) ;;
+        *) export LD_LIBRARY_PATH="${ort_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
+    esac
+
+    echo "Using ONNX Runtime library: ${ort_real_so} (symlink: ${ort_so})"
+}
+
 function setup_environment() {
     # Create temporary config file
     CONFIG_FILE_TMP="${ROOT_DIR}/configs/tmp_config.py"
@@ -67,18 +108,15 @@ function setup_environment() {
     export OUTPUT_DIR="${ROOT_DIR}/output/${temp_list}-${config_file_name}-${LR}/"
 
     # Set data directory and base config based on model type
-    data_linux="/workspace/data/"
-    data_mac="/Users/douzsh/Desktop/workspace/data/"
+    data_dir="/workspace/data/"
     # check os mac or linux
     if [[ "$OSTYPE" == "darwin"* ]]; then
         echo "Running on macOS"
-        data_dir="$data_mac"
         additional_args+=("train.device_type='mps'")
         additional_args+=("train.use_ddp=False")
         additional_args+=("train.use_fsdp=False")
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         echo "Running on Linux"
-        data_dir="$data_linux"
     else
         echo "Unsupported OS: $OSTYPE"
         exit 1
@@ -249,6 +287,7 @@ export MASTER_PORT=${MASTER_PORT:-29500}
 #export NCCL_SOCKET_IFNAME=net
 
 # ---- Setup environment ----
+setup_onnxruntime || exit $?
 setup_environment
 
 # ---- Display configuration ----
