@@ -17,7 +17,7 @@ import cloudpickle
 import yaml  # type: ignore[import-untyped]
 from omegaconf import DictConfig, ListConfig, OmegaConf, SCMode
 
-from xmetai.utils.file_io import PathManager
+from xmetai.utils import PathManager
 from xmetai.utils.registry import _convert_target_to_string
 
 __all__ = ["LazyCall", "LazyConfig"]

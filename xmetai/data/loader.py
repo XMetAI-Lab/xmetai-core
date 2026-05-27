@@ -2,8 +2,8 @@ import numpy as np
 import torch
 import torch.utils.data as torchdata
 
+from xmetai.utils import seed_all_rng
 from xmetai.utils.comm import get_world_size
-from xmetai.utils.env import seed_all_rng
 
 from .sampler import InferenceSampler, TrainingSampler
 
