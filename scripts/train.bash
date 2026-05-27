@@ -117,6 +117,7 @@ function setup_environment() {
         additional_args+=("train.use_fsdp=False")
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         echo "Running on Linux"
+        setup_onnxruntime || exit $?
     else
         echo "Unsupported OS: $OSTYPE"
         exit 1
@@ -287,7 +288,6 @@ export MASTER_PORT=${MASTER_PORT:-29500}
 #export NCCL_SOCKET_IFNAME=net
 
 # ---- Setup environment ----
-setup_onnxruntime || exit $?
 setup_environment
 
 # ---- Display configuration ----
