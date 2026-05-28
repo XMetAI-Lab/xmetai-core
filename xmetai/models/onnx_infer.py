@@ -12,7 +12,7 @@ import onnxruntime as ort
 import torch
 
 from xmetai.builder import MODELS
-from xmetai.utils.comm import get_local_rank
+from xmetai.utils import get_local_rank
 
 from .base_predictor import BasePredictor
 

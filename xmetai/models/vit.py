@@ -18,6 +18,10 @@ from xmetai.loss import charbonnier_loss
 from .base_predictor import BasePredictor
 from .utransformer import UTransformer
 
+__all__ = [
+    "ViTModel",
+]
+
 
 @MODELS.register()
 class ViTModel(BasePredictor):

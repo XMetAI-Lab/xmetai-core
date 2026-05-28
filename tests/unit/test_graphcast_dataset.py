@@ -5,12 +5,12 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from xmetai.data.weather.graphcast_dataset import GraphCastDataset
+from xmetai.data import GraphCastDataset
 
 
 @pytest.mark.numerical
 def test_graphcast_dataset_batch_keys(tmp_path):
-    time = pd.date_range("2000-01-01", periods=10, freq="6H")
+    time = pd.date_range("2000-01-01", periods=10, freq="6h")
     level = [1000, 850]
     lat = np.linspace(90, -90, 4, dtype=np.float32)
     lon = np.linspace(0, 360, 8, dtype=np.float32, endpoint=False)

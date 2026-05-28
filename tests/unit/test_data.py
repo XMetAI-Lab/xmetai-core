@@ -15,7 +15,7 @@ class TestDataUtils:
     def test_normalize_denormalize(self, sample_weather_data):
         """Test data normalization and denormalization."""
         try:
-            from xmetai.data.weather_util import denormalize, normalize
+            from xmetai.data import denormalize, normalize
         except ImportError:
             pytest.skip("Weather utilities not available")
 
@@ -35,7 +35,7 @@ class TestDataUtils:
     def test_normalize_zero_std(self):
         """Test normalization handles zero standard deviation."""
         try:
-            from xmetai.data.weather_util import normalize
+            from xmetai.data import normalize
         except ImportError:
             pytest.skip("Weather utilities not available")
 
@@ -52,7 +52,7 @@ class TestDataUtils:
     def test_data_range_validation(self):
         """Test data range validation."""
         try:
-            from xmetai.data.weather_util import validate_range
+            from xmetai.data import validate_range
         except ImportError:
             pytest.skip("Weather utilities not available")
 
@@ -65,7 +65,7 @@ class TestDataUtils:
     def test_extreme_values_handling(self):
         """Test handling of extreme/NaN values in data."""
         try:
-            from xmetai.data.weather_util import remove_invalid
+            from xmetai.data import remove_invalid
         except ImportError:
             pytest.skip("Weather utilities not available")
 
@@ -85,7 +85,7 @@ class TestWeatherDataset:
     def test_era5_dataset_structure(self):
         """Test ERA5 dataset basic structure."""
         try:
-            from xmetai.data.era5 import ERA5Dataset
+            from xmetai.data import ERA5Dataset
         except ImportError:
             pytest.skip("ERA5 dataset not available")
 
@@ -96,7 +96,7 @@ class TestWeatherDataset:
     def test_multi_zarr_dataset_loading(self):
         """Test multi-dataset loading."""
         try:
-            from xmetai.data.multi_zarr_dataset import MultiZarrDataset
+            from xmetai.data import MultiZarrDataset
         except ImportError:
             pytest.skip("MultiZarr dataset not available")
 
@@ -111,7 +111,7 @@ class TestDataSampler:
     def test_sequential_sampler(self):
         """Test sequential sampler."""
         try:
-            from xmetai.data.sampler import SequentialSampler
+            from xmetai.data import SequentialSampler
         except ImportError:
             pytest.skip("Sampler not available")
 
@@ -126,7 +126,7 @@ class TestDataSampler:
     def test_distributed_sampler(self):
         """Test distributed sampler for multi-GPU."""
         try:
-            from xmetai.data.sampler import DistributedSampler
+            from xmetai.data import DistributedSampler
         except ImportError:
             pytest.skip("DistributedSampler not available")
 
@@ -152,7 +152,7 @@ class TestDataLoader:
     def test_dataloader_batch_collation(self):
         """Test batch collation."""
         try:
-            from xmetai.data.loader import build_loader
+            from xmetai.data import build_loader
         except ImportError:
             pytest.skip("DataLoader not available")
 
@@ -209,7 +209,7 @@ class TestNormalizationConstants:
     def test_compute_dataset_stats(self):
         """Test computing mean/std from data."""
         try:
-            from xmetai.data.weather_util import compute_statistics
+            from xmetai.data import compute_statistics
         except ImportError:
             pytest.skip("compute_statistics not available")
 
@@ -240,7 +240,7 @@ class TestWeatherUtilXarray:
     def test_update_dims_and_coords(self):
         """Ensure coords are renamed and level dimension is added."""
         xr = pytest.importorskip("xarray")
-        from xmetai.data.weather.weather_util import update_coords, update_dims
+        from xmetai.data import update_coords, update_dims
 
         data = xr.DataArray(
             np.zeros((3, 3), dtype=np.float32),
@@ -261,7 +261,7 @@ class TestWeatherUtilXarray:
         """Normalize then invert with log channel handling."""
         xr = pytest.importorskip("xarray")
         pytest.importorskip("dask")
-        from xmetai.data.weather.weather_util import inv_normalize, normalize
+        from xmetai.data import inv_normalize, normalize
 
         base = xr.DataArray(
             np.array([[[1.0]], [[2.0]]], dtype=np.float32),
@@ -284,7 +284,7 @@ class TestWeatherUtilXarray:
     def test_land_to_nan_masks_ocean_channel(self):
         """Mask ocean-specific channels without altering others."""
         xr = pytest.importorskip("xarray")
-        from xmetai.data.weather.weather_util import land_to_nan
+        from xmetai.data import land_to_nan
 
         data = xr.DataArray(
             np.ones((1, 2, 2, 2), dtype=np.float32),
@@ -308,7 +308,7 @@ class TestWeatherUtilXarray:
 
     def test_compute_level_weight_properties(self):
         """Level weights should be positive and sum to one."""
-        from xmetai.data.weather.weather_util import LEVELS_13, compute_level_weight
+        from xmetai.data import LEVELS_13, compute_level_weight
 
         weights = compute_level_weight()
 

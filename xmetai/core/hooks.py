@@ -20,20 +20,20 @@ import torch.distributed as dist
 from torch.nn.modules.batchnorm import _BatchNorm
 from torch.nn.utils import clip_grad_norm_
 
-from xmetai.utils import PathManager, Timer
-from xmetai.utils.comm import get_rank, synchronize
-from xmetai.utils.events import EventStorage, EventWriter
+from xmetai.utils import EventStorage, EventWriter, PathManager, Timer, get_rank, synchronize
 
-from .checkpoint import Checkpointer
-from .checkpoint import PeriodicCheckpointer as _PeriodicCheckpointer
+from .checkpoint import Checkpointer, PeriodicCheckpointer
 from .scheduler import LRMultiplier, ParamScheduler
 from .trainer import HookBase
 
 __all__ = [
+    "get_bn_modules",
+    "update_bn_stats",
+    "flatten_results_dict",
     "CallbackHook",
     "IterationTimer",
     "PeriodicWriter",
-    "PeriodicCheckpointer",
+    "PeriodicCheckpointerHook",
     "BestCheckpointer",
     "LRScheduler",
     "SchedulerMultiplier",
@@ -241,7 +241,7 @@ class PeriodicWriter(HookBase):
             writer.close()
 
 
-class PeriodicCheckpointer(_PeriodicCheckpointer, HookBase):
+class PeriodicCheckpointerHook(PeriodicCheckpointer, HookBase):
     """
     Same as :class:`detectron2.checkpoint.PeriodicCheckpointer`, but as a hook.
 

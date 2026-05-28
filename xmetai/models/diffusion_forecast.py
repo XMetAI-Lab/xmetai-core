@@ -26,6 +26,11 @@ from xmetai.builder import MODELS
 
 from .base_predictor import BasePredictor
 
+__all__ = [
+    "pad_to_even",
+    "DiffusionForecast",
+]
+
 
 def pad_to_even(x):
     H, W = x.shape[-2:]

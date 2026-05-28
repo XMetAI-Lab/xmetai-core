@@ -4,6 +4,8 @@ import torch
 import torch.distributed as dist
 
 __all__ = [
+    "all_gather",
+    "all_gather_grad",
     "fcrps_loss_lite",
     "afcrps_loss_lite",
     "afcrps_loss",

@@ -32,11 +32,23 @@ from einops import rearrange
 from xmetai.builder import MODELS
 from xmetai.layers import AdaptiveLN, EarthConvTranspose2d
 from xmetai.loss import charbonnier_loss
-from xmetai.models.base_predictor import BasePredictor
-from xmetai.models.utransformer import UTransformer
-from xmetai.utils.events import get_event_storage
+from xmetai.utils import get_event_storage
 
-__all__ = ["GroupVAEPredictor", "FeatureGroupVAEPredictor", "GroupEncoder", "GroupDecoder"]
+from .base_predictor import BasePredictor
+from .utransformer import UTransformer
+
+__all__ = [
+    "ensemble_schedule",
+    "build_level_channel_map",
+    "build_variable_channel_map",
+    "build_feature_group_channel_map",
+    "GroupEncoder",
+    "GroupDecoder",
+    "ConvHead",
+    "LatentMixerPredictor",
+    "GroupVAEPredictor",
+    "FeatureGroupVAEPredictor",
+]
 
 LEVELS_13 = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
 PL_VARS = ["z", "t", "u", "v", "q", "gh", "wz", "r"]

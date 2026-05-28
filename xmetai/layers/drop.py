@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["MCDropout", "DropBlock2d", "DropPath"]
+__all__ = ["drop_block_2d", "drop_block_fast_2d", "MCDropout", "DropBlock2d", "drop_path", "DropPath"]
 
 
 def drop_block_2d(

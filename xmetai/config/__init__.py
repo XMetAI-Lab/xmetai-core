@@ -1,18 +1,10 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
 from .config import CfgNode, configurable
-from .instantiate import instantiate
+from .config import __all__ as _config_all
+from .instantiate import __all__ as _instantiate_all
+from .instantiate import dump_dataclass, instantiate
 from .lazy import LazyCall, LazyConfig
+from .lazy import __all__ as _lazy_all
 
-__all__ = [
-    "CfgNode",
-    "configurable",
-    "instantiate",
-    "LazyCall",
-    "LazyConfig",
-]
+__all__ = [*_config_all, *_instantiate_all, *_lazy_all]
 
-
-from xmetai.utils import fixup_module_metadata
-
-fixup_module_metadata(__name__, globals(), __all__)
-del fixup_module_metadata
+del _config_all, _instantiate_all, _lazy_all

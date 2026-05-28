@@ -28,9 +28,7 @@ from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 from torch.nn.parallel import DistributedDataParallel
 
 from xmetai.config import CfgNode, LazyConfig
-from xmetai.utils import PathManager, comm, seed_all_rng, setup_logger
-from xmetai.utils.collect_env import collect_env_info
-from xmetai.utils.events import CommonMetricPrinter, JSONWriter, TensorboardXWriter
+from xmetai.utils import CommonMetricPrinter, JSONWriter, PathManager, TensorboardXWriter, collect_env_info, comm, seed_all_rng, setup_logger
 
 __all__ = [
     "create_ddp_model",

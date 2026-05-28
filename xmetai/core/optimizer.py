@@ -19,11 +19,14 @@ from .scheduler import (
 )
 
 __all__ = [
+    "GradientClipType",
+    "maybe_add_gradient_clipping",
     "build_lr_scheduler",
     "build_optimizer",
     "get_default_optimizer_params",
     "gradient_clipping",
     "get_muon_params_group",
+    "reduce_param_groups",
 ]
 
 

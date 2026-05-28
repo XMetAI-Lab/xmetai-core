@@ -10,7 +10,7 @@ import PIL
 import torch
 from tabulate import tabulate  # type: ignore[import-untyped]
 
-__all__ = ["collect_env_info"]
+__all__ = ["collect_torch_env", "get_env_module", "detect_compute_compatibility", "collect_env_info"]
 
 
 def collect_torch_env():
@@ -123,7 +123,7 @@ def collect_env_info():
 
 if __name__ == "__main__":
     try:
-        from xmetai.utils.collect_env import collect_env_info as f
+        from xmetai.utils import collect_env_info as f
 
         print(f())
     except ImportError:

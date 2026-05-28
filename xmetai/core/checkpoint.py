@@ -12,7 +12,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from iopath.common.file_io import HTTPURLHandler, PathManager
-from termcolor import colored
 from torch.distributed.checkpoint.state_dict import (
     StateDictOptions,
     set_model_state_dict,
@@ -22,7 +21,15 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.tensor import DTensor
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 
-from xmetai.utils.comm import is_main_process
+from xmetai.utils import is_main_process
+
+try:
+    from termcolor import colored
+except ImportError:
+
+    def colored(text, *args, **kwargs):
+        return text
+
 
 TORCH_VERSION: Tuple[int, ...] = tuple(int(x) for x in torch.__version__.split(".")[:2])
 if TORCH_VERSION >= (1, 11):
@@ -32,7 +39,13 @@ elif TORCH_VERSION >= (1, 8) and hasattr(torch.quantization, "FakeQuantizeBase")
     from torch import quantization  # type: ignore[no-redef]
     from torch.quantization import FakeQuantizeBase, ObserverBase  # type: ignore[no-redef]
 
-__all__ = ["Checkpointer", "PeriodicCheckpointer", "FSDPCheckpointer"]
+__all__ = [
+    "Checkpointer",
+    "PeriodicCheckpointer",
+    "FSDPCheckpointer",
+    "get_missing_parameters_message",
+    "get_unexpected_parameters_message",
+]
 
 
 class _IncompatibleKeys(

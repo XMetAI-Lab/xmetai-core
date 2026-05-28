@@ -3,7 +3,7 @@ import logging
 from collections import abc
 from typing import Any
 
-from xmetai.utils.registry import _convert_target_to_string, locate
+from xmetai.utils import convert_target_to_string, locate
 
 __all__ = ["dump_dataclass", "instantiate"]
 
@@ -19,7 +19,7 @@ def dump_dataclass(obj: Any) -> dict[str, Any]:
         dict
     """
     assert dataclasses.is_dataclass(obj) and not isinstance(obj, type), "dump_dataclass() requires an instance of a dataclass."
-    ret = {"_target_": _convert_target_to_string(type(obj))}
+    ret = {"_target_": convert_target_to_string(type(obj))}
     for f in dataclasses.fields(obj):
         v = getattr(obj, f.name)
         if dataclasses.is_dataclass(v):

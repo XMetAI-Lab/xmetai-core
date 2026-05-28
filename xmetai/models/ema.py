@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-__all__ = ["EMA"]
+__all__ = ["is_model_fsdp", "EMA"]
 
 
 def is_model_fsdp(model: torch.nn.Module) -> bool:

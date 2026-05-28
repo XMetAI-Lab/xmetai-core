@@ -5,6 +5,10 @@ from xmetai.core import DatasetEvaluator
 from xmetai.layers import to_1tuple
 from xmetai.utils import comm
 
+__all__ = [
+    "TCC",
+]
+
 
 @METRICS.register()
 class TCC(DatasetEvaluator):

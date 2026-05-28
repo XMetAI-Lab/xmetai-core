@@ -7,21 +7,13 @@ import pytest
 import torch
 import torch.nn as nn
 
-# Load the module file directly to avoid importing package __init__ (which has heavy side-effects).
 try:
-    # Prefer package-level export if available
     from xmetai.models import UTransformer
-except Exception:
-    try:
-        # Fall back to importing the concrete module
-        from xmetai.models.utransformer import UTransformer
-    except Exception as e:
-        import pytest as _pytest
-
-        _pytest.skip(
-            f"UTransformer import failed; skipping model tests: {e}",
-            allow_module_level=True,
-        )
+except Exception as e:
+    pytest.skip(
+        f"UTransformer import failed; skipping model tests: {e}",
+        allow_module_level=True,
+    )
 
 
 class TestUTransformer:

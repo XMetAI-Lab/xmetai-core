@@ -14,7 +14,7 @@ import pandas as pd
 import torch
 import xarray as xr
 
-from xmetai.loss.pinn_loss import ChannelRegistry, pinn_loss
+from xmetai.loss import ChannelRegistry, pinn_loss
 
 from .meta import Meta
 

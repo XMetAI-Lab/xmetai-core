@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from xmetai.layers import HAS_MAMBA
+from xmetai.layers import HAS_MAMBA, Attention
+from xmetai.models import UTransformer
 
 
 class TestForwardPass:
@@ -17,8 +18,6 @@ class TestForwardPass:
 
     def test_utransformer_swin_forward(self, sample_input_4d, torch_seed):
         """Test UTransformer with Swin layers end-to-end forward pass."""
-        from xmetai.models.utransformer import UTransformer
-
         B, T, C, H, W = sample_input_4d.shape
 
         model = UTransformer(
@@ -48,8 +47,6 @@ class TestForwardPass:
     @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
     def test_utransformer_mamba_forward(self, sample_input_4d, torch_seed):
         """Test UTransformer with Mamba layers."""
-        from xmetai.models.utransformer import UTransformer
-
         B, T, C, H, W = sample_input_4d.shape
 
         model = UTransformer(
@@ -76,8 +73,6 @@ class TestForwardPass:
     @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
     def test_utransformer_rotary_forward(self, sample_input_4d, torch_seed):
         """Test UTransformer with rotary attention."""
-        from xmetai.models.utransformer import UTransformer
-
         B, T, C, H, W = sample_input_4d.shape
 
         model = UTransformer(
@@ -106,8 +101,6 @@ class TestGradientFlow:
 
     def test_gradient_flow_patch_embed(self, sample_input_4d):
         """Test gradients through patch embedding."""
-        from xmetai.models.utransformer import UTransformer
-
         B, T, C, H, W = sample_input_4d.shape
 
         model = UTransformer(
@@ -133,8 +126,6 @@ class TestGradientFlow:
 
     def test_gradient_accumulation(self, sample_input_2d):
         """Test gradient accumulation over multiple batches."""
-        from xmetai.layers.attention import Attention
-
         attn = Attention(dim=sample_input_2d.shape[-1], num_heads=8)
         optimizer = torch.optim.SGD(attn.parameters(), lr=0.01)
 
@@ -156,8 +147,6 @@ class TestModelSaveLoad:
 
     def test_save_load_state_dict(self, torch_seed):
         """Test saving and loading model state."""
-        from xmetai.models.utransformer import UTransformer
-
         model = UTransformer(
             in_chans=65,
             out_chans=65,
@@ -195,8 +184,6 @@ class TestModelSaveLoad:
 
     def test_checkpoint_file_io(self, torch_seed):
         """Test checkpoint file operations."""
-        from xmetai.models.utransformer import UTransformer
-
         model = UTransformer(
             in_chans=65,
             out_chans=65,
@@ -243,8 +230,6 @@ class TestONNXExport:
     @pytest.mark.skip(reason="ONNX export requires full model implementation")
     def test_onnx_export_basic(self, sample_input_4d):
         """Test basic ONNX export."""
-        from xmetai.models.utransformer import UTransformer
-
         model = UTransformer(
             in_chans=65,
             out_chans=65,
@@ -279,14 +264,12 @@ class TestONNXExport:
     @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
     def test_onnx_export_selective_scan(self):
         """Test ONNX export with custom selective scan op."""
-        from xmetai.layers.mamba_vision import MambaMetMixer
+        from xmetai.layers.mamba_vision import MambaMetMixer, symbolic_selective_scan_fn
 
         # Test that mamba blocks have symbolic export
         mixer = MambaMetMixer(d_model=64)
 
         # Check if symbolic export is registered
-        from xmetai.layers.mamba_vision import symbolic_selective_scan_fn
-
         assert callable(symbolic_selective_scan_fn)
 
 
@@ -301,8 +284,6 @@ class TestMixedPrecision:
 
         # Use new torch.amp autocast API for CUDA
         from torch.amp import autocast
-
-        from xmetai.models.utransformer import UTransformer
 
         model = UTransformer(
             in_chans=65,
@@ -331,8 +312,6 @@ class TestMixedPrecision:
             pytest.skip("GPU test")
 
         from torch.amp import GradScaler, autocast
-
-        from xmetai.models.utransformer import UTransformer
 
         model = UTransformer(
             in_chans=65,
@@ -366,8 +345,6 @@ class TestDeterminism:
 
     def test_eval_mode_determinism(self, sample_input_2d, torch_seed):
         """Test that eval mode produces deterministic outputs."""
-        from xmetai.layers.attention import Attention
-
         attn = Attention(dim=sample_input_2d.shape[-1], num_heads=8)
         attn.eval()
 
@@ -379,8 +356,6 @@ class TestDeterminism:
 
     def test_training_mode_stochasticity(self, sample_input_2d, torch_seed):
         """Test that training mode can produce different outputs (due to dropout)."""
-        from xmetai.layers.attention import Attention
-
         attn = Attention(
             dim=sample_input_2d.shape[-1],
             num_heads=8,

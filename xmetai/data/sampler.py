@@ -10,6 +10,14 @@ from torch.utils.data.sampler import Sampler
 
 from xmetai.utils import comm
 
+__all__ = [
+    "TrainingSampler",
+    "RandomSubsetTrainingSampler",
+    "RepeatFactorTrainingSampler",
+    "InferenceSampler",
+]
+
+
 logger = logging.getLogger(__name__)
 
 

@@ -19,7 +19,10 @@ from xmetai.config import instantiate
 __all__ = [
     "make_seq",
     "make_seq_inference",
+    "unnormalize",
+    "make_input",
     "make_onnx",
+    "get_ids_and_buffer",
     "get_data_info",
     "get_cra_data_info",
 ]
