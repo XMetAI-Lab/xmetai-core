@@ -7,10 +7,23 @@ from typing import Any, Dict, Iterator, List, Union
 
 import torch
 from tabulate import tabulate  # type: ignore[import-untyped]
-from termcolor import colored
 
-from xmetai.utils import log_every_n_seconds
-from xmetai.utils.comm import get_world_size, is_main_process
+from xmetai.utils import get_world_size, is_main_process, log_every_n_seconds
+
+try:
+    from termcolor import colored
+except ImportError:
+
+    def colored(text, *args, **kwargs):
+        return text
+
+
+__all__ = [
+    "DatasetEvaluator",
+    "DatasetEvaluators",
+    "inference_on_dataset",
+    "inference_context",
+]
 
 
 class DatasetEvaluator:

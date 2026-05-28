@@ -1,5 +1,3 @@
-from matplotlib.colors import BoundaryNorm, ListedColormap
-
 __all__ = ["radar_cmap", "radar_norm"]
 
 
@@ -105,5 +103,28 @@ hail_colors = [
 ]
 
 
-radar_cmap = ListedColormap(radar_colors)
-radar_norm = BoundaryNorm(radar_norms, ncolors=len(radar_colors), clip=True)
+class _MissingMatplotlibColor:
+    def __init__(self, name):
+        self.name = name
+
+    def _raise(self):
+        raise ImportError(f"{self.name} requires matplotlib. Install matplotlib or avoid using xmetai.utils.{self.name}.")
+
+    def __call__(self, *args, **kwargs):
+        self._raise()
+
+    def __getattr__(self, name):
+        self._raise()
+
+    def __repr__(self):
+        return f"<{self.name} unavailable: matplotlib is not installed>"
+
+
+try:
+    from matplotlib.colors import BoundaryNorm, ListedColormap
+except ImportError:
+    radar_cmap = _MissingMatplotlibColor("radar_cmap")
+    radar_norm = _MissingMatplotlibColor("radar_norm")
+else:
+    radar_cmap = ListedColormap(radar_colors)
+    radar_norm = BoundaryNorm(radar_norms, ncolors=len(radar_colors), clip=True)

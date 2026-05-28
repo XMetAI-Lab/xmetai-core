@@ -11,6 +11,10 @@ from xmetai.core import DatasetEvaluator
 from xmetai.layers import to_1tuple
 from xmetai.utils import comm
 
+__all__ = [
+    "MSE",
+]
+
 
 @METRICS.register()
 class MSE(DatasetEvaluator):

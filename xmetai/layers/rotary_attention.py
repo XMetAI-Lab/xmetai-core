@@ -5,7 +5,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-__all__ = ["RotaryAttention", "precompute_freqs_cis", "precompute_freqs_cis_2d"]
+__all__ = [
+    "precompute_freqs_cis",
+    "precompute_freqs_cis_2d",
+    "reshape_for_broadcast",
+    "apply_rotary_emb",
+    "repeat_kv",
+    "RotaryAttention",
+]
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -28,6 +28,18 @@ from typing import Optional
 import torch
 
 __all__ = [
+    "GRAVITY",
+    "EARTH_RADIUS",
+    "OMEGA",
+    "R_D",
+    "C_P",
+    "LEVELS_13",
+    "PL_NAMES",
+    "_make_lat_lon",
+    "_dfdx",
+    "_dfdy",
+    "_coriolis",
+    "_extract_var",
     "ChannelRegistry",
     "mass_continuity_loss",
     "geostrophic_balance_loss",

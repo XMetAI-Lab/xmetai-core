@@ -7,26 +7,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-# Prefer package exports; otherwise import directly from modules.
-try:
-    from xmetai.layers import (
-        HAS_MAMBA,
-        MambaVisionLayer,
-        SwinLayer,
-        precompute_freqs_cis,
-    )
-except Exception:
-    HAS_MAMBA = False
-    from xmetai.layers.swin import SwinLayer
-
-    try:
-        from xmetai.layers.mamba_vision import MambaVisionLayer
-
-        HAS_MAMBA = True
-    except Exception:
-        # leave MambaVisionLayer undefined; tests that require it should handle ImportError/skip
-        MambaVisionLayer = None
-    from xmetai.layers.rotary_attention import precompute_freqs_cis
+from xmetai.layers import HAS_MAMBA, MambaVisionLayer, SwinLayer, precompute_freqs_cis
 
 
 class TestSwinLayer:
@@ -282,7 +263,7 @@ class TestMambaVisionLayer:
     @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
     def test_mamba_vision_layer_preserves_mamba_init(self, torch_seed):
         """Test layer construction does not clobber Mamba mixer initialization."""
-        from xmetai.layers.mamba_vision import MambaVisionLayer, MambaVisionMixer
+        from xmetai.layers.mamba_vision import MambaVisionMixer
 
         torch.manual_seed(1234)
         expected_mixer = MambaVisionMixer(d_model=64, d_state=8, d_conv=3, expand=1)

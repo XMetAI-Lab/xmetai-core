@@ -33,8 +33,7 @@ try:
         inference_on_dataset,
         launch,
     )
-    from xmetai.layers import HAS_MAMBA, SwinLayer, apply_lora_to_model, merge_lora_weights
-    from xmetai.layers.graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
+    from xmetai.layers import HAS_MAMBA, GraphCastDecoder, GraphCastEncoder, GraphCastLayer, SwinLayer, apply_lora_to_model, merge_lora_weights
 
     if HAS_MAMBA:
         from xmetai.layers import MambaVisionLayer
@@ -204,7 +203,7 @@ def do_train(args, cfg):
         [
             hooks.IterationTimer(),
             hooks.LRScheduler(scheduler=lr_scheduler),
-            hooks.PeriodicCheckpointer(checkpointer, **cfg.train.checkpointer),
+            hooks.PeriodicCheckpointerHook(checkpointer, **cfg.train.checkpointer),
             hooks.EvalHook(cfg.train.eval_period, lambda: do_test(cfg, model)),
             hooks.GradientClipHook(),
             hooks.BestCheckpointer(eval_period=cfg.train.eval_period, checkpointer=checkpointer, val_metric=cfg.train.val_metric, mode="min"),

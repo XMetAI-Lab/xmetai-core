@@ -10,7 +10,7 @@ from .attention import WindowAttention, WindowAttentionV2
 from .mlp import GeGLUFFN
 from .rotary_attention import RotaryAttention
 
-__all__ = ["SwinLayer"]
+__all__ = ["window_partition", "window_reverse", "SwinBlock", "SwinLayer"]
 
 
 def window_partition(x, window_size):

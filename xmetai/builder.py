@@ -1,4 +1,4 @@
-from xmetai.utils.registry import Registry
+from xmetai.utils import Registry
 
 MODELS: Registry = Registry("models")
 CRITERIONS: Registry = Registry("criterions")
@@ -6,6 +6,22 @@ METRICS: Registry = Registry("metrics")
 DATASETS: Registry = Registry("datasets")
 
 from .metrics import *
+
+__all__ = [
+    "MODELS",
+    "CRITERIONS",
+    "METRICS",
+    "DATASETS",
+    "build",
+    "build_model",
+    "build_models",
+    "build_criterion",
+    "build_criterions",
+    "build_metric",
+    "build_metrics",
+    "build_dataset",
+    "build_datasets",
+]
 
 
 def build(cfg, func):

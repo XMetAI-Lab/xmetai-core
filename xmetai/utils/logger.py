@@ -8,12 +8,25 @@ import time
 from collections import Counter
 from typing import Any
 
-from tabulate import tabulate  # type: ignore[import-untyped]
-from termcolor import colored
+try:
+    from tabulate import tabulate  # type: ignore[import-untyped]
+except ImportError:
 
-from xmetai.utils.file_io import PathManager
+    def tabulate(rows, *args, **kwargs):
+        return "\n".join("  ".join(map(str, row)) for row in rows)
 
-__all__ = ["setup_logger", "log_first_n", "log_every_n", "log_every_n_seconds"]
+
+try:
+    from termcolor import colored
+except ImportError:
+
+    def colored(text, *args, **kwargs):
+        return text
+
+
+from .file_io import PathManager
+
+__all__ = ["setup_logger", "log_first_n", "log_every_n", "log_every_n_seconds", "create_small_table"]
 
 
 class _ColorfulFormatter(logging.Formatter):

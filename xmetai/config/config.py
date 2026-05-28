@@ -14,6 +14,12 @@ from yacs.config import CfgNode as __CfgNode
 
 from xmetai.utils import PathManager
 
+__all__ = [
+    "CfgNode",
+    "configurable",
+]
+
+
 BASE_KEY = "_BASE_"
 
 

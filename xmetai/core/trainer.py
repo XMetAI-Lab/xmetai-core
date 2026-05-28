@@ -11,8 +11,7 @@ import numpy as np
 import torch
 
 from xmetai.models import EMA
-from xmetai.utils.comm import gather, get_rank, is_main_process
-from xmetai.utils.events import EventStorage, get_event_storage
+from xmetai.utils import EventStorage, gather, get_event_storage, get_rank, is_main_process
 
 __all__ = ["HookBase", "TrainerBase", "SimpleTrainer", "ExpandTrainer"]
 

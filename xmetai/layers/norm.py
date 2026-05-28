@@ -14,6 +14,7 @@ __all__ = [
     "AdaptiveGroupNorm",
     "AdaptiveInstanceNorm",
     "AdaptiveGroupNorm2D",
+    "FrozenBatchNorm2d",
 ]
 
 

@@ -10,7 +10,7 @@ import math
 
 import torch
 
-from xmetai.models.base_predictor import BasePredictor
+from xmetai.models import BasePredictor
 
 
 class DummyPredictor(BasePredictor):

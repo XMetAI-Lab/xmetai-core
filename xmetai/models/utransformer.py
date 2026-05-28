@@ -22,7 +22,7 @@ if HAS_MAMBA:
 
 from .pred_head import PLSFHead
 
-__all__ = ["UTransformer"]
+__all__ = ["DeltaNetLayer", "UTransformer"]
 
 
 class DeltaNetLayer(nn.Module):
