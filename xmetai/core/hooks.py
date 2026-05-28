@@ -20,10 +20,9 @@ import torch.distributed as dist
 from torch.nn.modules.batchnorm import _BatchNorm
 from torch.nn.utils import clip_grad_norm_
 
+from xmetai.utils import PathManager, Timer
 from xmetai.utils.comm import get_rank, synchronize
 from xmetai.utils.events import EventStorage, EventWriter
-from xmetai.utils.file_io import PathManager
-from xmetai.utils.timer import Timer
 
 from .checkpoint import Checkpointer
 from .checkpoint import PeriodicCheckpointer as _PeriodicCheckpointer

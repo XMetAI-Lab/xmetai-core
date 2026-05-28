@@ -12,7 +12,7 @@ import yaml  # type: ignore[import-untyped]
 from iopath.common.file_io import g_pathmgr
 from yacs.config import CfgNode as __CfgNode
 
-from xmetai.utils.file_io import PathManager
+from xmetai.utils import PathManager
 
 BASE_KEY = "_BASE_"
 

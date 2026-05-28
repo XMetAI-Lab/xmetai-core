@@ -9,16 +9,7 @@ import os
 import sys
 from typing import Any
 
-import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import (
-    Callback,
-    DeviceStatsMonitor,
-    LearningRateMonitor,
-    ModelCheckpoint,
-    TQDMProgressBar,
-)
-from pytorch_lightning.strategies import FSDPStrategy
 from torch.distributed.fsdp import MixedPrecision
 from typing_extensions import override
 
@@ -30,11 +21,28 @@ sys.path.append(CUR_PATH + "/../configs/")
 try:
     from xmetai.config import LazyConfig, instantiate
     from xmetai.core import default_argument_parser, default_setup
-    from xmetai.layers import MambaVisionLayer
+    from xmetai.layers import HAS_MAMBA, SwinLayer
+
+    if HAS_MAMBA:
+        from xmetai.layers import MambaVisionLayer
+    from xmetai.utils import ensure_torchvision_nms_schema
+
+    ensure_torchvision_nms_schema()
+
+    import pytorch_lightning as pl
+    from pytorch_lightning.callbacks import (
+        Callback,
+        DeviceStatsMonitor,
+        LearningRateMonitor,
+        ModelCheckpoint,
+        TQDMProgressBar,
+    )
+    from pytorch_lightning.strategies import FSDPStrategy
+
     from xmetai.lightning import Lightning_Model_Wrapper
-    from xmetai.models.transformer import SwinBlock
 except ImportError as e:
-    print(f"ImportError: {e}. You can do this by running `pip install -e .` in the root directory.")
+    print(f"Failed to import required modules: {e}")
+    print("Make sure you have installed the required dependencies and that your PYTHONPATH is set correctly.")
     sys.exit(1)
 
 
@@ -115,6 +123,7 @@ class EMACallback(Callback):
 
 
 def main(args):
+    ensure_torchvision_nms_schema()
     torch.set_float32_matmul_precision("medium")
     cfg = LazyConfig.load(args.config_file)
     cfg = LazyConfig.apply_overrides(cfg, args.opts)
@@ -164,7 +173,6 @@ def main(args):
         "default_root_dir": cfg.train.output_dir,
     }
 
-    cfg.train.use_fsdp = True
     # 启用 activation_checkpointing
     if cfg.train.use_fsdp:
         fsdp_mp = MixedPrecision(
@@ -177,7 +185,7 @@ def main(args):
             mixed_precision=fsdp_mp,
             activation_checkpointing_policy={
                 MambaVisionLayer,
-                SwinBlock,
+                SwinLayer,
                 torch.nn.Conv2d,
                 torch.nn.TransformerEncoderLayer,
                 torch.nn.ConvTranspose2d,

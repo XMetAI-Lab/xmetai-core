@@ -232,6 +232,7 @@ def make_onnx(
     device="cuda",
     forward_name="export_onnx",
     embed_types=["step", "hour", "doy"],
+    extra_inputs=None,
 ):
     dataloader = instantiate(dataloader_cfg)
     input_data = make_input(dataloader, in_names, mean, std)
@@ -248,6 +249,8 @@ def make_onnx(
 
     for embed_type in embed_types:
         data[embed_type] = np.random.rand(batch_size).astype(np.float32)
+    if extra_inputs is not None:
+        data.update(extra_inputs)
 
     model.export_kwargs = dict(
         data=data,
@@ -258,7 +261,6 @@ def make_onnx(
 
     # set environment variable for torch cpu mode
     torch.set_num_threads(os.cpu_count())
-    torch.set_num_interop_threads(os.cpu_count())
     # set environment variable for numpy cpu mode
     os.environ["OMP_NUM_THREADS"] = str(os.cpu_count())
     os.environ["MKL_NUM_THREADS"] = str(os.cpu_count())

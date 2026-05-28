@@ -12,7 +12,7 @@ from typing import Any, DefaultDict, Iterator, List, Optional, Tuple
 import numpy as np
 import torch
 
-from xmetai.utils.file_io import PathManager
+from xmetai.utils import PathManager
 
 __all__ = [
     "get_event_storage",

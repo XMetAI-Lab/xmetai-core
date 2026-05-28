@@ -6,6 +6,7 @@ This configuration file is designed to be used for Weather/Seasonal Forecasting.
 """
 
 import os
+from datetime import datetime
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -30,6 +31,7 @@ CONFIG_PATH = os.path.dirname(__file__)
 ROOT_PATH = os.path.join(CONFIG_PATH, "../")
 data_dir = os.environ["DATA_DIR"]
 output_dir = os.environ.get("OUTPUT_DIR", os.path.join(ROOT_PATH, "output/", os.path.basename(CONFIG_PATH)))
+cur_date = datetime.now().strftime("%Y%m%d")
 
 #####################################################################
 # Training settings
@@ -51,7 +53,7 @@ if os.path.exists(f"{output_dir}/model_final.pth"):
     train.init_checkpoint = f"{output_dir}/model_best.pth"
     train.teacher_forcing.teach_iters = 100
     train.teacher_forcing.teach_steps = 4
-    output_dir += "/mstep/"
+    output_dir += f"/mstep-{cur_date}/"
     lr = 1.28e-5
     epochs = epochs // 3
     load_from_pretrain = True
@@ -102,8 +104,8 @@ depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 ######################################################################
 dataloader = OmegaConf.create()
 
-train_times = ("19500101-00", "20231231-18")
-test_times = ("20240101-18", "20251231-18")
+train_times = ("19500101-00", "20221231-18")
+test_times = ("20230101-18", "20231231-18")
 # test_times = ("20050101-18", "20250502-18")
 dataloader.train = L(build_train_loader)(
     dataset=L(DATASETS.get("ERA5"))(

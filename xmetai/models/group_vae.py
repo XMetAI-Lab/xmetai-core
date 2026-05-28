@@ -36,7 +36,7 @@ from xmetai.models.base_predictor import BasePredictor
 from xmetai.models.utransformer import UTransformer
 from xmetai.utils.events import get_event_storage
 
-__all__ = ["GroupVAEPredictor", "GroupEncoder", "GroupDecoder"]
+__all__ = ["GroupVAEPredictor", "FeatureGroupVAEPredictor", "GroupEncoder", "GroupDecoder"]
 
 LEVELS_13 = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
 PL_VARS = ["z", "t", "u", "v", "q", "gh", "wz", "r"]
@@ -80,6 +80,19 @@ RESIDUAL_VARS_6H = (
 
 # 地表极其缓慢且强自相关的变量列表，作为独立的 Group 0（去高频噪声平滑）
 SLOW_SFCS = ["sst"]
+
+GROUP_VAR_MAP = {
+    "residual_state": [f"{v}{level}" for v in ("z", "t") for level in LEVELS_13] + ["t2m", "t2m_min", "t2m_max", "d2m", "sst", "msl"],
+    "abs_wind": [f"{v}{level}" for v in ("u", "v") for level in LEVELS_13]
+    + ["u10", "v10", "10u", "10v", "u10m", "v10m", "u100", "v100", "100u", "100v", "u100m", "v100m", "ws10m", "ws100m"],
+    "abs_scalar": [f"q{level}" for level in LEVELS_13] + ["q2m", "tcw", "tcwv", "tp", "ssr", "ssrd", "fdir", "ttr", "lcc", "mcc", "hcc", "tcc"],
+}
+
+GROUP_RECON_MODES = {
+    "residual_state": "residual",
+    "abs_wind": "absolute",
+    "abs_scalar": "absolute",
+}
 
 
 def ensemble_schedule(max_members: int = 72, max_step: int = 65, freq: int = 6) -> list[int]:
@@ -190,6 +203,43 @@ def build_variable_channel_map(in_names: list[str]) -> tuple[list[list[int]], li
 
     group_reassemble_map = _build_reassemble_map(group_slice_indices, len(in_names))
     return group_slice_indices, group_reassemble_map
+
+
+def build_feature_group_channel_map(
+    in_names: list[str],
+    group_var_map: dict[str, list[str]],
+) -> tuple[list[list[int]], list[int], list[str]]:
+    """Build channel groups from explicit variable-name groups.
+
+    Variable names that appear in the map but are absent from ``in_names`` are
+    ignored so the same map can be reused across nearby datasets. Variables
+    present in ``in_names`` must be assigned exactly once.
+    """
+    name_to_idx = {name: idx for idx, name in enumerate(in_names)}
+    assigned: dict[int, str] = {}
+    group_slice_indices: list[list[int]] = []
+    group_names = list(group_var_map.keys())
+
+    for group_name, group_vars in group_var_map.items():
+        group_indices: list[int] = []
+        for var_name in dict.fromkeys(group_vars):
+            if var_name not in name_to_idx:
+                continue
+            idx = name_to_idx[var_name]
+            if idx in assigned:
+                raise ValueError(f"Variable {var_name!r} is assigned to both {assigned[idx]!r} and {group_name!r}.")
+            assigned[idx] = group_name
+            group_indices.append(idx)
+        if len(group_indices) == 0:
+            raise ValueError(f"Feature group {group_name!r} has no channels in in_names.")
+        group_slice_indices.append(group_indices)
+
+    missing_names = [name for idx, name in enumerate(in_names) if idx not in assigned]
+    if len(missing_names) > 0:
+        raise ValueError(f"Feature groups must cover every input channel. Missing variables: {missing_names}")
+
+    group_reassemble_map = _build_reassemble_map(group_slice_indices, len(in_names))
+    return group_slice_indices, group_reassemble_map, group_names
 
 
 def _build_reassemble_map(group_slice_indices: list[list[int]], num_channels: int) -> list[int]:
@@ -400,8 +450,7 @@ class LatentMixerPredictor(UTransformer):
         return outputs
 
 
-@MODELS.register()
-class GroupVAEPredictor(BasePredictor):
+class _BaseGroupVAE(BasePredictor):
     def __init__(
         self,
         const_chans: int = 0,
@@ -419,18 +468,14 @@ class GroupVAEPredictor(BasePredictor):
         head_type: str = "2fc",
         norm_type: str = "adaln",
         ffn_type: str = "gegluffn",
-        group_by: str = "level",
-        level_groups: list[list[int]] | None = None,
-        split_surface: bool = False,
-        plevels: list[int] | None = None,
+        group_slice_indices: list[list[int]] | None = None,
         vt_attn_type: str = "std",
         vt_window_size: int | None = None,
         vt_num_heads: int = 4,
         vt_num_layers: int = 12,
         vt_layer_type: str = "swin",
         vt_use_proj: bool = True,
-        vae_type: str = "index",
-        vae_residual_indices: list[str] | None = None,
+        residual_vae_indices: list[int] | None = None,
         alpha: float = 1.0,
         loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
         rollout_max: int = 50,
@@ -439,6 +484,10 @@ class GroupVAEPredictor(BasePredictor):
         pretrain_temporal_mix_prob: float = 0.5,
         pretrain_metric_temp: float = 0.001,
         pretrain_metric_tokens: int = 128,
+        kl_schedule_mode: str = "cosine",
+        kl_min_weight: float = 0.0,
+        kl_max_weight: float = 100.0,
+        kl_cycle_iters: int = 40000,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -450,6 +499,12 @@ class GroupVAEPredictor(BasePredictor):
         self.loss_weight = loss_weight
         self.const_chans = const_chans
         self.rollout_max = rollout_max
+        self.kl_schedule_mode = kl_schedule_mode
+        self.kl_min_weight = float(kl_min_weight)
+        self.kl_max_weight = float(kl_max_weight)
+        self.kl_cycle_iters = int(kl_cycle_iters)
+        if self.kl_cycle_iters <= 0:
+            raise ValueError(f"kl_cycle_iters must be positive, got {self.kl_cycle_iters}.")
         if pretrain:
             self.pretrain = True
             self.pretrain_mask_ratio = float(pretrain_mask_ratio)
@@ -462,16 +517,11 @@ class GroupVAEPredictor(BasePredictor):
         else:
             self.pretrain = False
 
-        if group_by == "level":
-            if level_groups is None:
-                level_groups = DEFAULT_LEVEL_GROUPS
-            if plevels is None:
-                plevels = LEVELS_13
-            self.group_slice_indices, self.group_reassemble_map = build_level_channel_map(list(self.in_names), level_groups, split_surface, plevels=plevels)
-        elif group_by == "variable":
-            self.group_slice_indices, self.group_reassemble_map = build_variable_channel_map(list(self.in_names))
-        else:
-            raise ValueError("group_by must be one of {'level', 'variable'}.")
+        if group_slice_indices is None:
+            raise ValueError("group_slice_indices must be provided by the concrete Group VAE subclass.")
+
+        self.group_slice_indices = group_slice_indices
+        self.group_reassemble_map = _build_reassemble_map(group_slice_indices, len(self.in_names))
         self.num_groups = len(self.group_slice_indices)
 
         if isinstance(embed_dim, int):
@@ -481,11 +531,11 @@ class GroupVAEPredictor(BasePredictor):
                 raise ValueError("Length of embed_dim list must match num_groups.")
             self.embed_dims = embed_dim
 
-        self.vae_type = vae_type
-        self.residual_vae_indices = self._build_residual_indices(vae_type, vae_residual_indices)
-        self.logger.info(f"VAE residual mode: {self.vae_type}, indices: {self.residual_vae_indices}")
+        self.residual_vae_indices = [] if residual_vae_indices is None else list(residual_vae_indices)
+        invalid_residual_indices = [idx for idx in self.residual_vae_indices if idx < 0 or idx >= len(self.in_names)]
+        if len(invalid_residual_indices) > 0:
+            raise ValueError(f"residual_vae_indices contains invalid channel indices: {invalid_residual_indices}")
         self.group_reassemble_map = torch.tensor(self.group_reassemble_map, dtype=torch.long)
-        self.logger.info(f"Group slice indices: {self.group_slice_indices}")
 
         common_encoder_kwargs = dict(
             image_size=image_size,
@@ -524,8 +574,6 @@ class GroupVAEPredictor(BasePredictor):
         for gi, group in enumerate(self.group_slice_indices):
             group_chans = len(self.group_slice_indices[gi])
             group_embed_dim = self.embed_dims[gi]
-            group_names = [self.in_names[idx] for idx in group]
-            self.logger.info(f"Group {gi} init: channels={group_chans}, indices={group}, names={group_names}")
 
             vae_encoder = GroupEncoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, **common_encoder_kwargs)
             vae_encoder_list.append(vae_encoder)
@@ -556,7 +604,7 @@ class GroupVAEPredictor(BasePredictor):
             use_projection=vt_use_proj,
         )
         self.logger.info(
-            f"Initialized GroupVAEPredictor with {self.num_groups} groups, embed_dims={self.embed_dims}, vae_type={self.vae_type}, residual_indices={self.residual_vae_indices}"
+            f"Initialized {self.__class__.__name__} with {self.num_groups} groups, embed_dims={self.embed_dims}, residual_indices={self.residual_vae_indices}"
         )
 
         # Build evaluation ensemble schedule once during initialization so test
@@ -593,26 +641,6 @@ class GroupVAEPredictor(BasePredictor):
                 param.requires_grad = True
         self.logger.info("Pretrain mode: only posterior_encoder_group and decoder_group are trainable.")
 
-    def _build_residual_indices(self, vae_type: str, vae_residual_indices: list[str] | None) -> list[int]:
-        if vae_type == "absolute":
-            return []
-        if vae_type == "residual":
-            return list(range(len(self.in_names)))
-        if vae_type != "index":
-            raise ValueError("vae_type must be one of {'residual', 'absolute', 'index'}.")
-
-        if vae_residual_indices is None:
-            if self.freq == 24:
-                residual_channels = RESIDUAL_VARS_24H
-            elif self.freq == 6:
-                residual_channels = RESIDUAL_VARS_6H
-            else:
-                residual_channels = []
-        else:
-            residual_channels = vae_residual_indices
-        self.logger.info(f"Building residual indices for vae_type='index' with channels: {residual_channels}")
-        return [self.in_names.index(name) for name in residual_channels if name in self.in_names]
-
     def _apply_residual(self, pred: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
         if len(self.residual_vae_indices) == 0:
             return pred
@@ -623,6 +651,9 @@ class GroupVAEPredictor(BasePredictor):
     def _slice_group(self, x: torch.Tensor, gi: int) -> torch.Tensor:
         indices = self.group_slice_indices[gi]
         return x[:, :, indices]
+
+    def _prepare_group_input(self, x: torch.Tensor, gi: int) -> torch.Tensor:
+        return self._slice_group(x, gi)
 
     def _reassemble(self, group_outputs: list[torch.Tensor], x_ref: torch.Tensor) -> torch.Tensor:
         full = torch.concatenate(group_outputs, dim=2)
@@ -676,7 +707,7 @@ class GroupVAEPredictor(BasePredictor):
         """
         results_by_group = []
         for gi in range(self.num_groups):
-            x_group = self._slice_group(x, gi)
+            x_group = self._prepare_group_input(x, gi)
             # Use no_grad for frozen encoders to skip activation storage (major memory savings)
             if self._is_group_frozen(gi, is_prior=is_prior):
                 with torch.no_grad():
@@ -755,7 +786,17 @@ class GroupVAEPredictor(BasePredictor):
         next_input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
         return output, next_input
 
-    def _get_kl_weight(self, mode: str = "cyclical", max_weight: float = 100.0, cycle_iters: int = 20000, min_weight: float = 0.0) -> float:
+    def _get_kl_weight(
+        self,
+        mode: str | None = None,
+        max_weight: float | None = None,
+        cycle_iters: int | None = None,
+        min_weight: float | None = None,
+    ) -> float:
+        mode = self.kl_schedule_mode if mode is None else mode
+        max_weight = self.kl_max_weight if max_weight is None else float(max_weight)
+        min_weight = self.kl_min_weight if min_weight is None else float(min_weight)
+        cycle_iters = self.kl_cycle_iters if cycle_iters is None else int(cycle_iters)
         try:
             current_iter = get_event_storage().iter
         except AssertionError:
@@ -1016,7 +1057,7 @@ class GroupVAEPredictor(BasePredictor):
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
             true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
 
-        kl_weight = self._get_kl_weight(mode="cosine", cycle_iters=40000)
+        kl_weight = self._get_kl_weight()
         loss_dict = {
             "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
             "loss_vae_input": self.loss_weight[0] * loss_vae_input,
@@ -1123,3 +1164,163 @@ class GroupVAEPredictor(BasePredictor):
 
         output = self.inv_normalize(output)
         return output
+
+
+@MODELS.register()
+class GroupVAEPredictor(_BaseGroupVAE):
+    """Backward-compatible level/variable Group VAE predictor."""
+
+    def __init__(
+        self,
+        group_by: str = "level",
+        level_groups: list[list[int]] | None = None,
+        split_surface: bool = False,
+        plevels: list[int] | None = None,
+        vae_type: str = "index",
+        vae_residual_indices: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        in_names = list(kwargs.get("in_names", []))
+        if len(in_names) == 0:
+            raise ValueError("GroupVAEPredictor requires in_names to build channel groups.")
+
+        if group_by == "level":
+            if level_groups is None:
+                level_groups = DEFAULT_LEVEL_GROUPS
+            if plevels is None:
+                plevels = LEVELS_13
+            group_slice_indices, _ = build_level_channel_map(in_names, level_groups, split_surface, plevels=plevels)
+        elif group_by == "variable":
+            group_slice_indices, _ = build_variable_channel_map(in_names)
+        else:
+            raise ValueError("group_by must be one of {'level', 'variable'}.")
+
+        residual_vae_indices = self._build_residual_indices(in_names, int(kwargs.get("freq", 6)), vae_type, vae_residual_indices)
+        super().__init__(
+            group_slice_indices=group_slice_indices,
+            residual_vae_indices=residual_vae_indices,
+            **kwargs,
+        )
+        self.logger.info(f"GroupVAEPredictor groups: {self._format_group_info(group_slice_indices)}")
+        self.logger.info(f"GroupVAEPredictor residual indices: {self.residual_vae_indices}")
+
+    @staticmethod
+    def _build_residual_indices(in_names: list[str], freq: int, vae_type: str, vae_residual_indices: list[str] | None) -> list[int]:
+        if vae_type == "absolute":
+            return []
+        if vae_type == "residual":
+            return list(range(len(in_names)))
+        if vae_type != "index":
+            raise ValueError("vae_type must be one of {'residual', 'absolute', 'index'}.")
+
+        if vae_residual_indices is None:
+            if freq == 24:
+                residual_channels = RESIDUAL_VARS_24H
+            elif freq == 6:
+                residual_channels = RESIDUAL_VARS_6H
+            else:
+                residual_channels = []
+        else:
+            residual_channels = vae_residual_indices
+        return [in_names.index(name) for name in residual_channels if name in in_names]
+
+    def _format_group_info(self, group_slice_indices: list[list[int]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "index": gi,
+                "channels": len(group),
+                "indices": group,
+                "names": [self.in_names[idx] for idx in group],
+            }
+            for gi, group in enumerate(group_slice_indices)
+        ]
+
+
+@MODELS.register()
+class FeatureGroupVAEPredictor(_BaseGroupVAE):
+    """Feature-grouped VAE with per-group absolute/residual reconstruction.
+
+    Residual groups encode two frames as ``[x_tm1, x_t - x_tm1]`` and decode a
+    residual target that is added back to ``x_tm1``. Absolute groups encode
+    ``[x_tm1, x_t]`` and decode the absolute target directly.
+    """
+
+    def __init__(
+        self,
+        group_var_map: dict[str, list[str]] | None = None,
+        group_recon_modes: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if group_var_map is None:
+            group_var_map = GROUP_VAR_MAP
+        if group_recon_modes is None:
+            group_recon_modes = GROUP_RECON_MODES
+        in_names = list(kwargs.get("in_names", []))
+        if len(in_names) == 0:
+            raise ValueError("FeatureGroupVAEPredictor requires in_names to build feature channel groups.")
+        group_slice_indices, _, group_names = build_feature_group_channel_map(in_names, group_var_map)
+        group_modes = [group_recon_modes.get(group_name, "absolute") for group_name in group_names]
+        invalid_modes = [mode for mode in group_modes if mode not in {"absolute", "residual"}]
+        if len(invalid_modes) > 0:
+            raise ValueError(f"group_recon_modes must use only 'absolute' or 'residual', got {invalid_modes}")
+        residual_vae_indices = [idx for group_indices, mode in zip(group_slice_indices, group_modes) if mode == "residual" for idx in group_indices]
+
+        legacy_keys = (
+            "group_by",
+            "level_groups",
+            "split_surface",
+            "plevels",
+            "group_slice_indices",
+            "group_reassemble_map",
+            "group_names",
+            "group_modes",
+            "vae_type",
+            "residual_vae_indices",
+        )
+        provided_legacy_keys = [key for key in legacy_keys if key in kwargs]
+        if len(provided_legacy_keys) > 0:
+            raise ValueError(f"FeatureGroupVAEPredictor manages grouping and VAE mode internally; remove unsupported args: {provided_legacy_keys}")
+        in_frame_changed = False
+        if "in_frames" in kwargs and kwargs["in_frames"] != 2:
+            ori_in_frames = kwargs["in_frames"]
+            in_frame_changed = True
+            kwargs["in_frames"] = 2
+        super().__init__(
+            group_slice_indices=group_slice_indices,
+            residual_vae_indices=residual_vae_indices,
+            **kwargs,
+        )
+        if self.pretrain:
+            # Pretraining losses are not designed for mixed absolute/residual groups, so we disable them.
+            self.pretrain_metric_weight = 0.0
+        self.group_modes = group_modes
+        if in_frame_changed:
+            self.logger.warning(f"FeatureGroupVAEPredictor overrides in_frames from {ori_in_frames} to 2 for two-frame reconstruction inputs.")
+        self.logger.info(f"FeatureGroupVAEPredictor groups: {self._format_group_info(group_slice_indices, group_names, group_modes)}")
+        self.logger.info(f"FeatureGroupVAEPredictor residual indices: {self.residual_vae_indices}")
+
+    def _format_group_info(self, group_slice_indices: list[list[int]], group_names: list[str], group_modes: list[str]) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": group_name,
+                "mode": group_mode,
+                "channels": len(group),
+                "indices": group,
+                "vars": [self.in_names[idx] for idx in group],
+            }
+            for group_name, group_mode, group in zip(group_names, group_modes, group_slice_indices)
+        ]
+
+    def _prepare_group_input(self, x: torch.Tensor, gi: int) -> torch.Tensor:
+        x_group = self._slice_group(x, gi)
+        if x_group.shape[1] < 2:
+            raise ValueError(f"FeatureGroupVAEPredictor requires at least two input frames, got shape={tuple(x_group.shape)}")
+
+        prev = x_group[:, -2:-1]
+        curr = x_group[:, -1:]
+        mode = self.group_modes[gi]
+        if mode == "residual":
+            return torch.cat([prev, curr - prev], dim=1)
+        if mode == "absolute":
+            return torch.cat([prev, curr], dim=1)
+        raise ValueError(f"Unexpected feature group reconstruction mode: {mode}")

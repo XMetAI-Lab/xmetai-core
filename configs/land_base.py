@@ -6,6 +6,7 @@ This configuration file is designed to be used with the FanJiang framework.
 """
 
 import os
+from datetime import datetime
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -30,6 +31,7 @@ CONFIG_PATH = os.path.dirname(__file__)
 ROOT_PATH = os.path.join(CONFIG_PATH, "../")
 data_dirs = [f for f in os.environ["DATA_DIR"].split(":") if f]  # support multiple output directories
 output_dir = os.environ.get("OUTPUT_DIR", os.path.join(ROOT_PATH, "output/", os.path.basename(CONFIG_PATH)))
+cur_date = datetime.now().strftime("%Y%m%d")
 
 #####################################################################
 # Training settings
@@ -52,7 +54,7 @@ if os.path.exists(f"{output_dir}/model_final.pth"):
     train.init_checkpoint = f"{output_dir}/model_best.pth"
     train.teacher_forcing.teach_iters = 100
     train.teacher_forcing.teach_steps = 20  # teach for 20 steps with 80GB GPU memory
-    output_dir += "/mstep/"
+    output_dir += f"/mstep-{cur_date}/"
     lr = 1.28e-5
     max_iter = max_iter // 3
     load_from_pretrain = True
