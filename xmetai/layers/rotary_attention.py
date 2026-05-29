@@ -7,11 +7,6 @@ from torch import nn
 
 __all__ = [
     "precompute_freqs_cis",
-    "precompute_freqs_cis_2d",
-    "reshape_for_broadcast",
-    "apply_rotary_emb",
-    "repeat_kv",
-    "RotaryAttention",
 ]
 
 

@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from xmetai.data import GraphCastDataset
+from xmetai.data.weather.graphcast_dataset import GraphCastDataset
 
 
 @pytest.mark.numerical

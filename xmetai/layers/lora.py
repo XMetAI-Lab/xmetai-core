@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["LinearLoRA", "apply_lora_to_model", "merge_lora_weights", "unmerge_lora_weights", "set_lora_step"]
+__all__ = ["apply_lora_to_model", "merge_lora_weights", "set_lora_step"]
 
 logger = logging.getLogger(__name__)
 

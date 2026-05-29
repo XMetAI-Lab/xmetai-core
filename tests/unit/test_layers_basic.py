@@ -6,7 +6,11 @@ Tests: Attention, RotaryAttention, Embeddings, Activations, Normalizations
 import pytest
 import torch
 
-from xmetai.layers import Attention, CubeEmbed, GeGLUFFN, LayerNorm, Mlp, RotaryAttention, TimestepEmbed, precompute_freqs_cis, precompute_freqs_cis_2d
+from xmetai.layers.attention import Attention
+from xmetai.layers.embed import CubeEmbed, TimestepEmbed
+from xmetai.layers.mlp import GeGLUFFN, Mlp
+from xmetai.layers.norm import LayerNorm
+from xmetai.layers.rotary_attention import RotaryAttention, precompute_freqs_cis, precompute_freqs_cis_2d
 
 
 class TestMlp:

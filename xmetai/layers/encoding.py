@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-__all__ = ["StepEncoding", "TimeEncoding"]
+__all__ = ["StepEncoding"]
 
 
 class StepEncoding(nn.Module):

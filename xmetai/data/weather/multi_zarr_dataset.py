@@ -6,7 +6,7 @@ import torch
 import xarray as xr
 from torch.utils.data import Dataset
 
-from xmetai.builder import DATASETS
+from xmetai.registries import DATASETS
 
 from .data_util import make_seq, make_seq_inference
 

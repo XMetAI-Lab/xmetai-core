@@ -17,10 +17,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from xmetai.config import LazyConfig, instantiate
 from xmetai.core import DatasetEvaluators
 
-__all__ = [
-    "flatten_results_dict",
-    "Lightning_Model_Wrapper",
-]
+__all__ = ["Lightning_Model_Wrapper"]
 
 
 # results pattern: {key:{times:values, level1: values, ...}}

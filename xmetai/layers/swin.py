@@ -4,10 +4,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from xmetai.layers import DropPath, LayerNorm, to_2tuple
-
 from .attention import WindowAttention, WindowAttentionV2
+from .drop import DropPath
+from .helpers import to_2tuple
 from .mlp import GeGLUFFN
+from .norm import LayerNorm
 from .rotary_attention import RotaryAttention
 
 __all__ = ["window_partition", "window_reverse", "SwinBlock", "SwinLayer"]

@@ -29,23 +29,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from xmetai.builder import MODELS
 from xmetai.layers import AdaptiveLN, EarthConvTranspose2d
 from xmetai.loss import charbonnier_loss
+from xmetai.registries import MODELS
 from xmetai.utils import get_event_storage
 
 from .base_predictor import BasePredictor
 from .utransformer import UTransformer
 
 __all__ = [
-    "ensemble_schedule",
-    "build_level_channel_map",
-    "build_variable_channel_map",
-    "build_feature_group_channel_map",
-    "GroupEncoder",
-    "GroupDecoder",
-    "ConvHead",
-    "LatentMixerPredictor",
     "GroupVAEPredictor",
     "FeatureGroupVAEPredictor",
 ]

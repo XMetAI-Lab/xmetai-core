@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 import torch
 import torch.nn as nn
 
-from xmetai.layers import LinearLoRA, apply_lora_to_model, merge_lora_weights, set_lora_step, unmerge_lora_weights
+from xmetai.layers.lora import LinearLoRA, apply_lora_to_model, merge_lora_weights, set_lora_step, unmerge_lora_weights
 
 
 class SimpleModel(nn.Module):

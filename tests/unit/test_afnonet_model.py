@@ -2,7 +2,7 @@
 
 import torch
 
-from xmetai.models import AFNONet
+from xmetai.models.afnonet import AFNONet
 
 
 def test_afnonet_forward_loss():

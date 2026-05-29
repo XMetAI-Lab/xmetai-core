@@ -5,18 +5,21 @@ Description: Only for evaluation with onnx model.
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
+import logging
 import os
 
 import numpy as np
 import onnxruntime as ort
 import torch
 
-from xmetai.builder import MODELS
+from xmetai.registries import MODELS
 from xmetai.utils import get_local_rank
 
 from .base_predictor import BasePredictor
 
+logger = logging.getLogger(__name__)
 CUSTOM_OPS_LIB_PATH = "/workspace/cma/xmetai_onnx_plugins.cpython-311-x86_64-linux-gnu.so"
+get_library_path = None
 if os.path.exists(CUSTOM_OPS_LIB_PATH):
     # use custom ops library by default
     def get_library_path():
@@ -60,7 +63,7 @@ else:
             return selective_scan_fn(u, delta, A, B, C, D, z, delta_bias, delta_softplus, return_last_state)
 
     except ImportError as e:
-        print(f"import plugin error: {e}.")
+        logger.debug("ONNX custom op plugin is not available: %s", e)
 
 __all__ = ["OnnxInferModel"]
 

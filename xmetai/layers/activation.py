@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Function
 
-__all__ = ["GEGLU", "TruncExp", "trunc_exp"]
+__all__ = ["trunc_exp"]
 
 
 class GEGLU(nn.Module):

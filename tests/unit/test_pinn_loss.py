@@ -8,7 +8,7 @@ import math
 import pytest
 import torch
 
-from xmetai.loss import (
+from xmetai.loss.pinn_loss import (
     GRAVITY,
     LEVELS_13,
     PL_NAMES,

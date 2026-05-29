@@ -1,13 +1,19 @@
-"""
-Unit tests for vision layers: SwinLayer, MambaVisionLayer, Block.
-Tests windowed attention, rotary embeddings, and mamba blocks.
-"""
+"""Unit tests for vision layers: SwinLayer, MambaVisionLayer, Block."""
+
+from importlib.util import find_spec
 
 import pytest
 import torch
 import torch.nn as nn
 
-from xmetai.layers import HAS_MAMBA, MambaVisionLayer, SwinLayer, precompute_freqs_cis
+from xmetai.layers.rotary_attention import precompute_freqs_cis
+from xmetai.layers.swin import SwinLayer
+
+HAS_MAMBA = find_spec("mamba_ssm") is not None
+if HAS_MAMBA:
+    from xmetai.layers.mamba_vision import MambaVisionLayer
+else:
+    MambaVisionLayer = None
 
 
 class TestSwinLayer:
