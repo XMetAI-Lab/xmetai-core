@@ -6,7 +6,6 @@ from .drop import DropPath
 from .mlp import Mlp
 
 __all__ = [
-    "AFNO2D",
     "Block",
     "PatchEmbed",
 ]

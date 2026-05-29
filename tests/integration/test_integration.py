@@ -4,13 +4,16 @@ Tests: Forward passes, gradient flow, ONNX export, model save/load.
 """
 
 import tempfile
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
 import torch
 
-from xmetai.layers import HAS_MAMBA, Attention
-from xmetai.models import UTransformer
+from xmetai.layers.attention import Attention
+from xmetai.models.utransformer import UTransformer
+
+HAS_MAMBA = find_spec("mamba_ssm") is not None
 
 
 class TestForwardPass:

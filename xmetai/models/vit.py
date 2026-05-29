@@ -11,9 +11,9 @@ import numpy as np
 import torch
 from einops import rearrange
 
-from xmetai.builder import MODELS
 from xmetai.layers import set_lora_step
 from xmetai.loss import charbonnier_loss
+from xmetai.registries import MODELS
 
 from .base_predictor import BasePredictor
 from .utransformer import UTransformer

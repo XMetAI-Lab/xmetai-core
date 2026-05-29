@@ -1,8 +1,8 @@
 import torch
 
-from xmetai.builder import METRICS
 from xmetai.core import DatasetEvaluator
 from xmetai.layers import to_1tuple
+from xmetai.registries import METRICS
 from xmetai.utils import comm
 
 __all__ = [

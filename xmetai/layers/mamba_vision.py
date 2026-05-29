@@ -13,7 +13,11 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from mamba_ssm.ops.selective_scan_interface import SelectiveScanFn, selective_scan_fn
 
-from xmetai.layers import Attention, DropPath, Mlp, RotaryAttention, WindowAttention, WindowAttentionV2, window_partition, window_reverse
+from .attention import Attention, WindowAttention, WindowAttentionV2
+from .drop import DropPath
+from .mlp import Mlp
+from .rotary_attention import RotaryAttention
+from .swin import window_partition, window_reverse
 
 __all__ = ["MambaVisionLayer"]
 

@@ -13,6 +13,7 @@ from dask.diagnostics import ProgressBar
 
 __all__ = [
     "LEVELS_13",
+    "LEVELS_37",
     "update_dims",
     "update_coords",
     "compute_level_weight",

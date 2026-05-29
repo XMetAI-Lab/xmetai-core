@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 try:
-    from xmetai.models import UTransformer
+    from xmetai.models.utransformer import UTransformer
 except Exception as e:
     pytest.skip(
         f"UTransformer import failed; skipping model tests: {e}",

@@ -15,7 +15,7 @@ class TestCRPSLoss:
     def test_crps_basic(self):
         """Test basic CRPS computation."""
         try:
-            from xmetai.loss import CRPSLoss
+            from xmetai.loss.crps_loss import CRPSLoss
         except ImportError:
             pytest.skip("CRPS loss not available")
 
@@ -33,7 +33,7 @@ class TestCRPSLoss:
     def test_crps_numerical_stability(self):
         """Test CRPS with extreme values."""
         try:
-            from xmetai.loss import CRPSLoss
+            from xmetai.loss.crps_loss import CRPSLoss
         except ImportError:
             pytest.skip("CRPS loss not available")
 
@@ -51,7 +51,7 @@ class TestCRPSLoss:
     def test_crps_gradient_flow(self):
         """Test gradients through CRPS."""
         try:
-            from xmetai.loss import CRPSLoss
+            from xmetai.loss.crps_loss import CRPSLoss
         except ImportError:
             pytest.skip("CRPS loss not available")
 
@@ -184,7 +184,7 @@ class TestCharbonnierLoss:
     def test_charbonnier_basic(self):
         """Test basic Charbonnier loss."""
         try:
-            from xmetai.loss import CharbonnierLoss
+            from xmetai.loss.charbonnier_loss import CharbonnierLoss
         except ImportError:
             pytest.skip("Charbonnier loss not available")
 
@@ -200,7 +200,7 @@ class TestCharbonnierLoss:
     def test_charbonnier_gradient_flow(self):
         """Test gradients through Charbonnier loss."""
         try:
-            from xmetai.loss import CharbonnierLoss
+            from xmetai.loss.charbonnier_loss import CharbonnierLoss
         except ImportError:
             pytest.skip("Charbonnier loss not available")
 
@@ -219,7 +219,7 @@ class TestCharbonnierLoss:
     def test_charbonnier_numerical_stability(self):
         """Test Charbonnier with large errors."""
         try:
-            from xmetai.loss import CharbonnierLoss
+            from xmetai.loss.charbonnier_loss import CharbonnierLoss
         except ImportError:
             pytest.skip("Charbonnier loss not available")
 
@@ -240,7 +240,7 @@ class TestKLLoss:
     def test_kl_loss_basic(self):
         """Test basic KL loss for ensemble."""
         try:
-            from xmetai.loss import KLLoss
+            from xmetai.loss.kl_loss import KLLoss
         except ImportError:
             pytest.skip("KL loss not available")
 
@@ -255,7 +255,7 @@ class TestKLLoss:
     def test_kl_loss_non_negative(self):
         """Test that KL loss is always non-negative."""
         try:
-            from xmetai.loss import KLLoss
+            from xmetai.loss.kl_loss import KLLoss
         except ImportError:
             pytest.skip("KL loss not available")
 

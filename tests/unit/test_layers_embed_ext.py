@@ -6,7 +6,7 @@ GeoEmbed forward, and sincos_embedding periodic path.
 
 import torch
 
-from xmetai.layers import CubeEmbed, FieldEmbed, GeoEmbed, sincos_embedding
+from xmetai.layers.embed import CubeEmbed, FieldEmbed, GeoEmbed, sincos_embedding
 
 
 def test_cube_embed_stride_and_pad_flatten_false():

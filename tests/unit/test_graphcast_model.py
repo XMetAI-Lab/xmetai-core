@@ -3,8 +3,8 @@
 import numpy as np
 import torch
 
-from xmetai.data import build_edge_attr, build_grid_edges, build_node_static
-from xmetai.models import GraphCastPredictor
+from xmetai.data.weather.graphcast_grid import build_edge_attr, build_grid_edges, build_node_static
+from xmetai.models.graphcast import GraphCastPredictor
 
 
 def _make_graph(height, width):
