@@ -8,100 +8,40 @@ Copyright (c) 2025 by XMetAI/zhaohan, All Rights Reserved.
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import logging
-import os
 
-import numpy as np
-from omegaconf import OmegaConf
-
-from xmetai import (
-    DATASETS,
-    METRICS,
-    MODELS,
-    LazyConfig,
-    build_test_loader,
-    build_train_loader,
-    get_data_info,
+from s2s_base import (  # noqa: F401
+    buffers,
+    dataloader,
+    freq,
+    in_chans,
+    in_frames,
+    in_names,
+    load_from_pretrain,
+    logid,
+    out_chans,
+    output_dir,
+    scheduler,
+    step_range,
+    test_chans,
+    test_frames,
+    test_names,
+    train,
 )
+
+from xmetai import MODELS
 from xmetai import LazyCall as L
 
-######################################################################
-# Global settings
-######################################################################
-# set the environment variable for PyTorch CUDA memory allocation
-# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:32,expandable_segments:True"
-
-CONFIG_PATH = os.path.dirname(__file__)
-ROOT_PATH = os.path.join(CONFIG_PATH, "../")
-data_dir = os.environ.get("DATA_DIR", "/mnt/d/s2s_data/s2s.1950-2024.c76")
-output_dir = os.environ.get("OUTPUT_DIR", os.path.join(ROOT_PATH, "output/", os.path.basename(CONFIG_PATH)))
-
-#####################################################################
-# Training settings
-#####################################################################
-lr = float(os.environ.get("LR", 0.0005))  # get lr from environment variable, 1e-5 ~ 2e-4.
-total_batch_size = 1
-max_iter = 30 * 20000 // total_batch_size  # allow for 30 epochs with 20000 iterations per epoch
-
-# learning rate scheduler settings
-train = LazyConfig.load(os.path.join(ROOT_PATH, "common/train.py")).train
-# optimizer settings for training
-optimizer = LazyConfig.load(os.path.join(ROOT_PATH, "common/optim.py")).AdamW
-# Don't use common/schedule.py for now.
-scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).cosine_lr
-
-load_from_pretrain = False
-if os.path.exists(f"{output_dir}/model_final.pth"):
-    train.init_checkpoint = f"{output_dir}/model_best.pth"
+if load_from_pretrain:
     train.teacher_forcing.teach_iters = 100
     train.teacher_forcing.teach_steps = 20  # teach for 20 steps with 80GB GPU memory
-    output_dir += "/mstep/"
-    lr = 1.28e-5
-    max_iter = max_iter // 3
-    load_from_pretrain = True
     scheduler.scheduler.end_value = 1e-2
-    # scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).const_lr
 
-train.activation_checkpointing = True
-train.max_iter = max_iter
 train.output_dir = output_dir
-optimizer.lr = lr
 model_name = "AFNONet"
 
 ######################################################################
 # Model settings
 ######################################################################
-data_info = get_data_info([data_dir])
-
-in_names = data_info["in_names"]
-out_names = data_info["out_names"]
-logid = data_info["logid"]
-accumid = data_info["accumid"]
-maskid = data_info["maskid"]
-buffers = data_info["buffers"]
-test_names = ["z500", "u200", "u850", "msl", "t2m", "sst", "ttr", "tp"]
-
-test_chans = [out_names.index(n) for n in test_names]
-test_frames = np.arange(1, 43).tolist()  # predict 1-42 days ahead
-step_range = [max(test_frames)]
-
-in_chans = len(in_names)
-in_frames = 1
-out_chans = len(out_names)
-freq = 24
-
-# coefficients for pinn losses (override in experiment configs)
-pinn_coeffs = {
-    # mass continuity (disabled by default; enable explicitly if desired)
-    "mass": 0.0,
-    # geostrophic balance (enabled by default; adjust or disable in experiment configs if needed)
-    "geo": 1e2,
-    "hydro": 0.0,  # 2e-7
-    "energy": 0.0,  # 1e-08
-    "moisture": 1e6,
-    "thermal": 0.0,
-    "pv": 1e10,
-}
-
 embed_dim = 768
 img_size = (120, 240)
 patch_size = (5, 5)
@@ -151,57 +91,9 @@ model = L(MODELS.get(model_name))(
 model.buffers = buffers
 model.precision = "bf16"
 
-######################################################################
-# Data settings
-######################################################################
-dataloader = OmegaConf.create()
-
-train_times = ("19500101", "20230228")
-test_times = ("20230101", "20241231")
-# test_times = ("20050101", "20250202")
-dataloader.train = L(build_train_loader)(
-    dataset=L(DATASETS.get("ERA5"))(
-        data_name=data_dir,
-        hist_frames=in_frames,
-        fcst_frames=1,
-        interval=1,
-        freq=freq,
-        training=True,
-        years=train_times,
-    ),
-    total_batch_size=total_batch_size,
-    num_workers=8,
-    pin_memory=True,
-)
-
-dataloader.test = L(build_test_loader)(
-    dataset=L(DATASETS.get("ERA5"))(
-        data_name=data_dir,
-        hist_frames=in_frames,
-        fcst_frames=test_frames,
-        interval=-1,
-        freq=freq,
-        training=False,
-        inference_only=False,
-        years=test_times,
-    ),
-    total_batch_size=total_batch_size,
-    num_workers=4,
-    pin_memory=True,
-)
-
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
     model.alpha = 0.9  # Start with some noise regularization even during fine-tuning, can be tuned based on validation performance.
-
-# for evaluation with mse.
-eval_times = [int(t * freq) for t in test_frames]
-dataloader.evaluator = [
-    L(METRICS.get("MSE"))(
-        test_names=test_names,
-        test_times=eval_times,
-    ),
-]
 
 export_onnx = False
 if export_onnx:

@@ -103,6 +103,57 @@ class TestWeatherDataset:
         # This would require actual zarr files
         pytest.skip("Requires actual zarr files")
 
+    def test_zarr_dataloader_template_builds_multi_zarr_dataset(self, monkeypatch):
+        """Test the shared zarr_dataloader template without touching real zarr stores."""
+        import os
+
+        import pandas as pd
+        import xarray as xr
+
+        from xmetai.config import LazyConfig, instantiate
+
+        times = pd.date_range("2020-01-01", periods=8, freq="6h")
+        levels = ["a", "b", "c"]
+        values = np.arange(len(times) * len(levels) * 2 * 3, dtype=np.float32).reshape(len(times), len(levels), 2, 3)
+        fake_ds = xr.Dataset(
+            {"data": (("time", "level", "lat", "lon"), values)},
+            coords={"time": times, "level": levels, "lat": [0.0, 1.0], "lon": [100.0, 101.0, 102.0]},
+        )
+
+        def fake_open_zarr(path, consolidated=True):
+            assert path == "memory.zarr"
+            assert consolidated is True
+            return fake_ds.copy()
+
+        monkeypatch.setattr(xr, "open_zarr", fake_open_zarr)
+
+        zarr_dataloader = LazyConfig.load(os.path.join(os.path.dirname(__file__), "../../common/dataloader.py"), "zarr_dataloader")
+        dataloader_cfg = zarr_dataloader(
+            data_paths=["memory.zarr"],
+            in_frames=2,
+            test_frames=[1, 2],
+            freq=6,
+            train_times=("20200101-00", "20200102-18"),
+            test_times=("20200101-00", "20200102-18"),
+            total_batch_size=1,
+            train_workers=0,
+            test_workers=0,
+            test_interval=1,
+            in_names=["c", "a"],
+            eval_test_names=["c"],
+        )
+        train_dataset = instantiate(dataloader_cfg.train.dataset)
+        test_dataset = instantiate(dataloader_cfg.test.dataset)
+
+        train_sample = train_dataset[0]
+        test_sample = test_dataset[0]
+
+        assert dataloader_cfg.train.dataset._target_.__name__ == "MultiZarrDataset"
+        assert dataloader_cfg.evaluator[0].test_times == [6, 12]
+        assert train_sample["inputs"].shape == (2, 2, 2, 3)
+        assert train_sample["targets"].shape == (1, 2, 2, 3)
+        assert test_sample["targets"].shape == (2, 2, 2, 3)
+
 
 class TestDataSampler:
     """Test custom data samplers."""

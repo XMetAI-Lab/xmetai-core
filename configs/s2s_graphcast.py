@@ -85,10 +85,9 @@ model.precision = "bf16"
 neighbors = 8
 periodic_lon = True
 
-# Replace base dataloader datasets with GraphCastDataset
-
+# Keep the normal nested dataloader override interface for GraphCast.
 dataloader.train.dataset = L(DATASETS.get("GraphCastDataset"))(
-    data_name=dataloader.train.dataset.data_name,
+    data_paths=dataloader.train.dataset.data_paths,
     hist_frames=in_frames,
     fcst_frames=1,
     interval=1,
@@ -103,7 +102,7 @@ dataloader.train.dataset = L(DATASETS.get("GraphCastDataset"))(
 )
 
 dataloader.test.dataset = L(DATASETS.get("GraphCastDataset"))(
-    data_name=dataloader.test.dataset.data_name,
+    data_paths=dataloader.test.dataset.data_paths,
     hist_frames=in_frames,
     fcst_frames=test_frames,
     interval=-1,
