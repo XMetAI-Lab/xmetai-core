@@ -318,7 +318,7 @@ class BasePredictor(Meta):
         output = self.inv_normalize(output[:, :, : self.out_chans], self.test_chans)
         if target is not None:
             target = self.inv_normalize(target, self.test_chans)
-            assert output.shape == target.shape
+            assert output.shape == target.shape, f"output shape: {output.shape} not match target shape: {target.shape}"
 
         if len(self.test_rect) == 4:
             y1, y2, x1, x2 = self.test_rect

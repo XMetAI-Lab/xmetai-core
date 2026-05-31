@@ -108,6 +108,8 @@ dataloader = LazyConfig.load(os.path.join(ROOT_PATH, "common/dataloader.py"), "z
     test_workers=2,
     test_interval=16,
     eval_test_names=test_names,
+    test_frames=test_frames,
+    freq=freq,
 )
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
