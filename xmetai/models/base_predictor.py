@@ -287,7 +287,7 @@ class BasePredictor(Meta):
             targets = data["targets"]
             targets = targets.to(device=self.device, non_blocking=True)
             if self.training:
-                future_frames = data.get("future_frames", 1)
+                future_frames = data.get("future_frames", self.out_frames)
                 targets = targets[:, :future_frames]
             batch["targets"] = targets
 
