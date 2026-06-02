@@ -846,7 +846,7 @@ class _BaseGroupVAE(BasePredictor):
         large: float = 0.08,
         alpha_amp: float = 0.05,
         min_scale: float = 0.08,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         if small <= 0.0 or large <= small:
             raise ValueError(f"MCR perturbation scales must satisfy 0 < small < large, got small={small}, large={large}.")
 
@@ -864,7 +864,7 @@ class _BaseGroupVAE(BasePredictor):
         outputs0 = self._decode_all_groups(h_states, timestamp, const=const)
         outputs1 = self._decode_all_groups(h1_states, timestamp, const=const)
         outputs2 = self._decode_all_groups(h2_states, timestamp, const=const)
-        # Reassemble and apply residual for reconstruction
+
         x0 = self._assemble_prediction(outputs0, reference_input)
         x1 = self._assemble_prediction(outputs1, reference_input)
         x2 = self._assemble_prediction(outputs2, reference_input)
@@ -878,7 +878,7 @@ class _BaseGroupVAE(BasePredictor):
         amp = delta01.pow(2).mean()
         curv = ((delta12 / (large - small)) - (delta01.detach() / small)).pow(2).mean() * (small * small)
         loss_mcr = alpha_amp * amp + curv
-        return loss_mcr
+        return loss_mcr, x0
 
     def forward_pre_stage(self, data):
         """VAE-only pretraining stage.
@@ -898,10 +898,8 @@ class _BaseGroupVAE(BasePredictor):
 
         # Encode clean inputs using reusable method
         h_states = self._encode_all_groups(input, timestamp, const=const, is_prior=False)
-        # Decode clean latent representations
-        outputs_group = self._decode_all_groups(h_states, timestamp, const=const)
-        # Reassemble and apply residual for reconstruction
-        recon_input = self._assemble_prediction(outputs_group, recon_base)[:, -self.out_frames :]
+        loss_mcr, recon_input = self._pretrain_mcr_loss(h_states, recon_base, timestamp, const=const, pool_size=8 if input.shape[-2] >= 256 else 4)
+        recon_input = recon_input[:, -self.out_frames :]
 
         # Prepare weight for loss computation
         rec_weight = None
@@ -913,7 +911,6 @@ class _BaseGroupVAE(BasePredictor):
                 rec_weight = channel_weight * base_weight
 
         loss_rec = charbonnier_loss(recon_input, recon_target, weight=rec_weight)
-        loss_mcr = self._pretrain_mcr_loss(h_states, recon_base, timestamp, const=const, pool_size=8 if recon_input.shape[-2] >= 256 else 4)
 
         loss_latent_reg = input.new_zeros(())
         for h in h_states:
