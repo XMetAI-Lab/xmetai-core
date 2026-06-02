@@ -1048,7 +1048,7 @@ class _BaseGroupVAE(BasePredictor):
             new_input = input.clone()
             new_input[~torch.isfinite(new_input)] = 0.0
             for t in range(self.start_frames, total_step, self.forecast_stride):
-                if self.pretrain and "targets" in data:
+                if self.pretrain:
                     k = t - self.start_frames
                     target = data["targets"][:, k : k + self.out_frames].to(new_input)
                     if target.shape[1] != self.out_frames:
@@ -1058,7 +1058,7 @@ class _BaseGroupVAE(BasePredictor):
                     timestamp_target = self.get_timestamp(new_input, times, t + self.out_frames)
                     h_states = self._encode_all_groups(target_input, timestamp_target, const=const, is_prior=False)
                     group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const)
-                    target_base = torch.cat([new_input[:, -1:], target[:, :-1]], dim=1)
+                    target_base = target_input[:, -self.out_frames - 1 : -1]
                     output = self._assemble_prediction(group_outputs, target_base)
                     new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames :]
                 else:
