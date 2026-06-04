@@ -483,6 +483,8 @@ class _BaseGroupVAE(BasePredictor):
         loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
         rollout_max: int = 50,
         pretrain: bool = False,
+        pretrain_mask_ratio: float = 0.15,
+        pretrain_temporal_mix_prob: float = 0.5,
         forecast_stride: int = -1,
         kl_schedule_mode: str = "cosine",
         kl_min_weight: float = 0.0,
@@ -514,7 +516,10 @@ class _BaseGroupVAE(BasePredictor):
             raise ValueError(f"kl_cycle_iters must be positive, got {self.kl_cycle_iters}.")
         if pretrain:
             self.pretrain = True
-            self.pretrain_mcr_weight = loss_weight[4]
+            self.pretrain_mask_ratio = float(pretrain_mask_ratio)
+            self.pretrain_temporal_mix_prob = float(pretrain_temporal_mix_prob)
+            self.pretrain_mcr_weight = loss_weight[1]
+            self.pretrain_aug_rec_weight = loss_weight[4]
             self.pretrain_latent_reg_weight = loss_weight[3]
         else:
             self.pretrain = False
@@ -826,6 +831,46 @@ class _BaseGroupVAE(BasePredictor):
 
         return float(kl_weight)
 
+    def _pretrain_augment(
+        self,
+        x: torch.Tensor,
+        mask_ratio: float,
+        temporal_mix_prob: float,
+    ) -> torch.Tensor:
+        """Build an augmented view for VAE pretraining."""
+        if x.ndim != 5:
+            raise ValueError(f"Expected 5D input (B,T,C,H,W), got shape={x.shape}")
+
+        aug = x.clone()
+        bsz, t_len, n_chans, _, _ = aug.shape
+
+        if mask_ratio > 0.0:
+            mask_ratio = max(0.0, min(1.0, float(mask_ratio)))
+            n_mask = max(1, int(round(n_chans * mask_ratio)))
+            keep_prob = 1.0 - mask_ratio
+            channel_gate = torch.rand(bsz, n_chans, device=aug.device) < keep_prob
+
+            for bi in range(bsz):
+                if not bool(channel_gate[bi].any()):
+                    keep_idx = torch.randint(0, n_chans, (1,), device=aug.device)
+                    channel_gate[bi, keep_idx] = True
+
+            rand_perm = torch.stack([torch.randperm(n_chans, device=aug.device)[:n_mask] for _ in range(bsz)], dim=0)
+            hard_mask = torch.ones(bsz, n_chans, device=aug.device, dtype=torch.bool)
+            hard_mask.scatter_(1, rand_perm, False)
+            channel_gate = channel_gate & hard_mask
+            aug = aug * channel_gate[:, None, :, None, None].to(dtype=aug.dtype)
+
+        if t_len > 1 and temporal_mix_prob > 0.0:
+            temporal_mix_prob = max(0.0, min(1.0, float(temporal_mix_prob)))
+            do_mix = (torch.rand(bsz, device=aug.device) < temporal_mix_prob).to(dtype=aug.dtype)
+            do_mix = do_mix[:, None, None, None]
+            mix_w = torch.empty(bsz, 1, 1, 1, device=aug.device, dtype=aug.dtype).uniform_(0.4, 0.9)
+            mixed_last = mix_w * aug[:, -1] + (1.0 - mix_w) * aug[:, -2]
+            aug[:, -1] = do_mix * mixed_last + (1.0 - do_mix) * aug[:, -1]
+
+        return aug
+
     def _pretrain_diagnostic(self, output: torch.Tensor, kernel_size: int = 4) -> torch.Tensor:
         if output.ndim != 5:
             raise ValueError(f"Expected 5D output (B,T,C,H,W), got shape={tuple(output.shape)}")
@@ -896,10 +941,17 @@ class _BaseGroupVAE(BasePredictor):
         recon_target = input[:, -self.out_frames :]
         timestamp = self.get_timestamp(input, times, self.start_frames)
 
-        # Encode clean inputs using reusable method
-        h_states = self._encode_all_groups(input, timestamp, const=const, is_prior=False)
-        loss_mcr, recon_input = self._pretrain_mcr_loss(h_states, recon_base, timestamp, const=const, pool_size=8 if input.shape[-2] >= 256 else 4)
-        recon_input = recon_input[:, -self.out_frames :]
+        aug_input = self._pretrain_augment(input, mask_ratio=self.pretrain_mask_ratio, temporal_mix_prob=self.pretrain_temporal_mix_prob)
+
+        # Encode clean and augmented inputs using the posterior path.
+        h_clean_by_group = self._encode_all_groups(input, timestamp, const=const, is_prior=False)
+        h_aug_by_group = self._encode_all_groups(aug_input, timestamp, const=const, is_prior=False)
+
+        # Decode both views and reconstruct the clean tail frames.
+        loss_mcr, recon_clean = self._pretrain_mcr_loss(h_clean_by_group, recon_base, timestamp, const=const, pool_size=8 if input.shape[-2] >= 256 else 4)
+        recon_clean = recon_clean[:, -self.out_frames :]
+        rec_aug_by_group = self._decode_all_groups(h_aug_by_group, timestamp, const=const)
+        recon_aug = self._assemble_prediction(rec_aug_by_group, recon_base)[:, -self.out_frames :]
 
         # Prepare weight for loss computation
         rec_weight = None
@@ -910,15 +962,16 @@ class _BaseGroupVAE(BasePredictor):
             if channel_weight is not None:
                 rec_weight = channel_weight * base_weight
 
-        loss_rec = charbonnier_loss(recon_input, recon_target, weight=rec_weight)
+        loss_rec_clean = charbonnier_loss(recon_clean, recon_target, weight=rec_weight)
+        loss_rec_aug = charbonnier_loss(recon_aug, recon_target, weight=rec_weight)
 
         loss_latent_reg = input.new_zeros(())
-        for h in h_states:
-            loss_latent_reg = loss_latent_reg + torch.mean(h**2)
+        for h_clean, h_aug in zip(h_clean_by_group, h_aug_by_group):
+            loss_latent_reg = loss_latent_reg + torch.mean(h_clean**2) + torch.mean(h_aug**2)
         loss_latent_reg = loss_latent_reg / self.num_groups
 
         return {
-            "loss_pre_rec": loss_rec,
+            "loss_pre_rec": loss_rec_clean + self.pretrain_aug_rec_weight * loss_rec_aug,
             "loss_pre_mcr": self.pretrain_mcr_weight * loss_mcr,
             "loss_pre_latent_reg": self.pretrain_latent_reg_weight * loss_latent_reg,
         }

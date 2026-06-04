@@ -47,6 +47,12 @@ vae_type = "index"
 if os.path.exists(f"{output_dir}/model_best.pth"):
     train.init_checkpoint = f"{output_dir}/model_best.pth"
 loss_weight = (0.2, 0.2, 1.0, 0.002, 0.8)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
+
+in_frames = 2
+out_frames = 1
+dataloader.train.dataset.hist_frames = in_frames
+dataloader.test.dataset.hist_frames = in_frames
+
 if load_from_pretrain:
     # freeze upper-level VAE to preserve pretrained dynamics, only fine-tune lower-level VAE and main predictor.
     train.teacher_forcing.teach_start = 2
@@ -65,12 +71,14 @@ if load_from_pretrain:
     scheduler.period = 1.0 / rollout_steps
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
 else:
-    test_frames = [1, 2]
+    train.teacher_forcing.teach_iters = -1
+    train.teacher_forcing.teach_steps = 1
+    test_frames = [i for i in range(1, out_frames + 2)]
     dataloader.test.dataset.fcst_frames = test_frames
     dataloader.evaluator[0].test_times = [t * freq for t in test_frames]
-    # if os.path.exists(f"{output_dir}/model_posterior_fix_{vae_type}.pth"):
-    #    train.init_checkpoint = f"{output_dir}/model_posterior_fix_{vae_type}.pth"
-    #    train.freeze = ("posterior_encoder_group",)
+    if os.path.exists(f"{output_dir}/../pretrain/s2s_group_vae/model_final.pth"):
+        train.init_checkpoint = f"{output_dir}/../pretrain/s2s_group_vae/model_final.pth"
+        train.freeze = ("posterior_encoder_group",)
 
 
 ######################################################################
@@ -103,9 +111,9 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     vt_num_heads=24,
     vt_num_layers=depths[-1],
     vt_layer_type="mamba3_met_embed",
+    vt_use_proj=True,
     vt_window_size=10,
     vt_attn_type="rotary_flash",
-    vt_use_proj=True,
     # Overall model settings
     alpha=0.9,
     loss_weight=loss_weight,
@@ -114,8 +122,8 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     in_chans=in_chans,
     out_chans=out_chans,
     const_chans=2,
-    in_frames=2,
-    out_frames=1,
+    in_frames=in_frames,
+    out_frames=out_frames,
     logid=logid,
     maskid=[],  # maskid,
     accumid=accumid,
