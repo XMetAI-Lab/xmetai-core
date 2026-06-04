@@ -9,17 +9,11 @@ import os
 from datetime import datetime
 
 import numpy as np
-from omegaconf import OmegaConf
 
 from xmetai import (
-    DATASETS,
-    METRICS,
     LazyConfig,
-    build_test_loader,
-    build_train_loader,
     get_data_info,
 )
-from xmetai import LazyCall as L
 
 ######################################################################
 # Global settings
@@ -104,53 +98,18 @@ depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 ######################################################################
 # Data settings
 ######################################################################
-dataloader = OmegaConf.create()
-
 train_times = ("19500101", "20230228")
 test_times = ("20230101", "20241231")
 # test_times = ("20050101", "20250202")
-dataloader.train = L(build_train_loader)(
-    dataset=L(DATASETS.get("ERA5"))(
-        data_name=data_dir,
-        hist_frames=in_frames,
-        fcst_frames=1,
-        interval=1,
-        freq=freq,
-        training=True,
-        years=train_times,
-    ),
+dataloader = LazyConfig.load(os.path.join(ROOT_PATH, "common/dataloader.py"), "zarr_dataloader")(
+    data_paths=[data_dir],
+    train_times=train_times,
+    test_times=test_times,
+    eval_test_names=test_names,
     total_batch_size=total_batch_size,
-    num_workers=8,
-    pin_memory=True,
 )
-
-dataloader.test = L(build_test_loader)(
-    dataset=L(DATASETS.get("ERA5"))(
-        data_name=data_dir,
-        hist_frames=in_frames,
-        fcst_frames=test_frames,
-        interval=-1,
-        freq=freq,
-        training=False,
-        inference_only=False,
-        years=test_times,
-    ),
-    total_batch_size=total_batch_size,
-    num_workers=4,
-    pin_memory=True,
-)
-
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
-
-# for evaluation with mse.
-eval_times = [int(t * freq) for t in test_frames]
-dataloader.evaluator = [
-    L(METRICS.get("MSE"))(
-        test_names=test_names,
-        test_times=eval_times,
-    ),
-]
 
 export_onnx = False
 if export_onnx:
