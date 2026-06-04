@@ -1,0 +1,114 @@
+import pytest
+import torch
+
+from xmetai.loss.precip_loss import precip_loss
+
+
+CHANNELS = ["z500", "tp", "t2m", "ncpcp"]
+B, T, C, H, W = 2, 1, len(CHANNELS), 8, 10
+
+
+TP_INDEX = CHANNELS.index("tp")
+
+
+def test_empty_precip_indices_return_empty_loss():
+    output = torch.zeros(1, 1, 2, 4, 4)
+    target = torch.zeros_like(output)
+
+    losses = precip_loss(output, target, [], threshold=0.0, coefficients={"occurrence": 1.0})
+
+    assert losses == {}
+
+
+def test_occurrence_and_distribution_are_scalar_and_differentiable():
+    torch.manual_seed(0)
+    output = torch.randn(B, T, C, H, W, requires_grad=True)
+    target = torch.randn(B, T, C, H, W)
+
+    losses = precip_loss(
+        output,
+        target,
+        [TP_INDEX],
+        threshold=0.0,
+        coefficients={"occurrence": 1.0, "distribution": 1.0},
+    )
+
+    assert set(losses) == {"loss_occurrence", "loss_distribution"}
+    for loss in losses.values():
+        assert loss.ndim == 0
+        assert torch.isfinite(loss)
+
+    total = sum(losses.values())
+    total.backward()
+    assert output.grad is not None
+    assert output.grad.abs().sum() > 0
+
+
+def test_distribution_loss_matches_spatial_rain_mass():
+    target = torch.zeros(1, 1, C, 6, 6)
+    target[:, :, TP_INDEX, 1, 1] = 5.0
+    target[:, :, TP_INDEX, 4, 3] = 3.0
+
+    same_output = target.clone()
+    shifted_output = torch.zeros_like(target)
+    shifted_output[:, :, TP_INDEX, 1, 2] = 5.0
+    shifted_output[:, :, TP_INDEX, 4, 4] = 3.0
+
+    same_loss = precip_loss(
+        same_output,
+        target,
+        [TP_INDEX],
+        threshold=0.1,
+        coefficients={"distribution": 1.0},
+        occurrence_scale=100.0,
+    )["loss_distribution"]
+    shifted_loss = precip_loss(
+        shifted_output,
+        target,
+        [TP_INDEX],
+        threshold=0.1,
+        coefficients={"distribution": 1.0},
+        occurrence_scale=100.0,
+    )["loss_distribution"]
+
+    assert same_loss.item() < 1e-4
+    assert shifted_loss.item() > same_loss.item() + 0.1
+
+
+def test_distribution_loss_zero_for_all_dry_target():
+    target = torch.zeros(1, 1, C, 4, 4)
+    output = torch.zeros_like(target)
+    output[:, :, TP_INDEX] = 1.0
+
+    losses = precip_loss(
+        output,
+        target,
+        [TP_INDEX],
+        threshold=0.0,
+        coefficients={"occurrence": 1.0, "distribution": 1.0},
+    )
+
+    assert losses["loss_distribution"].item() == pytest.approx(0.0, abs=1e-8)
+    assert losses["loss_occurrence"].item() > 0.0
+
+
+def test_coefficients_scale_occurrence_loss():
+    target = torch.ones(1, 1, C, H, W)
+    output = torch.zeros_like(target)
+
+    loss_small = precip_loss(
+        output,
+        target,
+        [TP_INDEX],
+        threshold=0.5,
+        coefficients={"occurrence": 0.5},
+    )["loss_occurrence"]
+    loss_large = precip_loss(
+        output,
+        target,
+        [TP_INDEX],
+        threshold=0.5,
+        coefficients={"occurrence": 1.0},
+    )["loss_occurrence"]
+
+    assert loss_large.item() == pytest.approx(loss_small.item() * 2)

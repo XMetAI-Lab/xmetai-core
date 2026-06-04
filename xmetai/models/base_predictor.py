@@ -6,6 +6,7 @@ Copyright (c) 2025 by XMetAI/douzsheng, All Rights Reserved.
 """
 
 import logging
+import math
 import os
 from typing import Any
 
@@ -14,7 +15,7 @@ import pandas as pd
 import torch
 import xarray as xr
 
-from xmetai.loss import ChannelRegistry, pinn_loss
+from xmetai.loss import ChannelRegistry, pinn_loss, precip_loss
 
 from .meta import Meta
 
@@ -85,6 +86,12 @@ class BasePredictor(Meta):
         self.pinn_enable = kwargs.pop("pinn_enable", False)
         self.pinn_coeffs = kwargs.pop("pinn_coeffs", None)
         self.in_names = kwargs.pop("in_names", None)
+        self.precip_loss_enable = kwargs.pop("precip_loss_enable", False)
+        self.precip_loss_coeffs = kwargs.pop("precip_loss_coeffs", None)
+        precip_names = kwargs.pop("precip_names", ("tp", "ncpcp"))
+        precip_names = (precip_names,) if isinstance(precip_names, str) else tuple(precip_names)
+        precip_threshold_mm = float(kwargs.pop("precip_threshold_mm", 0.1))
+        self.precip_occurrence_scale = float(kwargs.pop("precip_occurrence_scale", 10.0))
 
         # If True, convert normalized model outputs/targets back to physical
         # units before evaluating PINN losses. This preserves gradients
@@ -145,6 +152,11 @@ class BasePredictor(Meta):
             )
         else:
             self.logger.info("PINN losses are disabled.")
+
+        if self.precip_loss_enable:
+            self._init_precip_loss(precip_names, precip_threshold_mm)
+        else:
+            self.logger.info("Precipitation auxiliary losses are disabled.")
 
     def train(self, mode: bool = True) -> "BasePredictor":
         super().train(mode=mode)
@@ -352,6 +364,67 @@ class BasePredictor(Meta):
         # Concrete predictors return a dict of losses during training. BasePredictor
         # itself does not implement forward; concrete subclasses should override.
         raise NotImplementedError
+
+    def _init_precip_loss(self, precip_names: tuple[str, ...], precip_threshold_mm: float) -> None:
+        if self.in_names is None:
+            raise ValueError("precip_loss_enable=True requires `in_names` to locate precipitation channels.")
+        if len(precip_names) == 0:
+            raise ValueError("precip_names must contain at least one channel name when precipitation loss is enabled.")
+        if precip_threshold_mm < 0:
+            raise ValueError(f"precip_threshold_mm must be non-negative, got {precip_threshold_mm}.")
+        if self.precip_occurrence_scale <= 0:
+            raise ValueError(f"precip_occurrence_scale must be positive, got {self.precip_occurrence_scale}.")
+        if "mean" not in self._buffers or "std" not in self._buffers:
+            raise ValueError("precip_loss_enable=True requires `mean` and `std` buffers to convert the millimeter threshold.")
+
+        name_to_index = {name: idx for idx, name in enumerate(self.in_names)}
+        indices = [name_to_index[name] for name in precip_names if name in name_to_index]
+        if len(indices) == 0:
+            raise ValueError(f"precip_loss_enable=True but none of precip_names={precip_names} were found in in_names.")
+        if len(indices) > 1:
+            matched_names = [self.in_names[idx] for idx in indices]
+            raise ValueError(
+                "precip_loss_enable=True with a scalar precipitation threshold supports exactly one matched channel. "
+                f"Got channels={matched_names}; set precip_names to one channel."
+            )
+
+        channel_idx = indices[0]
+        if self.mean.shape[0] <= channel_idx or self.std.shape[0] <= channel_idx:
+            raise ValueError(f"mean/std buffers do not cover precipitation channel index {channel_idx}.")
+
+        mean = self.mean[channel_idx].detach().float()
+        std = self.std[channel_idx].detach().float()
+        if mean.numel() != 1 or std.numel() != 1:
+            raise ValueError("mean/std buffers for precipitation threshold conversion must be scalar per channel.")
+        if not torch.isfinite(mean).all() or not torch.isfinite(std).all() or (std <= 0).any():
+            raise ValueError("mean/std buffers for precipitation channels must be finite and std must be positive.")
+
+        threshold = precip_threshold_mm
+        logid = {int(idx) for idx in self.logid}
+        if channel_idx in logid:
+            threshold = math.log1p(threshold)
+        self.precip_threshold = float((threshold - mean.item()) / std.item())
+        self.precip_indices = tuple(indices)
+        self.logger.info(
+            f"enabling precipitation losses for channels={[self.in_names[idx] for idx in indices]}, coeffs={self.precip_loss_coeffs}, "
+            f"threshold_mm={precip_threshold_mm}, occurrence_scale={self.precip_occurrence_scale}"
+        )
+
+    def compute_precip_losses(self, output: torch.Tensor, target: torch.Tensor) -> dict:
+        """Compute precipitation auxiliary losses when enabled."""
+        if not self.precip_loss_enable:
+            return {}
+
+        loss_dict = precip_loss(
+            output,
+            target,
+            self.precip_indices,
+            self.precip_threshold,
+            coefficients=self.precip_loss_coeffs,
+            occurrence_scale=self.precip_occurrence_scale,
+            reduction="mean",
+        )
+        return {f"precip_{k}": v for k, v in loss_dict.items()}
 
     def compute_pinn_losses(self, output: torch.Tensor, target: torch.Tensor) -> dict:
         """Helper that computes PINN losses when enabled.
