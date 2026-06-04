@@ -10,19 +10,8 @@ from xmetai import DATASETS, METRICS, build_test_loader, build_train_loader
 from xmetai.config import LazyCall as L
 
 
-def _normalize_data_paths(data_paths: Optional[str | Sequence[str]], data_name: Optional[str] = None) -> list[str] | None:
-    if data_paths is None:
-        data_paths = data_name
-    if isinstance(data_paths, str):
-        return [data_paths]
-    if data_paths is None:
-        return None
-    return list(data_paths)
-
-
 def zarr_dataloader(
-    data_paths: Optional[str | Sequence[str]] = None,
-    data_name: Optional[str] = None,
+    data_paths: Sequence[str],
     dataset_name: str = "MultiZarrDataset",
     dataset_kwargs: Optional[dict] = None,
     in_frames: int = 2,
@@ -46,7 +35,6 @@ def zarr_dataloader(
     lat_flip: bool = False,
     start_frames: int = 0,
 ):
-    data_paths = _normalize_data_paths(data_paths, data_name)
     in_names = [] if in_names is None else list(in_names)
     test_frames = list(range(1, 43)) if test_frames is None else list(test_frames)
     eval_test_names = [] if eval_test_names is None else list(eval_test_names)

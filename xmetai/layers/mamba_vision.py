@@ -40,7 +40,7 @@ def symbolic_selective_scan_fn(
     ONNX export symbolic for Mamba::SelectiveScanFn custom op; constructs the node with optional inputs and flags.
     """
     node = g.op(
-        "ai.onnx.contrib::SelectiveScanFn",
+        "xmetai_plugins::SelectiveScanFn",
         u,
         delta,
         a,
@@ -58,6 +58,144 @@ def symbolic_selective_scan_fn(
 
 
 setattr(SelectiveScanFn, "symbolic", symbolic_selective_scan_fn)
+
+
+class Mamba3SisoOnnxFn(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q, k, v, adt, dt, trap, q_bias, k_bias, angles, d, z, chunk_size, has_d, has_z):
+        return torch.empty_like(v)
+
+    @staticmethod
+    def symbolic(g, q, k, v, adt, dt, trap, q_bias, k_bias, angles, d, z, chunk_size, has_d, has_z):
+        node = g.op(
+            "xmetai_plugins::Mamba3SisoFn",
+            q,
+            k,
+            v,
+            adt,
+            dt,
+            trap,
+            q_bias,
+            k_bias,
+            angles,
+            d if has_d else g.op("Constant", value_t=torch.tensor([])),
+            z if has_z else g.op("Constant", value_t=torch.tensor([])),
+            chunk_size_i=int(chunk_size),
+            has_d_i=int(has_d),
+            has_z_i=int(has_z),
+            return_final_states_i=0,
+            has_input_states_i=0,
+            has_cu_seqlens_i=0,
+        )
+        node.setType(v.type())
+        return node
+
+
+def _register_mamba3_siso_symbolic():
+    try:
+        from mamba_ssm.modules import mamba3 as mamba3_module
+    except ImportError:
+        return
+
+    rmsnorm_cls = getattr(mamba3_module, "RMSNormGated", None)
+    if rmsnorm_cls is not None and not getattr(rmsnorm_cls, "_xmetai_onnx_export_registered", False):
+        original_rmsnorm_forward = rmsnorm_cls.forward
+
+        def rmsnorm_export_forward(self, x, z=None):
+            if torch.onnx.is_in_onnx_export():
+                hidden_size = x.shape[-1]
+                group_size = self.group_size if self.group_size is not None else hidden_size
+                y = x.float()
+                z_float = z.float() if z is not None else None
+                if z_float is not None and not self.norm_before_gate:
+                    y = y * F.silu(z_float)
+                if group_size != hidden_size:
+                    y = y.reshape(*x.shape[:-1], hidden_size // group_size, group_size)
+                    y = y * torch.rsqrt(y.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+                    y = y.reshape_as(x)
+                else:
+                    y = y * torch.rsqrt(y.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+                y = y * self.weight.float()
+                if self.bias is not None:
+                    y = y + self.bias.float()
+                if z_float is not None and self.norm_before_gate:
+                    y = y * F.silu(z_float)
+                return y.to(x.dtype)
+            return original_rmsnorm_forward(self, x, z=z)
+
+        rmsnorm_cls._xmetai_original_forward = original_rmsnorm_forward
+        rmsnorm_cls.forward = rmsnorm_export_forward
+        rmsnorm_cls._xmetai_onnx_export_registered = True
+
+    if getattr(mamba3_module, "_xmetai_mamba3_siso_onnx_registered", False):
+        return
+    original = getattr(mamba3_module, "mamba3_siso_combined", None)
+    if original is None:
+        return
+
+    def mamba3_siso_onnx(
+        Q,
+        K,
+        V,
+        ADT,
+        DT,
+        Trap,
+        Q_bias,
+        K_bias,
+        Angles,
+        D=None,
+        Z=None,
+        Input_States=None,
+        chunk_size=64,
+        return_final_states=False,
+        cu_seqlens=None,
+    ):
+        if torch.onnx.is_in_onnx_export():
+            if Input_States is not None:
+                raise RuntimeError("Mamba3SisoFn ONNX export does not support Input_States")
+            if return_final_states:
+                raise RuntimeError("Mamba3SisoFn ONNX export does not support return_final_states")
+            if cu_seqlens is not None:
+                raise RuntimeError("Mamba3SisoFn ONNX export does not support cu_seqlens")
+            d_input = D if D is not None else Q.new_empty((0,), dtype=torch.float32)
+            z_input = Z if Z is not None else Q.new_empty((0,), dtype=torch.float32)
+            return Mamba3SisoOnnxFn.apply(
+                Q.float(),
+                K.float(),
+                V.float(),
+                ADT.float(),
+                DT.float(),
+                Trap.float(),
+                Q_bias.float(),
+                K_bias.float(),
+                Angles.float(),
+                d_input.float(),
+                z_input.float(),
+                int(chunk_size),
+                D is not None,
+                Z is not None,
+            )
+        return original(
+            Q,
+            K,
+            V,
+            ADT,
+            DT,
+            Trap,
+            Q_bias,
+            K_bias,
+            Angles,
+            D=D,
+            Z=Z,
+            Input_States=Input_States,
+            chunk_size=chunk_size,
+            return_final_states=return_final_states,
+            cu_seqlens=cu_seqlens,
+        )
+
+    mamba3_module._xmetai_original_mamba3_siso_combined = original
+    mamba3_module.mamba3_siso_combined = mamba3_siso_onnx
+    mamba3_module._xmetai_mamba3_siso_onnx_registered = True
 
 
 class MambaVisionMixer(nn.Module):
@@ -333,6 +471,7 @@ class Block(nn.Module):
                         from mamba_ssm.modules.mamba3 import Mamba3
                     except ImportError:
                         raise ImportError("Mamba3 requires latest mamba_ssm. Please install mamba-ssm.")
+                    _register_mamba3_siso_symbolic()
                     mixer_inst = Mamba3(d_model=dim, d_state=64, d_conv=3, expand=2, headdim=headdim)
                 else:
                     try:

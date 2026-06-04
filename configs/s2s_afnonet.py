@@ -14,7 +14,6 @@ from s2s_base import (  # noqa: F401
     dataloader,
     freq,
     in_chans,
-    in_frames,
     in_names,
     load_from_pretrain,
     logid,
@@ -30,6 +29,10 @@ from s2s_base import (  # noqa: F401
 
 from xmetai import MODELS
 from xmetai import LazyCall as L
+
+in_frames = 1
+dataloader.train.dataset.hist_frames = in_frames
+dataloader.test.dataset.hist_frames = in_frames
 
 if load_from_pretrain:
     train.teacher_forcing.teach_iters = 100

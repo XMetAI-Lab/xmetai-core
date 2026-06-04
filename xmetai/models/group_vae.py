@@ -501,9 +501,10 @@ class _BaseGroupVAE(BasePredictor):
         self.loss_weight = loss_weight
         self.const_chans = const_chans
         self.rollout_max = rollout_max
-        assert (
-            self.in_frames >= self.out_frames
-        ), f"Input frames (in_frames={self.in_frames}) must be greater than or equal to output frames (out_frames={self.out_frames})."
+        if self.in_frames < self.out_frames + 1:
+            raise ValueError(
+                f"Input frames (in_frames={self.in_frames}) must be >= out_frames+1 (out_frames={self.out_frames}) to build a reconstruction base window."
+            )
         self.forecast_stride = int(forecast_stride)
         if self.forecast_stride <= 0 or self.forecast_stride > self.out_frames:
             self.forecast_stride = self.out_frames
@@ -1007,7 +1008,8 @@ class _BaseGroupVAE(BasePredictor):
             block_weight = rolling_weights[k : k + self.out_frames].mean()
             loss_available = any(step in loss_steps for step in range(k, k + self.out_frames))
             target = targets[:, k : k + self.out_frames]
-
+            if target.shape[1] != self.out_frames:
+                break
             if not loss_available:
                 with torch.no_grad():
                     input = input.detach()
@@ -1098,7 +1100,7 @@ class _BaseGroupVAE(BasePredictor):
             new_input = input.clone()
             new_input[~torch.isfinite(new_input)] = 0.0
             for t in range(self.start_frames, total_step, self.forecast_stride):
-                if self.pretrain:
+                if self.pretrain and "targets" in data:
                     k = t - self.start_frames
                     target = data["targets"][:, k : k + self.out_frames].to(new_input)
                     if target.shape[1] != self.out_frames:
@@ -1318,7 +1320,7 @@ class FeatureGroupVAEPredictor(_BaseGroupVAE):
             if self.out_frames == 1:
                 out = x_group.clone()
                 out[:, 1:] = x_group[:, 1:] - x_group[:, :1]
-                return out
+                return out  # [x_tm1, x_t - x_tm1]
             curr = x_group[:, -1:]
             return torch.cat([curr, curr - torch.flip(x_group[:, :-1], dims=[1])], dim=1)
         if mode == "absolute":
