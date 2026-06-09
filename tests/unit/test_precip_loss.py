@@ -3,7 +3,6 @@ import torch
 
 from xmetai.loss.precip_loss import precip_loss
 
-
 CHANNELS = ["z500", "tp", "t2m", "ncpcp"]
 B, T, C, H, W = 2, 1, len(CHANNELS), 8, 10
 

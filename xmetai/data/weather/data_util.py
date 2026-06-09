@@ -30,6 +30,20 @@ __all__ = [
 ]
 
 
+def _load_zarr_sidecar_variable(data_dir, key):
+    try:
+        ds = xr.open_zarr(data_dir, consolidated=True)
+    except (KeyError, ValueError):
+        ds = xr.open_zarr(data_dir, consolidated=False)
+
+    try:
+        if key not in ds:
+            return None
+        return ds[key].values
+    finally:
+        ds.close()
+
+
 def make_seq(times, total_frames, freq=1, interval=1):
     i = 0
     inds = []
@@ -214,14 +228,15 @@ def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
 
     # Calculate channel weights
     channel_weights = np.ones(len(in_names), dtype=np.float32)
+    level_names = {str(level) for level in LEVELS_13}
     for name in in_names:
-        if any(pl in name for pl in pl_names):
-            if any(level in name for level in map(str, LEVELS_13)):
-                # for 10u/10v/100u/100v/u10m/v10m, assign weight 1.0
-                if name[-1] != "0":
-                    continue
-                level = int(name[1:])
-                channel_weights[in_names.index(name)] = max(0.2, level / 1000)  # min weight 0.2 for upper-air variables
+        match = re.match(r"^([A-Za-z]+)_?(\d+)$", name)
+        if match is None:
+            continue
+        var_name, level_name = match.groups()
+        if var_name in pl_names and level_name in level_names:
+            level = int(level_name)
+            channel_weights[in_names.index(name)] = max(0.2, level / 1000)  # min weight 0.2 for upper-air variables
     channel_weights[landid] *= 0.33  # reduce land variables' weight
     channel_weights[maskid] *= 0.67  # reduce ocean variables' weight
     channel_weights /= channel_weights.max()  # normalize to [0, 1]
@@ -237,8 +252,10 @@ def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
             elif os.path.exists(os.path.join(data_dir, f"{k}.npy")):
                 v = np.load(os.path.join(data_dir, f"{k}.npy"))
             else:
-                print(f"File {file_name} not found, using default value for {k}.")
-                continue
+                v = _load_zarr_sidecar_variable(data_dir, k)
+                if v is None:
+                    print(f"File {file_name} or Zarr variable '{k}' not found, using default value for {k}.")
+                    continue
             if k == "weight":
                 v = v.reshape(1, -1, 1)
             elif k in ["mean", "std"]:

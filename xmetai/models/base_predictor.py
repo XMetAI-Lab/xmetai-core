@@ -368,43 +368,25 @@ class BasePredictor(Meta):
     def _init_precip_loss(self, precip_names: tuple[str, ...], precip_threshold_mm: float) -> None:
         if self.in_names is None:
             raise ValueError("precip_loss_enable=True requires `in_names` to locate precipitation channels.")
-        if len(precip_names) == 0:
-            raise ValueError("precip_names must contain at least one channel name when precipitation loss is enabled.")
-        if precip_threshold_mm < 0:
-            raise ValueError(f"precip_threshold_mm must be non-negative, got {precip_threshold_mm}.")
-        if self.precip_occurrence_scale <= 0:
-            raise ValueError(f"precip_occurrence_scale must be positive, got {self.precip_occurrence_scale}.")
-        if "mean" not in self._buffers or "std" not in self._buffers:
-            raise ValueError("precip_loss_enable=True requires `mean` and `std` buffers to convert the millimeter threshold.")
-
         name_to_index = {name: idx for idx, name in enumerate(self.in_names)}
         indices = [name_to_index[name] for name in precip_names if name in name_to_index]
         if len(indices) == 0:
             raise ValueError(f"precip_loss_enable=True but none of precip_names={precip_names} were found in in_names.")
         if len(indices) > 1:
             matched_names = [self.in_names[idx] for idx in indices]
-            raise ValueError(
+            self.logger.warning(
                 "precip_loss_enable=True with a scalar precipitation threshold supports exactly one matched channel. "
-                f"Got channels={matched_names}; set precip_names to one channel."
+                f"Got channels={matched_names}; Use only {matched_names[0]} in precip_names."
             )
-
         channel_idx = indices[0]
-        if self.mean.shape[0] <= channel_idx or self.std.shape[0] <= channel_idx:
-            raise ValueError(f"mean/std buffers do not cover precipitation channel index {channel_idx}.")
-
         mean = self.mean[channel_idx].detach().float()
         std = self.std[channel_idx].detach().float()
-        if mean.numel() != 1 or std.numel() != 1:
-            raise ValueError("mean/std buffers for precipitation threshold conversion must be scalar per channel.")
-        if not torch.isfinite(mean).all() or not torch.isfinite(std).all() or (std <= 0).any():
-            raise ValueError("mean/std buffers for precipitation channels must be finite and std must be positive.")
-
         threshold = precip_threshold_mm
         logid = {int(idx) for idx in self.logid}
         if channel_idx in logid:
             threshold = math.log1p(threshold)
         self.precip_threshold = float((threshold - mean.item()) / std.item())
-        self.precip_indices = tuple(indices)
+        self.precip_indices = tuple(indices[0:1])
         self.logger.info(
             f"enabling precipitation losses for channels={[self.in_names[idx] for idx in indices]}, coeffs={self.precip_loss_coeffs}, "
             f"threshold_mm={precip_threshold_mm}, occurrence_scale={self.precip_occurrence_scale}"

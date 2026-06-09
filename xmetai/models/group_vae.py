@@ -1078,11 +1078,9 @@ class _BaseGroupVAE(BasePredictor):
             "loss_latent_pred_rec": self.loss_weight[4] * loss_latent_pred_rec,
         }
         if len(pinn_acc) > 0:
-            for loss_name, loss_val in pinn_acc.items():
-                loss_dict[loss_name] = loss_val / future_step
+            loss_dict.update(pinn_acc)
         if len(precip_acc) > 0:
-            for loss_name, loss_val in precip_acc.items():
-                loss_dict[loss_name] = loss_val / future_step
+            loss_dict.update(precip_acc)
         return loss_dict
 
     @torch.no_grad()
