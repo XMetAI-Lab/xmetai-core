@@ -1000,6 +1000,7 @@ class _BaseGroupVAE(BasePredictor):
         loss_latent_pred_rec = torch.zeros((), device=input.device)
         loss_latent_reg = torch.zeros((), device=input.device)
         pinn_acc: dict[str, torch.Tensor] = {}
+        precip_acc: dict[str, torch.Tensor] = {}
 
         true_input = input.clone()
 
@@ -1060,6 +1061,10 @@ class _BaseGroupVAE(BasePredictor):
                 pinn_losses = self.compute_pinn_losses(output, target)
                 for loss_name, loss_val in pinn_losses.items():
                     pinn_acc[loss_name] = pinn_acc.get(loss_name, 0) + block_weight * loss_val
+            if self.precip_loss_enable:
+                precip_losses = self.compute_precip_losses(output, target)
+                for loss_name, loss_val in precip_losses.items():
+                    precip_acc[loss_name] = precip_acc.get(loss_name, 0) + block_weight * loss_val
 
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
             true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
@@ -1073,8 +1078,9 @@ class _BaseGroupVAE(BasePredictor):
             "loss_latent_pred_rec": self.loss_weight[4] * loss_latent_pred_rec,
         }
         if len(pinn_acc) > 0:
-            for loss_name, loss_val in pinn_acc.items():
-                loss_dict[loss_name] = loss_val / future_step
+            loss_dict.update(pinn_acc)
+        if len(precip_acc) > 0:
+            loss_dict.update(precip_acc)
         return loss_dict
 
     @torch.no_grad()

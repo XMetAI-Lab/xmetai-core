@@ -8,6 +8,8 @@ Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 
 import math
 
+import numpy as np
+import pytest
 import torch
 
 from xmetai.models.base_predictor import BasePredictor
@@ -27,6 +29,8 @@ class DummyPredictor(BasePredictor):
         loss_dict = {"loss_rec": loss_rec}
         if self.pinn_enable:
             loss_dict.update(self.compute_pinn_losses(output, target))
+        if self.precip_loss_enable:
+            loss_dict.update(self.compute_precip_losses(output, target))
         return loss_dict
 
 
@@ -80,3 +84,80 @@ def test_pinn_disabled_no_keys():
     loss = model({"inputs": inputs, "targets": targets, "times": times})
     pinn_keys = [k for k in loss.keys() if k.startswith("pinn_")]
     assert len(pinn_keys) == 0
+    precip_keys = [k for k in loss.keys() if k.startswith("precip_")]
+    assert len(precip_keys) == 0
+
+
+def test_precip_loss_enable_and_keys():
+    names = ["tp", "t2m"]
+    C = len(names)
+    H, W = 4, 6
+    B = 1
+    buffers = {
+        "mean": np.zeros((C, 1, 1), dtype=np.float32),
+        "std": np.ones((C, 1, 1), dtype=np.float32),
+        "weight": np.ones((1, H, 1), dtype=np.float32),
+    }
+
+    model = DummyPredictor(
+        in_names=names,
+        device="cpu",
+        precision="fp32",
+        buffers=buffers,
+        logid=[0],
+        precip_loss_enable=True,
+        precip_loss_coeffs={"occurrence": 1.0, "distribution": 1.0},
+        precip_names=("tp",),
+        precip_threshold_mm=0.1,
+    )
+    model.train()
+
+    inputs = torch.randn(B, 1, C, H, W)
+    targets = torch.randn(B, 1, C, H, W)
+    times = torch.tensor([946684800000000000])
+
+    loss = model({"inputs": inputs, "targets": targets, "times": times})
+
+    assert "precip_loss_occurrence" in loss
+    assert "precip_loss_distribution" in loss
+
+
+def test_precip_threshold_mm_uses_log_transform_for_logid():
+    names = ["tp", "t2m"]
+    buffers = {
+        "mean": np.array([0.2, 0.0], dtype=np.float32).reshape(2, 1, 1),
+        "std": np.array([2.0, 1.0], dtype=np.float32).reshape(2, 1, 1),
+    }
+
+    model = DummyPredictor(
+        in_names=names,
+        device="cpu",
+        precision="fp32",
+        buffers=buffers,
+        logid=[0],
+        precip_loss_enable=True,
+        precip_loss_coeffs={"occurrence": 1.0},
+        precip_names=("tp",),
+        precip_threshold_mm=0.1,
+    )
+
+    expected = (math.log1p(0.1) - 0.2) / 2.0
+    assert model.precip_threshold == pytest.approx(expected)
+
+
+def test_precip_loss_enable_fails_without_precip_channel():
+    buffers = {
+        "mean": np.zeros((1, 1, 1), dtype=np.float32),
+        "std": np.ones((1, 1, 1), dtype=np.float32),
+    }
+
+    with pytest.raises(ValueError, match="none of precip_names"):
+        DummyPredictor(
+            in_names=["t2m"],
+            device="cpu",
+            precision="fp32",
+            buffers=buffers,
+            precip_loss_enable=True,
+            precip_loss_coeffs={"occurrence": 1.0},
+            precip_names=("tp",),
+        )
