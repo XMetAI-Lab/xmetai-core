@@ -65,7 +65,8 @@ class MultiZarrDataset(Dataset):
         datasets = [ds.sel(time=common_times) for ds in datasets]
 
         # 5. 在 level 维度上拼接
-        self.ds = xr.concat([ds.data for ds in datasets], dim="level")
+        data_arrays = [ds.data.rename(level="channel") if "level" in ds.data.dims else ds.data for ds in datasets]
+        self.ds = xr.concat(data_arrays, dim="channel")
         self.logger.info(f"Combined dataset shape: {self.ds.shape} with coords: {self.ds.coords}")
 
         # 6. 构造时间索引
