@@ -6,7 +6,6 @@ import sys
 from collections import defaultdict
 
 import numpy as np
-import PIL
 import torch
 from tabulate import tabulate  # type: ignore[import-untyped]
 
@@ -94,14 +93,6 @@ def collect_env_info():
             cuda_arch_list = os.environ.get("TORCH_CUDA_ARCH_LIST", None)
             if cuda_arch_list:
                 data.append(("TORCH_CUDA_ARCH_LIST", cuda_arch_list))
-    data.append(("Pillow", PIL.__version__))
-
-    try:
-        import fvcore
-
-        data.append(("fvcore", fvcore.__version__))
-    except (ImportError, AttributeError):
-        pass
 
     try:
         import iopath
