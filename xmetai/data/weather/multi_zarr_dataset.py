@@ -44,7 +44,7 @@ class MultiZarrDataset(Dataset):
 
         for path in data_paths:
             ds = xr.open_zarr(path, consolidated=True)  # single dataset
-            self.logger.info(f"Loaded dataset from {path}, shape: {ds.data.shape} (time, level, lat, lon)")
+            self.logger.info(f"Loaded dataset from {path}, shape: {ds.data.shape} (time, channel, lat, lon)")
             ds = ds.sel(time=slice(*years))
             datasets.append(ds)
             times_list.append(pd.to_datetime(ds.time.values))
@@ -64,7 +64,7 @@ class MultiZarrDataset(Dataset):
         # 4. 对所有 ds 按时间交集切片
         datasets = [ds.sel(time=common_times) for ds in datasets]
 
-        # 5. 在 level 维度上拼接
+        # 5. 在 channel 维度上拼接
         data_arrays = [ds.data.rename(level="channel") if "level" in ds.data.dims else ds.data for ds in datasets]
         self.ds = xr.concat(data_arrays, dim="channel")
         self.logger.info(f"Combined dataset shape: {self.ds.shape} with coords: {self.ds.coords}")
@@ -88,11 +88,11 @@ class MultiZarrDataset(Dataset):
         self.logger.info(f"{stage}_times: {self.start_time} ~ {self.end_time} = {len(self.inds)} samples")
         self.select_vars: list[int] | None = None
         if len(in_names) > 0:
-            level_values = self.ds.level.values.tolist()
-            self.select_vars = [level_values.index(v) for v in in_names if v in level_values]
-            missing = [v for v in in_names if v not in level_values]
+            channel_values = self.ds.channel.values.tolist()
+            self.select_vars = [channel_values.index(v) for v in in_names if v in channel_values]
+            missing = [v for v in in_names if v not in channel_values]
             if len(missing) > 0:
-                self.logger.warning(f"Variables not found in 'level': {missing}")
+                self.logger.warning(f"Variables not found in 'channel': {missing}")
             self.logger.info(f"Selected variables: {self.select_vars}, total {len(self.select_vars)} variables.")
 
     def __len__(self):
