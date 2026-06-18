@@ -8,7 +8,9 @@ SGD = L(torch.optim.SGD)(
     params=L(get_default_optimizer_params)(
         # params.model is meant to be set to the model object, before instantiating
         # the optimizer.
-        weight_decay_norm=0.0
+        base_lr="${..lr}",
+        weight_decay="${..weight_decay}",
+        weight_decay_norm=0.0,
     ),
     lr=0.02,
     momentum=0.9,
@@ -21,6 +23,7 @@ AdamW = L(torch.optim.AdamW)(
         # params.model is meant to be set to the model object, before instantiating
         # the optimizer.
         base_lr="${..lr}",
+        weight_decay="${..weight_decay}",
         weight_decay_norm=0.0,
     ),
     lr=5e-4,
@@ -33,6 +36,7 @@ Adam = L(torch.optim.Adam)(
         # params.model is meant to be set to the model object, before instantiating
         # the optimizer.
         base_lr="${..lr}",
+        weight_decay="${..weight_decay}",
         weight_decay_norm=0.0,
     ),
     lr=0.001,

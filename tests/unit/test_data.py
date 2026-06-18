@@ -154,6 +154,41 @@ class TestWeatherDataset:
         assert train_sample["targets"].shape == (1, 2, 2, 3)
         assert test_sample["targets"].shape == (2, 2, 2, 3)
 
+    def test_multi_zarr_dataset_accepts_channel_dimension(self, monkeypatch):
+        """Test MultiZarrDataset accepts zarr stores using channel instead of level."""
+        import pandas as pd
+        import xarray as xr
+
+        from xmetai.data.weather.multi_zarr_dataset import MultiZarrDataset
+
+        times = pd.date_range("2020-01-01", periods=8, freq="6h")
+        channels = ["a", "b", "c"]
+        values = np.arange(len(times) * len(channels) * 2 * 3, dtype=np.float32).reshape(len(times), len(channels), 2, 3)
+        fake_ds = xr.Dataset(
+            {"data": (("time", "channel", "lat", "lon"), values)},
+            coords={"time": times, "channel": channels, "lat": [0.0, 1.0], "lon": [100.0, 101.0, 102.0]},
+        )
+
+        def fake_open_zarr(path, consolidated=True):
+            assert path == "memory.zarr"
+            assert consolidated is True
+            return fake_ds.copy()
+
+        monkeypatch.setattr(xr, "open_zarr", fake_open_zarr)
+
+        dataset = MultiZarrDataset(
+            data_paths=["memory.zarr"],
+            hist_frames=2,
+            fcst_frames=1,
+            freq=6,
+            years=("20200101-00", "20200102-18"),
+            in_names=["c", "a"],
+        )
+        sample = dataset[0]
+
+        assert sample["inputs"].shape == (2, 2, 2, 3)
+        assert sample["targets"].shape == (1, 2, 2, 3)
+
 
 class TestDataSampler:
     """Test custom data samplers."""

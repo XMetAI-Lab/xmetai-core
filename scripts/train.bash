@@ -158,7 +158,6 @@ function setup_environment() {
         fi
     else
         echo "Error: Unknown dataset type for config file name: ${config_file_name}"
-        export DATA_DIR=""
         export BASE_CONFIG="${CONFIG_FILE_TMP}"
     fi
 
