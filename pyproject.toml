@@ -82,6 +82,9 @@ package-dir = {"" = "."}
 where = ["."]
 include = ["xmetai*"]
 
+[tool.setuptools.package-data]
+"xmetai.utils" = ["assets/*.geojson"]
+
 [tool.black]
 line-length = 160
 

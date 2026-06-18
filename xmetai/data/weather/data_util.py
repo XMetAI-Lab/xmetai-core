@@ -15,8 +15,7 @@ import torch
 import xarray as xr
 
 from xmetai.config import instantiate
-
-from .weather_util import LEVELS_13
+from xmetai.utils.reanalyse import LEVELS_13
 
 __all__ = [
     "make_seq",
