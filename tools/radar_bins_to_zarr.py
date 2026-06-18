@@ -35,6 +35,7 @@ def _load_radar_utils():
 
 _radar_utils = _load_radar_utils()
 RadarQCConfig = _radar_utils.RadarQCConfig
+_validate_common_grid = _radar_utils._validate_common_grid
 bbox_to_slices = _radar_utils.bbox_to_slices
 discover_radar_files = _radar_utils.discover_radar_files
 read_radar_reflectivity = _radar_utils.read_radar_reflectivity
@@ -94,8 +95,34 @@ def _json_safe(value):
     return value
 
 
+def _open_zarr_v2_group(output: Path):
+    try:
+        return zarr.open_group(str(output), mode="w", zarr_format=2)
+    except TypeError as exc:
+        if "zarr_format" not in str(exc):
+            raise
+        return zarr.open_group(str(output), mode="w", zarr_version=2)
+
+
+def _create_zarr_array(group, name: str, **kwargs):
+    create_array = getattr(group, "create_array", None)
+    if create_array is not None:
+        return create_array(name, **kwargs)
+
+    if "data" in kwargs:
+        array = getattr(group, "array", None)
+        if array is None:
+            raise AttributeError("Zarr group does not provide create_array or array for data-backed array creation.")
+        return array(name, **kwargs)
+
+    create_dataset = getattr(group, "create_dataset", None)
+    if create_dataset is None:
+        raise AttributeError("Zarr group does not provide create_array or create_dataset for shaped array creation.")
+    return create_dataset(name, **kwargs)
+
+
 def _write_coord(group, name: str, data: np.ndarray, dim: str, chunks: tuple[int, ...] | None = None) -> None:
-    array = group.create_array(name, data=data, chunks=chunks or data.shape, overwrite=True)
+    array = _create_zarr_array(group, name, data=data, chunks=chunks or data.shape, overwrite=True)
     array.attrs["_ARRAY_DIMENSIONS"] = [dim]
 
 
@@ -169,7 +196,7 @@ def _create_store(args, records, lat: np.ndarray, lon: np.ndarray, qc_config: Ra
             raise ValueError(f"Output exists and is not a directory: {output}")
 
     compressor = Blosc(cname=args.compressor, clevel=args.compression_level, shuffle=Blosc.BITSHUFFLE)
-    group = zarr.open_group(str(output), mode="w", zarr_format=2)
+    group = _open_zarr_v2_group(output)
 
     times = np.asarray([record.time.to_datetime64() for record in records], dtype="datetime64[ns]")
     _write_coord(group, "time", times, "time", chunks=(min(args.time_chunk, len(times)),))
@@ -179,7 +206,8 @@ def _create_store(args, records, lat: np.ndarray, lon: np.ndarray, qc_config: Ra
     _write_coord(group, "lon", lon, "lon", chunks=(min(args.x_chunk, len(lon)),))
 
     chunks = (min(args.time_chunk, len(records)), 1, min(args.y_chunk, len(lat)), min(args.x_chunk, len(lon)))
-    data = group.create_array(
+    data = _create_zarr_array(
+        group,
         "data",
         shape=(len(records), 1, len(lat), len(lon)),
         chunks=chunks,
@@ -192,12 +220,15 @@ def _create_store(args, records, lat: np.ndarray, lon: np.ndarray, qc_config: Ra
         {
             "_ARRAY_DIMENSIONS": ["time", "level", "lat", "lon"],
             "units": "dBZ",
+            "_FillValue": args.fill_value,
+            "scale_factor": 0.1,
+            "add_offset": 0.0,
             "fill_value": args.fill_value,
             "dbz_scale_factor": 0.1,
             "dbz_add_offset": 0.0,
             "valid_min": args.valid_min,
             "valid_max": args.valid_max,
-            "encoding": "int16 dbz10; physical_dBZ = value * 0.1; fill_value marks no valid echo",
+            "encoding": "int16 dbz10 with CF scale_factor/add_offset/_FillValue; physical_dBZ = value * 0.1",
         }
     )
     group.attrs.update(
@@ -225,6 +256,10 @@ def _create_store(args, records, lat: np.ndarray, lon: np.ndarray, qc_config: Ra
 def _iter_record_batches(record_count: int, batch_size: int):
     for start in range(0, record_count, batch_size):
         yield start, min(start + batch_size, record_count)
+
+
+def _align_task_size_to_time_chunk(time_chunk: int, task_size: int) -> int:
+    return max(time_chunk, math.ceil(task_size / time_chunk) * time_chunk)
 
 
 def _write_record_batch(data, records, start: int, args, qc_config: RadarQCConfig, spatial_shape: tuple[int, int]) -> int:
@@ -291,7 +326,7 @@ def _write_records_dask(data, records, args, qc_config: RadarQCConfig, spatial_s
 def _write_records(data, records, args, qc_config: RadarQCConfig, spatial_shape: tuple[int, int], batch_size: int) -> int:
     if args.workers == 1:
         return _write_records_serial(data, records, args, qc_config, spatial_shape)
-    dask_batch_size = max(batch_size, args.task_size)
+    dask_batch_size = _align_task_size_to_time_chunk(batch_size, args.task_size)
     return _write_records_dask(data, records, args, qc_config, spatial_shape, dask_batch_size)
 
 
@@ -349,7 +384,7 @@ def main() -> None:
         "time_gaps": gaps,
         "longest_continuous_segment": longest_segment,
     }
-    first_header = records[0].header
+    first_header = _validate_common_grid(records)
     lat, lon = _slice_lat_lon(first_header, args.bbox, args.stride)
     shape = (len(records), 1, len(lat), len(lon))
     chunks = (min(args.time_chunk, len(records)), 1, min(args.y_chunk, len(lat)), min(args.x_chunk, len(lon)))
@@ -380,9 +415,8 @@ def main() -> None:
     logger.info("Chunks: %s, raw int16 size before compression: %.2f MiB", chunks, raw_bytes / 1024**2)
     logger.info("Writer: %s, workers=%d", "Dask threaded" if args.workers > 1 else "serial", args.workers)
     if args.workers > 1:
-        logger.info(
-            "Dask task size: %d time record(s), estimated tasks: %d", max(chunks[0], args.task_size), math.ceil(len(records) / max(chunks[0], args.task_size))
-        )
+        dask_task_size = _align_task_size_to_time_chunk(chunks[0], args.task_size)
+        logger.info("Dask task size: %d time record(s), estimated tasks: %d", dask_task_size, math.ceil(len(records) / dask_task_size))
     logger.info("Encoding: int16 dbz10, dbz_scale_factor=0.1, encoded fill_value=%d", args.fill_value)
 
     qc_config = _make_qc_config(args)

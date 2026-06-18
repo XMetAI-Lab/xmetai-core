@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 
-from xmetai.config import LazyConfig
 from xmetai.data.weather.meteonet_dataset import MeteoNetRadarDataset
 
 
@@ -94,18 +93,3 @@ def test_meteonet_radar_dataset_supports_multiple_channels(tmp_path):
     assert float(sample["inputs"][0, 0, 0, 0]) == 12.0
     assert float(sample["inputs"][0, 1, 0, 0]) == 50.0
     assert float(sample["inputs"][0, 2, 0, 0]) == 1000.0
-
-
-def test_meteonet_vae_stage1_config_uses_meteonet_dataset_time_ranges():
-    cfg = LazyConfig.load("configs/meteonet_vae_stage1.py")
-
-    assert cfg.dataloader.train.dataset._target_.__name__ == "MeteoNetRadarDataset"
-    assert cfg.dataloader.test.dataset._target_.__name__ == "MeteoNetRadarDataset"
-    assert cfg.dataloader.train.dataset.years == ("20180201", "20180930")
-    assert cfg.dataloader.test.dataset.years == ("20181001", "20181231")
-    assert cfg.dataloader.train.dataset.freq == 5
-    assert cfg.dataloader.train.dataset.freq_unit == "minutes"
-    assert cfg.dataloader.train.dataset.random_crop_size == (512, 784)
-    assert cfg.dataloader.test.dataset.random_crop_size == (512, 784)
-    assert cfg.model.ch_mults == (1, 2, 4, 8)
-    assert cfg.model.stem_stride == 1

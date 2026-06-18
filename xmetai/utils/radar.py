@@ -9,7 +9,7 @@ import struct
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -44,7 +44,7 @@ DEFAULT_CHINA_BOUNDARY_GEOJSON = Path(__file__).resolve().parent / "assets/china
 DEFAULT_BOUNDARY_COLOR = (31, 41, 55, 204)
 _RADAR_TIME_RE = re.compile(r"(?P<date>\d{8})[_-](?P<time>\d{6})")
 
-RadarBBox = tuple[float, float, float, float]
+RadarBBox = Tuple[float, float, float, float]
 
 # Common display/crop regions in (lon_min, lat_min, lon_max, lat_max).
 RADAR_BBOX_CHINA: RadarBBox = (70.0, 17.0, 137.0, 55.0)
