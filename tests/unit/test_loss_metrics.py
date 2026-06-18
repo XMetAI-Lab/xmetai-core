@@ -119,6 +119,36 @@ class TestMSEMetric:
         expected = torch.tensor(2.5)
         assert torch.allclose(mse, expected, atol=1e-5)
 
+    def test_mse_evaluate_handles_suffix_overlapping_names(self):
+        """Test metric names like 10u and max_10u do not collide during evaluate."""
+        try:
+            from xmetai.metrics import MSE
+        except ImportError:
+            pytest.skip("MSE metric not available")
+
+        mse_fn = MSE(test_names=["10u", "max_10u"], test_times=[1, 2])
+        mse_fn.rmse = {
+            "10u @ 001h": [1.0],
+            "10u @ 002h": [2.0],
+            "max_10u @ 001h": [3.0],
+            "max_10u @ 002h": [4.0],
+            "mean/10u @ 001h": [5.0],
+            "mean/10u @ 002h": [6.0],
+            "mean/max_10u @ 001h": [7.0],
+            "mean/max_10u @ 002h": [8.0],
+        }
+
+        result = mse_fn.evaluate()
+
+        assert result is not None
+        rmse = result["RMSE"]
+        assert rmse["10u"] == [1.0, 2.0]
+        assert rmse["max_10u"] == [3.0, 4.0]
+        assert rmse["mean/10u"] == [5.0, 6.0]
+        assert rmse["mean/max_10u"] == [7.0, 8.0]
+        assert "max_/10u" not in rmse
+        assert "mean/max_/10u" not in rmse
+
 
 class TestTCCMetric:
     """Test Temporal Correlation Coefficient metric."""

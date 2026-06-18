@@ -37,6 +37,10 @@ class MSE(DatasetEvaluator):
     def get_top_key(self, name: str, t: int) -> str:
         return "{} top{:g}% @ {:03d}h".format(name, self.top_percent * 100.0, t)
 
+    @staticmethod
+    def _matching_metric_keys(metrics: dict[str, list[float]], suffix: str) -> list[str]:
+        return [key for key in metrics if key == suffix or key.endswith(f"/{suffix}")]
+
     def reset(self) -> None:
         self.rmse: dict[str, list[float]] = {}
         self.top_rmse: dict[str, list[float]] = {}
@@ -107,7 +111,7 @@ class MSE(DatasetEvaluator):
         flatten_results = {"Times": self.test_times}
 
         for name in self.test_names:
-            value_keys = [key for key in self.rmse if key.endswith(self.get_key(name, self.test_times[0]))]
+            value_keys = self._matching_metric_keys(self.rmse, self.get_key(name, self.test_times[0]))
             if len(value_keys) == 0:
                 continue
             for first_key in value_keys:
@@ -118,7 +122,7 @@ class MSE(DatasetEvaluator):
                     key = f"{prefix}/{self.get_key(name, t)}" if prefix else self.get_key(name, t)
                     flatten_results[column_name].append(float(np.mean(self.rmse[key])))
             if self.top_percent > 0.0:
-                top_value_keys = [key for key in self.top_rmse if key.endswith(self.get_top_key(name, self.test_times[0]))]
+                top_value_keys = self._matching_metric_keys(self.top_rmse, self.get_top_key(name, self.test_times[0]))
                 if len(top_value_keys) == 0:
                     continue
                 for first_key in top_value_keys:
