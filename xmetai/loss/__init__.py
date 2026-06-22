@@ -3,6 +3,7 @@ from .crps_loss import afcrps_loss_lite
 from .kl_loss import kl_entropy_loss
 from .pinn_loss import ChannelRegistry, pinn_loss
 from .precip_loss import precip_loss
+from .dynamics_loss import field_dynamics_consistency_loss
 
 __all__ = [
     "ChannelRegistry",
