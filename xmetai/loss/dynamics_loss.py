@@ -1,4 +1,5 @@
 import torch
+from typing import Optional, List, Tuple, Union
 
 __all__ = ["field_dynamics_consistency_loss"]
 
@@ -15,9 +16,14 @@ def field_dynamics_consistency_loss(
     output: torch.Tensor,
     target: torch.Tensor,
     input: torch.Tensor,
-    target_input: torch.Tensor | None = None,
-    group_slice_indices: list[list[int]] | tuple[list[int], ...] | None = None,
-) -> torch.Tensor:
+    target_input: Optional[torch.Tensor] = None,
+    group_slice_indices: Optional[
+        Union[
+            List[List[int]],
+            Tuple[List[int], ...]
+        ]
+    ] = None,
+):
     """Match forecast frame deltas to teacher-forced target deltas in field space.
 
     This is the field-space counterpart of latent dynamics consistency:
