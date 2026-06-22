@@ -23,7 +23,7 @@ def field_dynamics_consistency_loss(
             Tuple[List[int], ...]
         ]
     ] = None,
-):
+)-> torch.Tensor:
     """Match forecast frame deltas to teacher-forced target deltas in field space.
 
     This is the field-space counterpart of latent dynamics consistency:
