@@ -11,4 +11,5 @@ __all__ = [
     "kl_entropy_loss",
     "pinn_loss",
     "precip_loss",
+    "field_dynamics_consistency_loss",
 ]
