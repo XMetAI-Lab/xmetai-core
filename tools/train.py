@@ -34,6 +34,7 @@ try:
         launch,
     )
     from xmetai.layers import HAS_MAMBA, GraphCastDecoder, GraphCastEncoder, GraphCastLayer, SwinLayer, apply_lora_to_model, merge_lora_weights
+    from xmetai.layers.darknet_unet import DarknetBlock, DarknetConv
 
     if HAS_MAMBA:
         from xmetai.layers import MambaVisionLayer
@@ -70,19 +71,23 @@ def build_model(cfg):
         logger.info("Model parameters: {:.3f}M".format(model.params() / 1e6))
     model.freeze(cfg.train.freeze)
     model.to(cfg.train.device_type)
-    mods = [SwinLayer, torch.nn.TransformerEncoderLayer, GraphCastLayer, GraphCastEncoder, GraphCastDecoder]
+    mods = [DarknetBlock, DarknetConv, SwinLayer, torch.nn.TransformerEncoderLayer, GraphCastLayer, GraphCastEncoder, GraphCastDecoder]
     # mods += [WindowAttention, WindowAttentionV2, RotaryAttention, Attention]
-    if HAS_MAMBA and "mamba3" not in str(cfg.model):
+    if HAS_MAMBA:
         mods.extend([MambaVisionLayer])
     mods = tuple(mods)
     cfg.train.fsdp.mods = mods
     # Apply activation checkpointing
     if cfg.train.activation_checkpointing:
 
+        def uses_mamba3_checkpoint(module):
+            return HAS_MAMBA and isinstance(module, MambaVisionLayer) and getattr(module, "mamba_type", "").startswith("mamba3")
+
         def wrap_f1(module):
+            checkpoint_impl = CheckpointImpl.REENTRANT if uses_mamba3_checkpoint(module) else CheckpointImpl.NO_REENTRANT
             return checkpoint_wrapper(
                 module,
-                checkpoint_impl=CheckpointImpl.NO_REENTRANT,
+                checkpoint_impl=checkpoint_impl,
                 preserve_rng_state=True,
             )
 

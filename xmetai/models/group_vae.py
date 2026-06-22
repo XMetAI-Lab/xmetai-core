@@ -28,7 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from xmetai.layers import AdaptiveLN, EarthConvTranspose2d
+from xmetai.layers import AdaptiveLN, EarthConvTranspose2d, set_lora_step
 from xmetai.loss import charbonnier_loss
 from xmetai.registries import MODELS
 from xmetai.utils import get_event_storage
@@ -297,13 +297,6 @@ class GroupDecoder(UTransformer):
             del self.patch_embed
 
     def forward(self, latent_h, timestamp=None, const=None):
-        if timestamp is not None and "step" in timestamp:
-            step_val = timestamp["step"]
-            step_val = step_val[0] if getattr(step_val, "dim", lambda: 0)() > 0 else step_val
-            from xmetai.layers import set_lora_step
-
-            set_lora_step(self, int(step_val.item()))
-
         h = latent_h
         shortcut = h
         ih, iw = self.image_size
@@ -439,7 +432,6 @@ class LatentMixerPredictor(UTransformer):
         shortcut = h_states
         for i, blk in enumerate(self.layers):
             h = getattr(self, f"drop{i}")(h, self.drop_mcmc)
-            self.logger.debug(f"LatentMixerPredictor block {i} input shape: {h.shape}, time_embedding shape: {time_embedding.shape}")
             if "rotary" in self.attn_type:
                 h = blk(h, time_embedding=time_embedding, freqs_cos=self.freqs_cos, freqs_sin=self.freqs_sin)
             else:
@@ -528,8 +520,8 @@ class _BaseGroupVAE(BasePredictor):
         if group_slice_indices is None:
             raise ValueError("group_slice_indices must be provided by the concrete Group VAE subclass.")
 
-        self.group_slice_indices = group_slice_indices
-        self.group_reassemble_map = _build_reassemble_map(group_slice_indices, len(self.in_names))
+        self.group_slice_indices = [list(group) for group in group_slice_indices]
+        group_reassemble_map = _build_reassemble_map(self.group_slice_indices, len(self.in_names))
         self.num_groups = len(self.group_slice_indices)
 
         if isinstance(embed_dim, int):
@@ -543,7 +535,10 @@ class _BaseGroupVAE(BasePredictor):
         invalid_residual_indices = [idx for idx in self.residual_vae_indices if idx < 0 or idx >= len(self.in_names)]
         if len(invalid_residual_indices) > 0:
             raise ValueError(f"residual_vae_indices contains invalid channel indices: {invalid_residual_indices}")
-        self.group_reassemble_map = torch.tensor(self.group_reassemble_map, dtype=torch.long)
+        self.register_buffer("group_reassemble_map", torch.tensor(group_reassemble_map, dtype=torch.long), persistent=False)
+        self.register_buffer("residual_vae_index", torch.tensor(self.residual_vae_indices, dtype=torch.long), persistent=False)
+        for gi, group_indices in enumerate(self.group_slice_indices):
+            self.register_buffer(f"group_indices_{gi}", torch.tensor(group_indices, dtype=torch.long), persistent=False)
 
         common_encoder_kwargs = dict(
             image_size=image_size,
@@ -650,22 +645,24 @@ class _BaseGroupVAE(BasePredictor):
         self.logger.info("Pretrain mode: only posterior_encoder_group and decoder_group are trainable.")
 
     def _apply_residual(self, pred: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
-        if len(self.residual_vae_indices) == 0:
+        if self.residual_vae_index.numel() == 0:
             return pred
-        out = pred.clone()
-        out[:, :, self.residual_vae_indices] += ref[:, -1:, self.residual_vae_indices]
-        return out
+        residual = pred.index_select(2, self.residual_vae_index) + ref.index_select(2, self.residual_vae_index)
+        pred.index_copy_(2, self.residual_vae_index, residual)
+        return pred
 
     def _slice_group(self, x: torch.Tensor, gi: int) -> torch.Tensor:
-        indices = self.group_slice_indices[gi]
-        return x[:, :, indices]
+        indices = getattr(self, f"group_indices_{gi}")
+        return x.index_select(2, indices)
 
     def _prepare_group_input(self, x: torch.Tensor, gi: int) -> torch.Tensor:
         return self._slice_group(x, gi)
 
     def _reassemble(self, group_outputs: list[torch.Tensor], x_ref: torch.Tensor) -> torch.Tensor:
-        full = torch.concatenate(group_outputs, dim=2)
-        full = full[:, :, self.group_reassemble_map]
+        first = group_outputs[0]
+        full = first.new_empty(*first.shape[:2], self.group_reassemble_map.numel(), *first.shape[3:])
+        for gi, out_group in enumerate(group_outputs):
+            full.index_copy_(2, getattr(self, f"group_indices_{gi}"), out_group)
         return full
 
     @staticmethod
@@ -684,6 +681,12 @@ class _BaseGroupVAE(BasePredictor):
     @final
     def _decode_group(self, h_state: torch.Tensor, gi: int, timestamp: dict, const: torch.Tensor | None = None) -> torch.Tensor:
         return self.decoder_group[gi](h_state, timestamp=timestamp, const=const)
+
+    def _set_decoder_lora_step(self, lora_step: int | None) -> None:
+        if lora_step is None:
+            return
+        for decoder in self.decoder_group:
+            set_lora_step(decoder, int(lora_step))
 
     def _is_group_frozen(self, gi: int, is_prior: bool = True) -> bool:
         """Check if a group encoder is frozen (has no trainable parameters)."""
@@ -732,6 +735,7 @@ class _BaseGroupVAE(BasePredictor):
         h_states: list[torch.Tensor],
         timestamp: dict,
         const: torch.Tensor | None = None,
+        lora_step: int | None = None,
     ) -> list[torch.Tensor]:
         """Decode all groups from latent states.
 
@@ -747,6 +751,7 @@ class _BaseGroupVAE(BasePredictor):
         Returns:
             List of decoded outputs (B, 1, C_g, H, W) for each group
         """
+        self._set_decoder_lora_step(lora_step)
         outputs_by_group = []
         for gi, h_state in enumerate(h_states):
             # For frozen decoders, detach h_states to avoid gradient accumulation in frozen parameters
@@ -789,7 +794,7 @@ class _BaseGroupVAE(BasePredictor):
         timestamp_target = self.get_timestamp(input, times, t + self.out_frames)
         h_states = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
         z_coupled = self.latent_mixer(h_states, timestamp_target)
-        group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const)
+        group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames)
         output = self._assemble_prediction(group_outputs, input)
         next_input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
         return output, next_input
@@ -887,6 +892,7 @@ class _BaseGroupVAE(BasePredictor):
         reference_input: torch.Tensor,
         timestamp: dict,
         const: torch.Tensor | None = None,
+        lora_step: int | None = None,
         pool_size: int = 4,
         small: float = 0.04,
         large: float = 0.08,
@@ -907,9 +913,9 @@ class _BaseGroupVAE(BasePredictor):
             h1_states.append(h1)
             h2_states.append(h2)
 
-        outputs0 = self._decode_all_groups(h_states, timestamp, const=const)
-        outputs1 = self._decode_all_groups(h1_states, timestamp, const=const)
-        outputs2 = self._decode_all_groups(h2_states, timestamp, const=const)
+        outputs0 = self._decode_all_groups(h_states, timestamp, const=const, lora_step=lora_step)
+        outputs1 = self._decode_all_groups(h1_states, timestamp, const=const, lora_step=lora_step)
+        outputs2 = self._decode_all_groups(h2_states, timestamp, const=const, lora_step=lora_step)
 
         x0 = self._assemble_prediction(outputs0, reference_input)
         x1 = self._assemble_prediction(outputs1, reference_input)
@@ -949,9 +955,16 @@ class _BaseGroupVAE(BasePredictor):
         h_aug_by_group = self._encode_all_groups(aug_input, timestamp, const=const, is_prior=False)
 
         # Decode both views and reconstruct the clean tail frames.
-        loss_mcr, recon_clean = self._pretrain_mcr_loss(h_clean_by_group, recon_base, timestamp, const=const, pool_size=8 if input.shape[-2] >= 256 else 4)
+        loss_mcr, recon_clean = self._pretrain_mcr_loss(
+            h_clean_by_group,
+            recon_base,
+            timestamp,
+            const=const,
+            lora_step=self.start_frames,
+            pool_size=8 if input.shape[-2] >= 256 else 4,
+        )
         recon_clean = recon_clean[:, -self.out_frames :]
-        rec_aug_by_group = self._decode_all_groups(h_aug_by_group, timestamp, const=const)
+        rec_aug_by_group = self._decode_all_groups(h_aug_by_group, timestamp, const=const, lora_step=self.start_frames)
         recon_aug = self._assemble_prediction(rec_aug_by_group, recon_base)[:, -self.out_frames :]
 
         # Prepare weight for loss computation
@@ -1030,8 +1043,13 @@ class _BaseGroupVAE(BasePredictor):
 
             h_prior_states_by_group = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
             h_posterior_states_by_group = self._encode_all_groups(new_target, timestamp_target, const=const, is_prior=False)
-            vae_rec_input_outputs_by_group = self._decode_all_groups(h_prior_states_by_group, timestamp, const=const)
-            vae_rec_target_outputs_by_group = self._decode_all_groups(h_posterior_states_by_group, timestamp_target, const=const)
+            vae_rec_input_outputs_by_group = self._decode_all_groups(h_prior_states_by_group, timestamp, const=const, lora_step=t)
+            vae_rec_target_outputs_by_group = self._decode_all_groups(
+                h_posterior_states_by_group,
+                timestamp_target,
+                const=const,
+                lora_step=t + self.out_frames,
+            )
 
             # Constrain latent space to prevent norm explosion
             for h_prior, h_posterior in zip(h_prior_states_by_group, h_posterior_states_by_group):
@@ -1050,7 +1068,7 @@ class _BaseGroupVAE(BasePredictor):
             for gi in range(self.num_groups):
                 loss_latent_pred_rec += block_weight * charbonnier_loss(z_coupled[gi], h_posterior_states_by_group[gi].detach())
 
-            group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const)
+            group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames)
             output = self._assemble_prediction(group_outputs, input)
             if "channel_weights" in self._buffers:
                 loss_pred_rec += block_weight * charbonnier_loss(output, target, weight=self.channel_weights * self.weight)
@@ -1115,7 +1133,7 @@ class _BaseGroupVAE(BasePredictor):
                     target_input = self.reset_input(target_input)
                     timestamp_target = self.get_timestamp(new_input, times, t + self.out_frames)
                     h_states = self._encode_all_groups(target_input, timestamp_target, const=const, is_prior=False)
-                    group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const)
+                    group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const, lora_step=t + self.out_frames)
                     target_base = target_input[:, -self.out_frames - 1 : -1]
                     output = self._assemble_prediction(group_outputs, target_base)
                     new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames :]
