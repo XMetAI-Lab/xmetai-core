@@ -638,6 +638,7 @@ class MambaVisionLayer(nn.Module):
         """
         super().__init__()
         transformer_blocks = [] if transformer_blocks is None else transformer_blocks
+        self.mamba_type = mamba_type
         self.with_embedding = with_embedding
         if self.with_embedding:
             self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim, 6 * dim, bias=True))
