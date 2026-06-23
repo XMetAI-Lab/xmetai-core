@@ -12,6 +12,7 @@ from typing import ContextManager
 import torch
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.tensor import DTensor, Replicate
 
 __all__ = ["EMA"]
 
@@ -32,6 +33,31 @@ def _get_fsdp_context(model: torch.nn.Module) -> ContextManager[object]:
         return contextlib.nullcontext()
 
 
+def _full_local_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    if isinstance(tensor, DTensor):
+        tensor = tensor.full_tensor()
+    return tensor
+
+
+def _clone_for_ema(param: torch.Tensor) -> torch.Tensor:
+    return _full_local_tensor(param).detach().clone()
+
+
+def _copy_full_local_to_param(param: torch.Tensor, local_tensor: torch.Tensor) -> None:
+    if isinstance(param, DTensor):
+        if local_tensor.shape != param.shape:
+            raise ValueError(f"EMA tensor shape {local_tensor.shape} does not match parameter shape {param.shape}")
+        replicated = DTensor.from_local(
+            local_tensor,
+            device_mesh=param.device_mesh,
+            placements=[Replicate() for _ in param.placements],
+        )
+        dtensor = replicated.redistribute(device_mesh=param.device_mesh, placements=param.placements)
+        param.copy_(dtensor)
+        return
+    param.copy_(local_tensor)
+
+
 class EMA(nn.Module):
     def __init__(self, model: torch.nn.Module, decay: float = 0.9999):
         super().__init__()
@@ -46,7 +72,7 @@ class EMA(nn.Module):
         with _get_fsdp_context(model):
             for name, p in model.named_parameters():
                 if p.requires_grad:
-                    self.ema_params[name] = p.clone()
+                    self.ema_params[name] = _clone_for_ema(p)
 
     @torch.no_grad()
     def update_params(self, model: torch.nn.Module) -> None:
@@ -58,7 +84,7 @@ class EMA(nn.Module):
         with _get_fsdp_context(model):
             for name, param in model.named_parameters():
                 if name in self.ema_params:
-                    self.ema_params[name].copy_(param)
+                    self.ema_params[name].copy_(_full_local_tensor(param).detach())
                 else:
                     self.logger.warning(f"Parameter {name} not found in EMA parameters, skipping...")
         self.num_updates.fill_(0)  # type: ignore[operator]  # registered buffer
@@ -77,8 +103,8 @@ class EMA(nn.Module):
         with _get_fsdp_context(model):
             for name, param in model.named_parameters():
                 if name in self.ema_params:
-                    full_param = param.clone()
-                    self.ema_params[name].mul_(decay_val).add_(full_param, alpha=(1.0 - decay_val))
+                    current_param = _full_local_tensor(param).detach()
+                    self.ema_params[name].mul_(decay_val).add_(current_param, alpha=(1.0 - decay_val))
 
     @torch.no_grad()
     def reverse(self, model: torch.nn.Module) -> None:
@@ -87,8 +113,8 @@ class EMA(nn.Module):
         with _get_fsdp_context(model):
             for name, param in model.named_parameters():
                 if name in self.ema_params:
-                    self.tmp_params[name] = param.clone()
-                    param.data.copy_(self.ema_params[name])
+                    self.tmp_params[name] = _clone_for_ema(param)
+                    _copy_full_local_to_param(param, self.ema_params[name])
 
     @torch.no_grad()
     def restore(self, model: torch.nn.Module) -> None:
@@ -96,5 +122,5 @@ class EMA(nn.Module):
         with _get_fsdp_context(model):
             for name, param in model.named_parameters():
                 if name in self.tmp_params:
-                    param.data.copy_(self.tmp_params[name])
+                    _copy_full_local_to_param(param, self.tmp_params[name])
         del self.tmp_params

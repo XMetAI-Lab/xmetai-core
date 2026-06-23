@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 from torch.nn.modules.batchnorm import _BatchNorm
 from torch.nn.utils import clip_grad_norm_
 
@@ -768,4 +769,32 @@ class GradientClipHook(HookBase):
         self.norm_type = norm_type
 
     def after_backward(self):
-        clip_grad_norm_(self.trainer.model.parameters(), self.max_norm, self.norm_type)
+        parameters = list(self.trainer.model.parameters())
+        grads = [p.grad for p in parameters if p.grad is not None]
+        if any(isinstance(grad, DTensor) for grad in grads):
+            _clip_dtensor_grad_norm_(grads, self.max_norm, self.norm_type)
+            return
+        clip_grad_norm_(parameters, self.max_norm, self.norm_type)
+
+
+@torch.no_grad()
+def _clip_dtensor_grad_norm_(grads, max_norm, norm_type):
+    norm_type = float(norm_type)
+    max_norm = float(max_norm)
+    if len(grads) == 0:
+        return torch.tensor(0.0)
+
+    def to_float(tensor):
+        if isinstance(tensor, DTensor):
+            tensor = tensor.full_tensor()
+        return float(tensor.detach().float().item())
+
+    if norm_type == math.inf:
+        total_norm = max(to_float(grad.detach().abs().max()) for grad in grads)
+    else:
+        total_norm = sum(to_float(torch.linalg.vector_norm(grad.detach(), norm_type)) ** norm_type for grad in grads) ** (1.0 / norm_type)
+
+    clip_coef = min(max_norm / (total_norm + 1e-6), 1.0)
+    for grad in grads:
+        grad.mul_(clip_coef)
+    return torch.tensor(total_norm)
