@@ -109,7 +109,7 @@ model = L(MODELS.get(model_name))(
 model.buffers = buffers
 model.precision = "bf16"
 
-export_onnx = False
+export_onnx = os.getenv("EXPORT_ONNX", "").lower() in ("1", "true", "yes", "on")
 if export_onnx:
     from xmetai.data import make_onnx
 
