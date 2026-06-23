@@ -43,7 +43,8 @@ def _load_zarr_sidecar_variable(data_dir, key):
         ds.close()
 
 
-def make_seq(times, total_frames, freq=1, interval=1):
+def make_seq(times, total_frames, freq=1, interval=1, freq_unit="hours"):
+    step = pd.Timedelta(**{freq_unit: freq})
     i = 0
     inds = []
 
@@ -51,7 +52,7 @@ def make_seq(times, total_frames, freq=1, interval=1):
 
         cur_sequence = [0]
         for j in range(i, i + total_frames - 1):
-            if times[j + 1] - times[j] == pd.Timedelta(hours=freq):
+            if times[j + 1] - times[j] == step:
                 cur_sequence.append(j)
 
         if len(cur_sequence) >= total_frames - 1:
@@ -62,7 +63,7 @@ def make_seq(times, total_frames, freq=1, interval=1):
     return np.array(inds, dtype=np.int32)
 
 
-def make_seq_inference(times, total_frames, freq=24):
+def make_seq_inference(times, total_frames, freq=24, freq_unit="hours"):
     """
     Generate sequence indices starting with specific dates in the year.
 
@@ -102,13 +103,13 @@ def make_seq_inference(times, total_frames, freq=24):
 
         # If the current date is one of our specific dates, check if we have enough consecutive frames
         if month_day in specific_dates:
-            if freq == 6 and hour != 18:  # with 12+18 input frames, predict next 00:00 hours start.
+            if freq_unit == "hours" and freq == 6 and hour != 18:  # with 12+18 input frames, predict next 00:00 hours start.
                 continue
             # Check if we have enough consecutive frames
             valid_sequence = True
             for j in range(1, total_frames):
                 # Check if next frame is sequential (1 day = 24 hours typically for weather data)
-                if i + j < len(times) and times[i + j] - times[i + j - 1] != pd.Timedelta(hours=freq):
+                if i + j < len(times) and times[i + j] - times[i + j - 1] != pd.Timedelta(**{freq_unit: freq}):
                     valid_sequence = False
                     break
 

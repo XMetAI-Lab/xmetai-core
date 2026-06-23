@@ -120,9 +120,10 @@ class TestWeatherDataset:
             coords={"time": times, "level": levels, "lat": [0.0, 1.0], "lon": [100.0, 101.0, 102.0]},
         )
 
-        def fake_open_zarr(path, consolidated=True):
+        def fake_open_zarr(path, consolidated=True, mask_and_scale=True):
             assert path == "memory.zarr"
             assert consolidated is True
+            assert mask_and_scale is False
             return fake_ds.copy()
 
         monkeypatch.setattr(xr, "open_zarr", fake_open_zarr)
@@ -169,9 +170,10 @@ class TestWeatherDataset:
             coords={"time": times, "channel": channels, "lat": [0.0, 1.0], "lon": [100.0, 101.0, 102.0]},
         )
 
-        def fake_open_zarr(path, consolidated=True):
+        def fake_open_zarr(path, consolidated=True, mask_and_scale=True):
             assert path == "memory.zarr"
             assert consolidated is True
+            assert mask_and_scale is False
             return fake_ds.copy()
 
         monkeypatch.setattr(xr, "open_zarr", fake_open_zarr)
@@ -183,11 +185,59 @@ class TestWeatherDataset:
             freq=6,
             years=("20200101-00", "20200102-18"),
             in_names=["c", "a"],
+            bbox=(100.0, 0.0, 101.0, 1.0),
         )
         sample = dataset[0]
 
-        assert sample["inputs"].shape == (2, 2, 2, 3)
-        assert sample["targets"].shape == (1, 2, 2, 3)
+        assert sample["inputs"].shape == (2, 2, 2, 2)
+        assert sample["targets"].shape == (1, 2, 2, 2)
+
+    def test_multi_zarr_dataset_decodes_scaled_integer_minutes(self, monkeypatch):
+        """Test MultiZarrDataset handles radar-style int16 dbz10 stores at minute frequency."""
+        import pandas as pd
+        import torch
+        import xarray as xr
+
+        from xmetai.data.weather.multi_zarr_dataset import MultiZarrDataset
+
+        times = pd.date_range("2020-01-01", periods=8, freq="6min")
+        values_a = np.zeros((len(times), 1, 1, 2), dtype=np.int16)
+        values_a[0, 0, 0, 0] = 123
+        values_a[0, 0, 0, 1] = -32768
+        values_b = np.zeros((len(times), 1, 1, 2), dtype=np.int16)
+        values_b[0, 0, 0, 0] = 100
+        fake_ds_a = xr.Dataset(
+            {"data": (("time", "level", "lat", "lon"), values_a)},
+            coords={"time": times, "level": ["cr"], "lat": [0.0], "lon": [100.0, 100.01]},
+        )
+        fake_ds_a["data"].attrs.update({"_FillValue": -32768, "scale_factor": 0.1, "add_offset": 0.0})
+        fake_ds_b = xr.Dataset(
+            {"data": (("time", "level", "lat", "lon"), values_b)},
+            coords={"time": times, "level": ["cr"], "lat": [0.0], "lon": [100.0, 100.01]},
+        )
+        fake_ds_b["data"].attrs.update({"_FillValue": -32768, "scale_factor": 0.2, "add_offset": 0.0})
+
+        def fake_open_zarr(path, consolidated=True, mask_and_scale=True):
+            assert consolidated is True
+            assert mask_and_scale is False
+            return {"radar_a.zarr": fake_ds_a, "radar_b.zarr": fake_ds_b}[path].copy()
+
+        monkeypatch.setattr(xr, "open_zarr", fake_open_zarr)
+
+        dataset = MultiZarrDataset(
+            data_paths=["radar_a.zarr", "radar_b.zarr"],
+            hist_frames=2,
+            fcst_frames=1,
+            freq=6,
+            freq_unit="minutes",
+            years=("20200101", "20200102"),
+        )
+        sample = dataset[0]
+
+        assert sample["inputs"].shape == (2, 2, 1, 2)
+        assert torch.isclose(sample["inputs"][0, 0, 0, 0], torch.tensor(12.3), atol=1e-5)
+        assert sample["inputs"][0, 0, 0, 1] == 0.0
+        assert torch.isclose(sample["inputs"][0, 1, 0, 0], torch.tensor(20.0), atol=1e-5)
 
 
 class TestDataSampler:
