@@ -18,6 +18,7 @@ __all__ = [
     "DEFAULT_BOUNDARY_COLOR",
     "DEFAULT_CHINA_BOUNDARY_GEOJSON",
     "RadarGridHeader",
+    "RadarGridSpec",
     "RadarQCConfig",
     "RadarRecord",
     "RadarBBox",
@@ -42,7 +43,8 @@ __all__ = [
 
 DEFAULT_CHINA_BOUNDARY_GEOJSON = Path(__file__).resolve().parent / "assets/china_100000_full_wgs84.geojson"
 DEFAULT_BOUNDARY_COLOR = (31, 41, 55, 204)
-_RADAR_TIME_RE = re.compile(r"(?P<date>\d{8})[_-](?P<time>\d{6})")
+_RADAR_TIME_RE = re.compile(r"(?P<date>\d{8})[_-]?(?P<time>\d{4}(?:\d{2})?)")
+_RADAR_PRODUCT_RE = re.compile(r"RADR_(?P<product>[A-Z0-9]+)_", re.IGNORECASE)
 
 RadarBBox = Tuple[float, float, float, float]
 
@@ -81,6 +83,24 @@ RADAR_BBOX_REGIONS: dict[str, RadarBBox] = {
     "xibei": RADAR_BBOX_NORTHWEST_CHINA,
     "西北": RADAR_BBOX_NORTHWEST_CHINA,
 }
+
+
+@dataclass(frozen=True)
+class RadarGridSpec:
+    """Explicit grid metadata for headerless compressed radar arrays."""
+
+    height: int
+    width: int
+    left_lon: float
+    top_lat: float
+    lon_step: float
+    lat_step: float
+
+    def __post_init__(self) -> None:
+        if self.height <= 0 or self.width <= 0:
+            raise ValueError(f"Radar grid shape must be positive, got {(self.height, self.width)}")
+        if self.lon_step <= 0 or self.lat_step <= 0:
+            raise ValueError(f"Radar grid steps must be positive, got {(self.lon_step, self.lat_step)}")
 
 
 @dataclass(frozen=True)
@@ -362,7 +382,9 @@ def _parse_filename_time(path: Path) -> pd.Timestamp | None:
     match = _RADAR_TIME_RE.search(path.name)
     if match is None:
         return None
-    return pd.to_datetime(f"{match.group('date')}{match.group('time')}", format="%Y%m%d%H%M%S")
+    time = match.group("time")
+    time_format = "%H%M%S" if len(time) == 6 else "%H%M"
+    return pd.to_datetime(f"{match.group('date')}{time}", format=f"%Y%m%d{time_format}")
 
 
 def _parse_time_bound(value: object, *, is_end: bool) -> pd.Timestamp | None:
@@ -392,12 +414,40 @@ def _time_range(years: Sequence[object] | None) -> tuple[pd.Timestamp | None, pd
     return _parse_time_bound(years[0], is_end=False), _parse_time_bound(years[1], is_end=True)
 
 
-def read_radar_header(path: str | Path) -> RadarGridHeader:
-    """Read the 256-byte ACHN_CR header without decompressing the grid payload."""
+def read_radar_header(path: str | Path, *, raw_grid: RadarGridSpec | None = None) -> RadarGridHeader:
+    """Read metadata from an ACHN_CR file or an explicitly described raw grid."""
 
     radar_path = Path(path).expanduser()
     with radar_path.open("rb") as handle:
         buf = handle.read(256)
+    if buf.startswith(b"BZh"):
+        if raw_grid is None:
+            raise ValueError(
+                f"Headerless bzip2 radar file requires explicit grid metadata: {radar_path}. "
+                "Pass raw_grid=RadarGridSpec(...) or the corresponding command-line grid options."
+            )
+        product_match = _RADAR_PRODUCT_RE.search(radar_path.name)
+        product = product_match.group("product").upper() if product_match is not None else radar_path.stem
+        width = raw_grid.width
+        height = raw_grid.height
+        return RadarGridHeader(
+            path=radar_path,
+            product=product,
+            product_name=product,
+            header_size=0,
+            compressed_size=radar_path.stat().st_size,
+            data_bytes=height * width * np.dtype("<i2").itemsize,
+            timestamp=_parse_filename_time(radar_path),
+            left_lon=raw_grid.left_lon,
+            top_lat=raw_grid.top_lat,
+            right_lon=raw_grid.left_lon + (width - 1) * raw_grid.lon_step,
+            center_lon=raw_grid.left_lon + (width - 1) * raw_grid.lon_step / 2,
+            center_lat=raw_grid.top_lat - (height - 1) * raw_grid.lat_step / 2,
+            width=width,
+            height=height,
+            lon_step=raw_grid.lon_step,
+            lat_step=raw_grid.lat_step,
+        )
     if len(buf) < 256:
         raise ValueError(f"Radar file is shorter than the 256-byte header: {radar_path}")
     if buf[:3] != b"MOC":
@@ -553,6 +603,7 @@ def read_radar_reflectivity(
     path: str | Path,
     *,
     header: RadarGridHeader | None = None,
+    raw_grid: RadarGridSpec | None = None,
     scale_factor: float = 10.0,
     missing_values: Sequence[int] = (-32768,),
     no_echo_values: Sequence[int] = (-1280,),
@@ -568,7 +619,7 @@ def read_radar_reflectivity(
     """Read one composite reflectivity file as a ``(lat, lon)`` dBZ array."""
 
     radar_path = Path(path).expanduser()
-    header = read_radar_header(radar_path) if header is None else header
+    header = read_radar_header(radar_path, raw_grid=raw_grid) if header is None else header
     payload = _read_compressed_payload(radar_path, header)
     expected_bytes = header.height * header.width * np.dtype("<i2").itemsize
     if len(payload) != expected_bytes:
@@ -609,6 +660,7 @@ def discover_radar_files(
     *,
     pattern: str = "*.bin",
     years: Sequence[object] | None = None,
+    raw_grid: RadarGridSpec | None = None,
 ) -> list[RadarRecord]:
     """Find radar files under files/directories and return sorted timestamp records."""
 
@@ -628,7 +680,7 @@ def discover_radar_files(
     records: list[RadarRecord] = []
     seen: dict[pd.Timestamp, Path] = {}
     for path in files:
-        header = read_radar_header(path)
+        header = read_radar_header(path, raw_grid=raw_grid)
         timestamp = _parse_filename_time(path) or header.timestamp
         if timestamp is None:
             raise ValueError(f"Could not infer timestamp from filename or header: {path}")

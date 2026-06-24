@@ -4,10 +4,19 @@ import struct
 
 import numpy as np
 import pandas as pd
+import pytest
 from PIL import Image
 
 from xmetai.data.weather.radar_dataset import RadarDataset
-from xmetai.utils.radar import RADAR_BBOX_CHINA, RADAR_BBOX_EAST_CHINA, RADAR_BBOX_REGIONS, read_radar_header, read_radar_reflectivity, save_radar_png
+from xmetai.utils.radar import (
+    RADAR_BBOX_CHINA,
+    RADAR_BBOX_EAST_CHINA,
+    RADAR_BBOX_REGIONS,
+    RadarGridSpec,
+    read_radar_header,
+    read_radar_reflectivity,
+    save_radar_png,
+)
 
 
 def _write_radar_file(path, timestamp, raw):
@@ -34,6 +43,11 @@ def _write_radar_file(path, timestamp, raw):
     struct.pack_into("<I", header, 0xA0, 100)
     struct.pack_into("<I", header, 0xAC, raw.nbytes)
     path.write_bytes(bytes(header) + payload)
+
+
+def _write_regional_radar_file(path, raw):
+    raw = np.asarray(raw, dtype="<i2")
+    path.write_bytes(bz2.compress(raw.tobytes()))
 
 
 def test_read_radar_header_and_reflectivity(tmp_path):
@@ -63,6 +77,36 @@ def test_read_radar_header_and_reflectivity(tmp_path):
     assert data[1, 2] == 58.0
     assert filled[0, 0] == 0.0
     assert filled[0, 1] == 0.0
+
+
+def test_read_regional_headerless_radar_file(tmp_path):
+    raw = np.full((3, 4), -1280, dtype=np.int16)
+    raw[0, 0] = -32768
+    raw[1, 2] = 355
+    path = tmp_path / "RADR_CAP02_202303060840.bin"
+    _write_regional_radar_file(path, raw)
+    raw_grid = RadarGridSpec(height=3, width=4, left_lon=104.0, top_lat=40.0, lon_step=0.01, lat_step=0.01)
+
+    header = read_radar_header(path, raw_grid=raw_grid)
+    data = read_radar_reflectivity(path, header=header, fill_value=None)
+
+    assert header.product == "CAP02"
+    assert header.timestamp == pd.Timestamp("2023-03-06 08:40:00")
+    assert (header.height, header.width) == (3, 4)
+    assert header.left_lon == 104.0
+    assert header.right_lon == 104.03
+    assert header.top_lat == 40.0
+    assert header.bottom_lat == 39.98
+    assert data[0, 0] == -32768
+    assert data[1, 2] == 35.5
+
+
+def test_headerless_radar_requires_explicit_grid(tmp_path):
+    path = tmp_path / "RADR_CR_202303060840.bin"
+    _write_regional_radar_file(path, np.zeros((2, 2), dtype=np.int16))
+
+    with pytest.raises(ValueError, match="requires explicit grid metadata"):
+        read_radar_header(path)
 
 
 def test_read_radar_reflectivity_qc_removes_speckles_and_invalid_values(tmp_path):
