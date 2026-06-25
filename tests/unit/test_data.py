@@ -200,7 +200,7 @@ class TestWeatherDataset:
 
         from xmetai.data.weather.multi_zarr_dataset import MultiZarrDataset
 
-        times = pd.date_range("2020-01-01", periods=8, freq="6min")
+        times = pd.date_range("2020-01-01 08:40", periods=8, freq="6min")
         values_a = np.zeros((len(times), 1, 1, 2), dtype=np.int16)
         values_a[0, 0, 0, 0] = 123
         values_a[0, 0, 0, 1] = -32768

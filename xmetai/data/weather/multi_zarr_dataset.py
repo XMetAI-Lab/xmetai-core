@@ -89,8 +89,8 @@ class MultiZarrDataset(Dataset):
             freq_step = pd.Timedelta(**{freq_unit: freq})
             if freq_step <= pd.Timedelta(0):
                 raise ValueError(f"freq must define a positive time step, got {freq_step}")
-            day_offsets = common_times - common_times.normalize()
-            common_times = common_times[day_offsets % freq_step == pd.Timedelta(0)]
+            time_offsets = common_times - common_times[0]
+            common_times = common_times[time_offsets % freq_step == pd.Timedelta(0)]
 
         if len(common_times) == 0:
             raise ValueError("No overlapping time steps among zarr files with desired freq.")
