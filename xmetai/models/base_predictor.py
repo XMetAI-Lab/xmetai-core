@@ -202,7 +202,6 @@ class BasePredictor(Meta):
         rolling_weights = rolling_weights / rolling_weights.sum().clamp_min(torch.finfo(rolling_weights.dtype).eps)
         return valid_steps, rolling_weights
 
-    @torch.no_grad()
     def inv_normalize(self, input, test_chans=[]):
         assert input.ndim == 5
 
@@ -254,12 +253,9 @@ class BasePredictor(Meta):
             mean = self.mean.to(x)
             std = self.std.to(x)
 
-        x = (x - mean) / std
-
         if len(logids) > 0:
-            # for tp should be log(1+tp).
-            tp = torch.clamp(x[:, :, logids], min=0, max=7)
-            x[:, :, logids] = torch.log1p(tp)
+            x[:, :, logids] = torch.log1p(x[:, :, logids].clamp_min(0.0)).clamp_max(7.0)
+        x = (x - mean) / std
         return x
 
     def reset_input(self, input):
@@ -297,10 +293,10 @@ class BasePredictor(Meta):
 
         if "targets" in data:
             targets = data["targets"]
-            targets = targets.to(device=self.device, non_blocking=True)
             if self.training:
                 future_frames = data.get("future_frames", self.out_frames)
                 targets = targets[:, :future_frames]
+            targets = targets.to(input)
             batch["targets"] = targets
 
         # check if shift exist in data, do rolling for const
@@ -418,16 +414,11 @@ class BasePredictor(Meta):
         if not self.pinn_enable:
             return {}
 
-        # Optionally evaluate PINN losses in denormalized (physical) units.
-        # We avoid calling `inv_normalize` here because that helper is
-        # decorated with `@torch.no_grad()` and would break gradient flow.
         weight = getattr(self, "weight", None)
 
         if self.pinn_use_denorm:
-            # Enable gradients for denormalization to preserve gradient flow
-            with torch.enable_grad():
-                out_for_pinn = self.inv_normalize(output)
-                tgt_for_pinn = self.inv_normalize(target)
+            out_for_pinn = self.inv_normalize(output)
+            tgt_for_pinn = self.inv_normalize(target)
         else:
             out_for_pinn = output
             tgt_for_pinn = target
