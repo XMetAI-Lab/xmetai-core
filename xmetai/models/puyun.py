@@ -5,7 +5,7 @@ Description: PuYun weather forecasting model.
 
 This module implements a project-native version of PuYun: a fully
 convolutional autoregressive predictor based on large-kernel attention.
-refer to:https://arxiv.org/abs/2409.02123
+Refer to: https://arxiv.org/abs/2409.02123
 """
 
 import logging
