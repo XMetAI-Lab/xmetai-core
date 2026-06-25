@@ -14,6 +14,7 @@ from .graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
 from .helpers import kaming_init, to_1tuple
 from .lora import apply_lora_to_model, merge_lora_weights, set_lora_step
 from .norm import AdaptiveLN, LayerNorm
+from .puyun_blocks import ConvLayerNorm, PuYunBlock
 from .rotary_attention import precompute_freqs_cis
 from .swin import SwinLayer
 
@@ -29,6 +30,7 @@ __all__ = [
     "AdaptiveLN",
     "AfnoPatchEmbed",
     "CubeEmbed",
+    "ConvLayerNorm",
     "DarknetConvUNet2D",
     "DropPath",
     "EarthConv2d",
@@ -40,6 +42,7 @@ __all__ = [
     "LayerNorm",
     "MCDropout",
     "MambaVisionLayer",
+    "PuYunBlock",
     "StepEncoding",
     "SwinLayer",
     "TimestepEmbed",
