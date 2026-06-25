@@ -13,37 +13,6 @@ from .data_util import make_seq, make_seq_inference
 __all__ = ["MultiZarrDataset"]
 
 
-def _scaled_integer_encoding(data_array: xr.DataArray) -> tuple[float | None, float, float] | None:
-    if not np.issubdtype(data_array.dtype, np.integer):
-        return None
-
-    attrs = data_array.attrs
-    fill_value = attrs.get("_FillValue", attrs.get("fill_value"))
-    scale_factor = attrs.get("scale_factor", attrs.get("dbz_scale_factor", 1.0))
-    add_offset = attrs.get("add_offset", attrs.get("dbz_add_offset", 0.0))
-    if fill_value is None and float(scale_factor) == 1.0 and float(add_offset) == 0.0:
-        return None
-
-    return None if fill_value is None else float(fill_value), float(scale_factor), float(add_offset)
-
-
-def _decode_scaled_integer_block(data: np.ndarray, encodings: list[tuple[float | None, float, float] | None]) -> np.ndarray:
-    if not np.issubdtype(data.dtype, np.integer) or all(encoding is None for encoding in encodings):
-        return data
-    if data.shape[1] != len(encodings):
-        raise ValueError(f"Encoding count {len(encodings)} does not match channel count {data.shape[1]}")
-
-    decoded = data.astype(np.float32, copy=True)
-    for channel, encoding in enumerate(encodings):
-        if encoding is None:
-            continue
-        fill_value, scale_factor, add_offset = encoding
-        if fill_value is not None:
-            decoded[:, channel][data[:, channel] == fill_value] = np.nan
-        decoded[:, channel] = decoded[:, channel] * scale_factor + add_offset
-    return decoded
-
-
 def _select_bbox(ds: xr.Dataset, bbox: tuple[float, float, float, float] | None) -> xr.Dataset:
     if bbox is None:
         return ds
@@ -99,12 +68,9 @@ class MultiZarrDataset(Dataset):
         # 1. 加载并筛选时间范围
         datasets = []
         times_list: list[pd.DatetimeIndex] = []
-        data_encodings = []
 
         for path in data_paths:
-            ds = xr.open_zarr(path, consolidated=True, mask_and_scale=False)  # single dataset
-            channel_dim = "level" if "level" in ds.data.dims else "channel"
-            data_encodings.extend([_scaled_integer_encoding(ds.data)] * ds.data.sizes[channel_dim])
+            ds = xr.open_zarr(path, consolidated=True)  # single dataset
             self.logger.info(f"Loaded dataset from {path}, shape: {ds.data.shape} (time, channel, lat, lon)")
             ds = ds.sel(time=slice(*years))
             ds = _select_bbox(ds, bbox)
@@ -144,7 +110,6 @@ class MultiZarrDataset(Dataset):
         # 5. 在 channel 维度上拼接
         data_arrays = [ds.data.rename(level="channel") if "level" in ds.data.dims else ds.data for ds in datasets]
         self.ds = data_arrays[0] if len(data_arrays) == 1 else xr.concat(data_arrays, dim="channel")
-        self.data_encodings = data_encodings
         self.logger.info(f"Combined dataset shape: {self.ds.shape}, sizes: {dict(self.ds.sizes)}")
 
         # 6. 构造时间索引
@@ -207,8 +172,7 @@ class MultiZarrDataset(Dataset):
             rht_inds = rht_inds[self.fcst_frames - 1]
 
         inds = np.concatenate([lft_inds, rht_inds])
-        imgs_np = _isel_time(self.ds, inds).values
-        imgs_np = _decode_scaled_integer_block(imgs_np, self.data_encodings)
+        imgs_np = _isel_time(self.ds, inds).values.astype(np.float32, copy=False)
         imgs = torch.from_numpy(imgs_np)
         imgs.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
         if self.select_vars is not None:
