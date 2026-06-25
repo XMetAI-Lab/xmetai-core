@@ -343,8 +343,8 @@ def parse_args():
     parser.add_argument("--valid-min", type=int, default=0, help="Minimum valid encoded dbz10 value.")
     parser.add_argument("--valid-max", type=int, default=750, help="Maximum valid encoded dbz10 value.")
     parser.add_argument("--time-chunk", type=int, default=1, help="Zarr chunk size along time.")
-    parser.add_argument("--y-chunk", type=int, default=512, help="Zarr chunk size along latitude.")
-    parser.add_argument("--x-chunk", type=int, default=512, help="Zarr chunk size along longitude.")
+    parser.add_argument("--y-chunk", type=int, default=0, help="Zarr chunk size along latitude. Default 0 uses the full latitude axis.")
+    parser.add_argument("--x-chunk", type=int, default=0, help="Zarr chunk size along longitude. Default 0 uses the full longitude axis.")
     parser.add_argument("--compressor", default="zstd", choices=["zstd", "lz4", "zlib", "blosclz"], help="Blosc compressor.")
     parser.add_argument("--compression-level", type=int, default=5, help="Blosc compression level.")
     parser.add_argument("--no-qc", action="store_true", help="Disable conservative reflectivity QC before writing.")
@@ -368,8 +368,10 @@ def main() -> None:
     args.bbox = _parse_bbox(args.bbox)
     if args.stride <= 0:
         raise ValueError(f"--stride must be positive, got {args.stride}")
-    if args.time_chunk <= 0 or args.y_chunk <= 0 or args.x_chunk <= 0:
-        raise ValueError("Chunk sizes must be positive.")
+    if args.time_chunk <= 0:
+        raise ValueError("time_chunk must be positive.")
+    if args.y_chunk < 0 or args.x_chunk < 0:
+        raise ValueError("y_chunk and x_chunk must be non-negative; use 0 for the full axis.")
     if args.workers <= 0:
         raise ValueError(f"--workers must be positive, got {args.workers}")
     if args.task_size <= 0:
@@ -386,6 +388,10 @@ def main() -> None:
     }
     first_header = _validate_common_grid(records)
     lat, lon = _slice_lat_lon(first_header, args.bbox, args.stride)
+    if args.y_chunk == 0:
+        args.y_chunk = len(lat)
+    if args.x_chunk == 0:
+        args.x_chunk = len(lon)
     shape = (len(records), 1, len(lat), len(lon))
     chunks = (min(args.time_chunk, len(records)), 1, min(args.y_chunk, len(lat)), min(args.x_chunk, len(lon)))
     raw_bytes = int(np.prod(shape) * np.dtype(np.int16).itemsize)

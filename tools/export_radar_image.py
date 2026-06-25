@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from xmetai.utils.radar import (  # noqa: E402
     DEFAULT_CHINA_BOUNDARY_GEOJSON,
+    RadarGridSpec,
     RadarQCConfig,
     bbox_to_slices,
     discover_radar_files,
@@ -28,6 +29,27 @@ from xmetai.utils.radar import (  # noqa: E402
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_raw_grid(shape: Sequence[int] | None, bbox: Sequence[float] | None) -> RadarGridSpec | None:
+    if shape is None and bbox is None:
+        return None
+    if shape is None or bbox is None:
+        raise ValueError("--raw-grid-shape and --raw-grid-bbox must be provided together")
+    height, width = [int(value) for value in shape]
+    lon_min, lat_min, lon_max, lat_max = [float(value) for value in bbox]
+    if height < 2 or width < 2:
+        raise ValueError(f"--raw-grid-shape values must be at least 2, got {(height, width)}")
+    if lon_min >= lon_max or lat_min >= lat_max:
+        raise ValueError(f"Invalid --raw-grid-bbox: {bbox}")
+    return RadarGridSpec(
+        height=height,
+        width=width,
+        left_lon=lon_min,
+        top_lat=lat_max,
+        lon_step=(lon_max - lon_min) / (width - 1),
+        lat_step=(lat_max - lat_min) / (height - 1),
+    )
 
 
 def _parse_bbox(values: Sequence[str] | None) -> tuple[float, float, float, float] | None:
@@ -85,8 +107,9 @@ def export_one(
     boundary_geojson: Path | None,
     boundary_color: tuple[int, int, int, int],
     boundary_width: int,
+    raw_grid: RadarGridSpec | None,
 ) -> None:
-    header = read_radar_header(path)
+    header = read_radar_header(path, raw_grid=raw_grid)
     if bbox is not None:
         row_slice, col_slice = bbox_to_slices(header, bbox)
         logger.info("Cropping %s to rows=%s cols=%s", path.name, row_slice, col_slice)
@@ -119,8 +142,9 @@ def _read_frame_rgba(
     boundary_geojson: Path | None,
     boundary_color: tuple[int, int, int, int],
     boundary_width: int,
+    raw_grid: RadarGridSpec | None,
 ) -> np.ndarray:
-    header = read_radar_header(path)
+    header = read_radar_header(path, raw_grid=raw_grid)
     if bbox is not None:
         row_slice, col_slice = bbox_to_slices(header, bbox)
         logger.debug("Cropping %s to rows=%s cols=%s", path.name, row_slice, col_slice)
@@ -163,6 +187,7 @@ def export_gif(
     boundary_width: int,
     duration_ms: int,
     loop: int,
+    raw_grid: RadarGridSpec | None,
 ) -> None:
     if len(records) == 0:
         raise ValueError("No radar records selected for GIF export.")
@@ -182,6 +207,7 @@ def export_gif(
             boundary_geojson=boundary_geojson,
             boundary_color=boundary_color,
             boundary_width=boundary_width,
+            raw_grid=raw_grid,
         )
         frames.append(Image.fromarray(rgba).convert("P", palette=Image.Palette.ADAPTIVE))
         logger.info("Loaded GIF frame %d/%d: %s", i + 1, len(records), record.path.name)
@@ -199,6 +225,14 @@ def main() -> None:
     parser.add_argument("--pattern", default="*.bin", help="Directory search pattern. Default: %(default)s")
     parser.add_argument("--years", nargs=2, metavar=("START", "END"), help="Optional inclusive time range, e.g. 20191216 20191216.")
     parser.add_argument("--bbox", nargs=4, metavar=("LON_MIN", "LAT_MIN", "LON_MAX", "LAT_MAX"), help="Optional lon/lat crop.")
+    parser.add_argument("--raw-grid-shape", nargs=2, type=int, metavar=("HEIGHT", "WIDTH"), help="Shape of a headerless bzip2 int16 grid.")
+    parser.add_argument(
+        "--raw-grid-bbox",
+        nargs=4,
+        type=float,
+        metavar=("LON_MIN", "LAT_MIN", "LON_MAX", "LAT_MAX"),
+        help="Geographic bounds of a headerless grid, including its edge-point coordinates.",
+    )
     parser.add_argument("--stride", type=int, default=1, help="Spatial downsampling stride for quick previews.")
     parser.add_argument("--fill-value", type=float, default=None, help="Replace missing/no-echo pixels before coloring. Default keeps them white.")
     parser.add_argument("--no-qc", action="store_true", help="Disable conservative reflectivity QC and export the raw decoded field.")
@@ -226,6 +260,7 @@ def main() -> None:
     output = Path(args.output).expanduser() if args.output is not None else None
     output_dir = Path(args.output_dir).expanduser() if args.output_dir is not None else None
     bbox = _parse_bbox(args.bbox)
+    raw_grid = _parse_raw_grid(args.raw_grid_shape, args.raw_grid_bbox)
     clutter_mask_path = Path(args.clutter_mask).expanduser() if args.clutter_mask is not None else None
     if args.china_boundary and args.boundary_geojson is not None:
         raise ValueError("--china-boundary and --boundary-geojson are mutually exclusive")
@@ -244,7 +279,7 @@ def main() -> None:
     )
 
     if input_path.is_dir():
-        records = discover_radar_files(input_path, pattern=args.pattern, years=args.years)
+        records = discover_radar_files(input_path, pattern=args.pattern, years=args.years, raw_grid=raw_grid)
         if args.limit is not None:
             records = records[: args.limit]
         make_gif = not args.png_frames and (args.gif or args.years is not None or (output is not None and output.suffix.lower() == ".gif"))
@@ -262,6 +297,7 @@ def main() -> None:
                 boundary_width=args.boundary_width,
                 duration_ms=args.gif_duration_ms,
                 loop=args.gif_loop,
+                raw_grid=raw_grid,
             )
         else:
             if output is not None:
@@ -278,6 +314,7 @@ def main() -> None:
                     boundary_geojson=boundary_geojson,
                     boundary_color=boundary_color,
                     boundary_width=args.boundary_width,
+                    raw_grid=raw_grid,
                 )
     else:
         export_one(
@@ -291,6 +328,7 @@ def main() -> None:
             boundary_geojson=boundary_geojson,
             boundary_color=boundary_color,
             boundary_width=args.boundary_width,
+            raw_grid=raw_grid,
         )
 
 

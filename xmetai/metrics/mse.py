@@ -52,9 +52,12 @@ class MSE(DatasetEvaluator):
                 if self.top_percent > 0.0:
                     self.top_rmse[self.get_top_key(name, t)] = []
 
-    def _process_output(self, output: torch.Tensor, target: torch.Tensor, weight: torch.Tensor | float, prefix: str = "") -> None:
+    def _process_output(self, output: torch.Tensor, target: torch.Tensor, weight: torch.Tensor | float, prefix: str = "", frame_start: int = 0) -> None:
         metric_prefix = f"{prefix}/" if prefix else ""
-        for i, t in enumerate(self.test_times):
+        test_times = self.test_times[frame_start : frame_start + output.shape[1]]
+        if len(test_times) != output.shape[1]:
+            raise ValueError(f"MSE got output with {output.shape[1]} frames at frame_start={frame_start}, but test_times has {len(self.test_times)} entries")
+        for i, t in enumerate(test_times):
             for j, name in enumerate(self.test_names):
                 output_j = output[:, i, j]
                 target_j = target[:, i, j]
@@ -78,6 +81,7 @@ class MSE(DatasetEvaluator):
 
     def process(self, inputs: Any, outputs: dict[str, Any]) -> None:
         target = outputs["target"].cpu()
+        frame_start = int(outputs.get("frame_start", 0))
 
         if "weight" in outputs:
             weight = outputs["weight"].cpu()
@@ -86,9 +90,9 @@ class MSE(DatasetEvaluator):
 
         if "output_by_mode" in outputs:
             for mode, output in outputs["output_by_mode"].items():
-                self._process_output(output.cpu(), target, weight, prefix=mode)
+                self._process_output(output.cpu(), target, weight, prefix=mode, frame_start=frame_start)
         else:
-            self._process_output(outputs["output"].cpu(), target, weight)
+            self._process_output(outputs["output"].cpu(), target, weight, frame_start=frame_start)
 
     def evaluate(self) -> dict[str, Any] | None:
         comm.synchronize()

@@ -13,6 +13,30 @@ from .data_util import make_seq, make_seq_inference
 __all__ = ["MultiZarrDataset"]
 
 
+def _select_bbox(ds: xr.Dataset, bbox: tuple[float, float, float, float] | None) -> xr.Dataset:
+    if bbox is None:
+        return ds
+    if len(bbox) != 4:
+        raise ValueError(f"bbox must be (lon_min, lat_min, lon_max, lat_max), got {bbox}")
+
+    lon_min, lat_min, lon_max, lat_max = [float(v) for v in bbox]
+    if lon_min > lon_max or lat_min > lat_max:
+        raise ValueError(f"Invalid bbox bounds: {bbox}")
+
+    lat_slice = slice(lat_min, lat_max) if ds.lat.values[0] <= ds.lat.values[-1] else slice(lat_max, lat_min)
+    lon_slice = slice(lon_min, lon_max) if ds.lon.values[0] <= ds.lon.values[-1] else slice(lon_max, lon_min)
+    ds = ds.sel(lat=lat_slice, lon=lon_slice)
+    if ds.sizes["lat"] == 0 or ds.sizes["lon"] == 0:
+        raise ValueError(f"bbox {bbox} does not overlap zarr grid")
+    return ds
+
+
+def _isel_time(data_array: xr.DataArray, inds: np.ndarray) -> xr.DataArray:
+    if len(inds) > 0 and np.all(np.diff(inds) == 1):
+        return data_array.isel(time=slice(int(inds[0]), int(inds[-1]) + 1))
+    return data_array.isel(time=inds)
+
+
 @DATASETS.register()
 class MultiZarrDataset(Dataset):
     def __init__(
@@ -28,6 +52,8 @@ class MultiZarrDataset(Dataset):
         years: tuple = ("19790101", "20161231"),
         in_names: list[str] = [],  # list of variable names to use, if empty, use all variables in the dataset
         lat_flip: bool = False,  # whether to flip latitude axis
+        freq_unit: str = "hours",
+        bbox: tuple[float, float, float, float] | None = None,
     ):
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Loading data from: {data_paths}")
@@ -37,37 +63,54 @@ class MultiZarrDataset(Dataset):
         self.training = training
         self.inference_only = inference_only
         self.lat_flip = lat_flip
+        self.freq_unit = freq_unit
 
         # 1. 加载并筛选时间范围
         datasets = []
-        times_list = []
+        times_list: list[pd.DatetimeIndex] = []
 
         for path in data_paths:
             ds = xr.open_zarr(path, consolidated=True)  # single dataset
             self.logger.info(f"Loaded dataset from {path}, shape: {ds.data.shape} (time, channel, lat, lon)")
             ds = ds.sel(time=slice(*years))
+            ds = _select_bbox(ds, bbox)
             datasets.append(ds)
-            times_list.append(pd.to_datetime(ds.time.values))
+            times_list.append(pd.DatetimeIndex(ds.time.values))
 
         # 2. 取时间交集
         common_times = times_list[0]
         for t in times_list[1:]:
-            common_times = np.intersect1d(common_times, t)
+            common_times = common_times.intersection(t)
 
         # 3. 只取 freq 对齐的时间点（如每6小时）
-        common_times = pd.to_datetime(common_times)
-        common_times = sorted([t for t in common_times if t.hour % freq == 0])
+        if freq_unit == "hours":
+            common_times = common_times[common_times.hour % freq == 0]
+        else:
+            freq_step = pd.Timedelta(**{freq_unit: freq})
+            if freq_step <= pd.Timedelta(0):
+                raise ValueError(f"freq must define a positive time step, got {freq_step}")
+            time_offsets = common_times - common_times[0]
+            common_times = common_times[time_offsets % freq_step == pd.Timedelta(0)]
 
         if len(common_times) == 0:
             raise ValueError("No overlapping time steps among zarr files with desired freq.")
 
-        # 4. 对所有 ds 按时间交集切片
-        datasets = [ds.sel(time=common_times) for ds in datasets]
+        # 4. 对所有 ds 按时间交集切片。常见的单 zarr 连续时间轴无需回选，避免构造超大的高级索引。
+        aligned_datasets = []
+        for ds, times in zip(datasets, times_list):
+            if common_times.equals(times):
+                aligned_datasets.append(ds)
+                continue
+            positions = times.get_indexer(common_times)
+            if np.any(positions < 0):
+                raise ValueError("Could not align zarr time coordinates to common_times.")
+            aligned_datasets.append(ds.isel(time=positions))
+        datasets = aligned_datasets
 
         # 5. 在 channel 维度上拼接
         data_arrays = [ds.data.rename(level="channel") if "level" in ds.data.dims else ds.data for ds in datasets]
-        self.ds = xr.concat(data_arrays, dim="channel")
-        self.logger.info(f"Combined dataset shape: {self.ds.shape} with coords: {self.ds.coords}")
+        self.ds = data_arrays[0] if len(data_arrays) == 1 else xr.concat(data_arrays, dim="channel")
+        self.logger.info(f"Combined dataset shape: {self.ds.shape}, sizes: {dict(self.ds.sizes)}")
 
         # 6. 构造时间索引
         self.fcst_frames += self.start_frames
@@ -75,9 +118,11 @@ class MultiZarrDataset(Dataset):
 
         # 用第一个 ds 来生成索引
         if interval < 0:
-            self.inds = make_seq_inference(common_times, self.total_frames, freq=freq)
+            self.inds = make_seq_inference(common_times, self.total_frames, freq=freq, freq_unit=freq_unit)
         else:
-            self.inds = make_seq(common_times, self.total_frames, freq=freq, interval=interval)
+            self.inds = make_seq(common_times, self.total_frames, freq=freq, interval=interval, freq_unit=freq_unit)
+        if len(self.inds) == 0:
+            raise ValueError(f"No regular zarr sequences found with total_frames={self.total_frames}, freq={freq} {freq_unit}")
 
         self.id_to_time = {i: common_times[i + self.hist_frames - 1] for i in self.inds}
 
@@ -127,8 +172,9 @@ class MultiZarrDataset(Dataset):
             rht_inds = rht_inds[self.fcst_frames - 1]
 
         inds = np.concatenate([lft_inds, rht_inds])
-        imgs = torch.from_numpy(self.ds.isel(time=inds).values)
-        imgs = torch.nan_to_num(imgs, nan=0.0, posinf=0.0, neginf=0.0)
+        imgs_np = _isel_time(self.ds, inds).values.astype(np.float32, copy=False)
+        imgs = torch.from_numpy(imgs_np)
+        imgs.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
         if self.select_vars is not None:
             imgs = imgs[:, self.select_vars, ...]
         if self.lat_flip:  # flip latitude axis
