@@ -68,6 +68,38 @@ def test_pinn_enable_and_grad_flow():
     assert inputs.grad.abs().sum() > 0
 
 
+def test_inv_normalize_preserves_gradients():
+    names = ["tp", "t2m"]
+    buffers = {
+        "mean": np.array([0.0, 1.0], dtype=np.float32).reshape(2, 1, 1),
+        "std": np.array([1.0, 2.0], dtype=np.float32).reshape(2, 1, 1),
+    }
+    model = DummyPredictor(in_names=names, device="cpu", precision="fp32", buffers=buffers, logid=[0])
+    normalized = torch.tensor([[[[[0.5]], [[1.0]]]]], requires_grad=True)
+
+    physical = model.inv_normalize(normalized)
+    physical.sum().backward()
+
+    assert normalized.grad is not None
+    expected = torch.tensor([math.exp(0.5), 2.0])
+    assert torch.allclose(normalized.grad.reshape(-1), expected)
+
+
+def test_normalize_inv_normalize_roundtrip_with_log_channel_statistics():
+    names = ["tp", "t2m"]
+    buffers = {
+        "mean": np.array([0.2, 1.0], dtype=np.float32).reshape(2, 1, 1),
+        "std": np.array([2.0, 4.0], dtype=np.float32).reshape(2, 1, 1),
+    }
+    model = DummyPredictor(in_names=names, device="cpu", precision="fp32", buffers=buffers, logid=[0])
+    physical = torch.tensor([[[[[10.0]], [[9.0]]]]])
+    expected = torch.tensor([[[[[10.0]], [[9.0]]]]])
+
+    restored = model.inv_normalize(model.normalize(physical))
+
+    assert torch.allclose(restored, expected)
+
+
 def test_pinn_disabled_no_keys():
     names = _make_channel_names()
     C = len(names)
