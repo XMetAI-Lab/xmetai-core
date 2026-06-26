@@ -18,6 +18,7 @@ from s2s_base import (  # noqa: F401
     load_from_pretrain,
     logid,
     maskid,
+    optimizer,
     out_chans,
     output_dir,
     pinn_coeffs,
