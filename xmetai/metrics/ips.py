@@ -162,9 +162,12 @@ class IntegratedPatternScore(DatasetEvaluator):
         if output.shape[2] < len(self.test_names):
             raise ValueError(f"output has {output.shape[2]} channels but test_names has {len(self.test_names)} entries")
 
-        spatial_weight = self._spatial_weight(outputs.get("weight"), output) if self.use_spatial_weight else None
-        output = output.detach()
-        target = target.detach()
+output = output.detach()
+target = target.detach()
+if output.is_cuda:
+    output = output.cpu()
+    target = target.cpu()
+spatial_weight = self._spatial_weight(outputs.get("weight"), output) if self.use_spatial_weight else None
 
         for pentad, indices in self.pentad_indices.items():
             if len(indices) == 0:
