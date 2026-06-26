@@ -251,6 +251,10 @@ def test_ema_two_rank_cpu_dtensor(tmp_path):
 @pytest.mark.gpu
 @pytest.mark.parametrize("backend", ["plain", "ddp", "fsdp1", "fsdp2"])
 def test_ema_gpu_backends(backend, tmp_path):
+    if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
+        pytest.skip("CUDA is required for GPU EMA backend tests")
+    if not dist.is_nccl_available():
+        pytest.skip("NCCL backend is required for GPU EMA backend tests")
     if dist.is_initialized():
         pytest.skip("This test manages its own single-rank process group")
 
