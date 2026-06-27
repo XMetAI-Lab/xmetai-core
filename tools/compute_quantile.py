@@ -301,8 +301,13 @@ def load_zarr_array(path: Path, var_name: str, consolidated: bool) -> np.ndarray
     ds = open_zarr_dataset(path, consolidated)
     try:
         if var_name not in ds:
-            available = list(ds.data_vars)
-            raise KeyError(f"variable '{var_name}' not found, available: {available}")
+            if "data" in ds:
+                var_name = "data"
+            elif len(ds.data_vars) == 1:
+                var_name = next(iter(ds.data_vars))
+            else:
+                available = list(ds.data_vars)
+                raise KeyError(f"variable '{var_name}' not found, available: {available}")
         return np.asarray(ds[var_name].values)
     finally:
         ds.close()
