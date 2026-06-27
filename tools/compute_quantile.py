@@ -134,9 +134,7 @@ def resolve_var_name(args: argparse.Namespace) -> str:
     """Resolve the data variable name for the selected layout."""
     if args.var:
         return args.var
-    if args.layout == "timevar":
-        return "data"
-    return "__xarray_dataarray_variable__"
+    return "data"
 
 
 def parse_dates(args: argparse.Namespace, month_days_from_time: list[str] | None = None) -> list[str]:
