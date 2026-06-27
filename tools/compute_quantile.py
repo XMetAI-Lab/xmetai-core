@@ -436,6 +436,7 @@ def process_quantile_for_date_files(
 
 def process_quantile_for_date_timevar(
     data: xr.DataArray,
+    month_day_labels: np.ndarray,
     target_month_day: str,
     output_dir: Path,
     quantiles: list[float],
@@ -445,8 +446,7 @@ def process_quantile_for_date_timevar(
     """Compute and save quantiles for one month-day group in timevar layout."""
     print(f"Processing month-day: {target_month_day}")
 
-    time_values = data.time.values
-    matched_indices = [idx for idx, value in enumerate(time_values) if time_to_month_day(value) == target_month_day]
+    matched_indices = np.flatnonzero(month_day_labels == target_month_day).tolist()
     print(f"Found {len(matched_indices)} time steps")
 
     if not matched_indices:
