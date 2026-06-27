@@ -212,8 +212,7 @@ def discover_month_days_from_time(times: np.ndarray) -> list[str]:
 def resolve_zarr_store(path: Path) -> Path:
     """Resolve a single Zarr store path."""
     if not path.exists():
-        print(f"Error: input path '{path}' does not exist")
-        sys.exit(1)
+        raise FileNotFoundError(f"input path '{path}' does not exist")
 
     if path.name.endswith(".zarr") or (path / ".zgroup").exists() or (path / "zarr.json").exists():
         return path
@@ -223,13 +222,10 @@ def resolve_zarr_store(path: Path) -> Path:
         if len(zarr_paths) == 1:
             return zarr_paths[0]
         if len(zarr_paths) == 0:
-            print(f"Error: no .zarr store found under '{path}'")
-            sys.exit(1)
-        print(f"Error: expected one .zarr store under '{path}', found {len(zarr_paths)}")
-        sys.exit(1)
+            raise ValueError(f"no .zarr store found under '{path}'")
+        raise ValueError(f"expected one .zarr store under '{path}', found {len(zarr_paths)}")
 
-    print(f"Error: '{path}' is not a Zarr store")
-    sys.exit(1)
+    raise ValueError(f"'{path}' is not a Zarr store")
 
 
 def open_zarr_dataset(path: Path, consolidated: bool) -> xr.Dataset:
