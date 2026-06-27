@@ -66,7 +66,8 @@ class IntegratedPatternScore(DatasetEvaluator):
     def _effective_lead_unit(self) -> str:
         if self.lead_unit != "auto":
             return self.lead_unit
-        if max(self.test_times) > self.end_pentad * self.pentad_size and all(lead % 24 == 0 for lead in self.test_times):
+        # Heuristic: hour-based leads are typically expressed in hours and often day-aligned (multiples of 24).
+        if all(lead % 24 == 0 for lead in self.test_times) and max(self.test_times) >= 24:
             return "hour"
         return "day" if max(self.test_times) > self.end_pentad else "pentad"
 
