@@ -321,7 +321,7 @@ def merge_samples(data: np.ndarray, merge_dims: int) -> np.ndarray:
 def compute_quantile_on_gpu(data_chunk: torch.Tensor, quantiles: list[float], device_id: int) -> torch.Tensor:
     """Compute quantiles for one chunk on a single GPU."""
     torch.cuda.set_device(device_id)
-    data_chunk = data_chunk.to(device_id)
+    data_chunk = data_chunk.cuda(device_id, non_blocking=True)
     results = [torch.quantile(data_chunk, quantile, dim=0) for quantile in quantiles]
     return torch.stack(results, dim=0).cpu()
 
