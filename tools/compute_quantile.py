@@ -370,6 +370,7 @@ def parallel_quantile_computation(
 
     return torch.cat(results, dim=split_dim)
 
+
 def collect_arrays(
     zarr_paths: list[Path],
     var_name: str,
