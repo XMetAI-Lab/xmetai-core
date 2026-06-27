@@ -524,10 +524,14 @@ def main() -> None:
         if time_range is not None:
             print(f"Applied time range: {time_range[0]} ~ {time_range[1]}")
 
-        month_days = parse_dates(args, discover_month_days_from_time(data.time.values))
+        time_values = data.time.values
+        month_day_labels = np.array([time_to_month_day(value) for value in time_values])
+
+        month_days = parse_dates(args, sorted(set(month_day_labels.tolist())))
         for target_month_day in month_days:
             process_quantile_for_date_timevar(
                 data=data,
+                month_day_labels=month_day_labels,
                 target_month_day=target_month_day,
                 output_dir=output_dir,
                 quantiles=quantiles,
