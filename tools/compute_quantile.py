@@ -336,29 +336,36 @@ def parallel_quantile_computation(
     if data.ndim < 2:
         raise ValueError(f"Expected at least 2 dimensions (sample, ..., ...), got shape {tuple(data.shape)}")
 
-    if num_gpus <= 1 or data.shape[split_dim] <= 1:
+    if not (0 <= split_dim < data.ndim):
+        raise ValueError(f"split_dim must be in [0, {data.ndim - 1}], got {split_dim}")
+    if split_dim == 0:
+        raise ValueError("split_dim must not be 0 (sample axis); quantiles are computed along dim=0")
+
+    split_size = int(data.shape[split_dim])
+    effective_gpus = min(max(int(num_gpus), 1), split_size)
+    if effective_gpus <= 1 or split_size <= 1:
         results = [torch.quantile(data, quantile, dim=0) for quantile in quantiles]
         return torch.stack(results, dim=0)
 
-    split_size = data.shape[split_dim]
-    chunk_size = split_size // num_gpus
+    chunk_size = (split_size + effective_gpus - 1) // effective_gpus
     chunks: list[tuple[int, torch.Tensor]] = []
-    for device_id in range(num_gpus):
+    for device_id in range(effective_gpus):
         start_idx = device_id * chunk_size
-        end_idx = split_size if device_id == num_gpus - 1 else (device_id + 1) * chunk_size
+        end_idx = min(start_idx + chunk_size, split_size)
+        if start_idx >= end_idx:
+            continue
         slices = [slice(None)] * data.ndim
         slices[split_dim] = slice(start_idx, end_idx)
         chunks.append((device_id, data[tuple(slices)]))
 
     ctx = mp.get_context("spawn")
-    with ctx.Pool(processes=num_gpus) as pool:
+    with ctx.Pool(processes=effective_gpus) as pool:
         results = pool.starmap(
             compute_quantile_on_gpu,
             [(chunk, quantiles, device_id) for device_id, chunk in chunks],
         )
 
     return torch.cat(results, dim=split_dim)
-
 
 def collect_arrays(
     zarr_paths: list[Path],
