@@ -9,6 +9,8 @@ from einops import rearrange
 from xmetai.layers import (
     HAS_MAMBA,
     CubeEmbed,
+    GatedDeltaNet2HybridLayer,
+    GatedDeltaNet2Layer,
     LayerNorm,
     MCDropout,
     StepEncoding,
@@ -162,10 +164,41 @@ class UTransformer(nn.Module):
         layers = []
         for i in range(self.num_layers):
             current_layer_type = self.layer_types[i]
-            if current_layer_type.lower().find("mamba") > -1:
+            layer_lower = current_layer_type.lower()
+            if layer_lower.startswith("gdn2"):
+                if layer_lower not in {"gdn2", "gdn2_embed", "gdn2_swin", "gdn2_swin_embed"}:
+                    raise ValueError(
+                        f"Unsupported GatedDeltaNet-2 layer_type={current_layer_type!r}; " "use 'gdn2', 'gdn2_embed', 'gdn2_swin', or 'gdn2_swin_embed'."
+                    )
+                with_embedding = "embed" in layer_lower
+                if "swin" in layer_lower:
+                    self.logger.info(f"Using hybrid GatedDeltaNet-2 + Swin blocks with embedding={with_embedding}.")
+                    layer = GatedDeltaNet2HybridLayer(
+                        dim=embed_dim,
+                        depth=depths[i],
+                        num_heads=num_heads,
+                        input_size=tuple(input_size),
+                        window_size=window_size,
+                        mlp_ratio=mlp_ratio,
+                        drop=drop_mcmc,
+                        with_embedding=with_embedding,
+                        attn_type=attn_type,
+                        mask_type=mask_type,
+                        ffn_type=ffn_type,
+                    )
+                else:
+                    self.logger.info(f"Using GatedDeltaNet-2 style transformer blocks with embedding={with_embedding}.")
+                    layer = GatedDeltaNet2Layer(
+                        dim=embed_dim,
+                        depth=depths[i],
+                        num_heads=num_heads,
+                        mlp_ratio=mlp_ratio,
+                        drop=drop_mcmc,
+                        with_embedding=with_embedding,
+                    )
+            elif layer_lower.find("mamba") > -1:
                 if not HAS_MAMBA:
                     raise ImportError("MambaVisionLayer requires mamba-ssm. " "Install it with: pip install '.[gpu]' or pip install mamba-ssm")
-                layer_lower = current_layer_type.lower()
                 with_embedding = "embed" in layer_lower
                 mamba_version = "mamba3" if "mamba3" in layer_lower else ("mamba2" if "mamba2" in layer_lower else "mamba")
                 mamba_type = f"{mamba_version}_met" if "_met" in layer_lower else mamba_version
@@ -186,7 +219,7 @@ class UTransformer(nn.Module):
                     window_size=((window_size, window_size) if isinstance(window_size, int) else window_size),
                     input_size=(tuple(input_size) if isinstance(input_size, (list, tuple)) else input_size),
                 )
-            elif current_layer_type.lower().find("deltanet") > -1:
+            elif layer_lower.find("deltanet") > -1:
                 self.logger.info("Using DeltaNet style transformer blocks.")
                 layer = DeltaNetLayer(
                     mode="chunk",

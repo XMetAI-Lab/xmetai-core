@@ -10,6 +10,7 @@ from .drop import DropPath, MCDropout
 from .earth_conv import EarthConv2d, EarthConvTranspose2d
 from .embed import CubeEmbed, TimestepEmbed
 from .encoding import StepEncoding
+from .gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer, GatedDeltaNet2Mixer
 from .graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
 from .helpers import kaming_init, to_1tuple
 from .lora import apply_lora_to_model, merge_lora_weights, set_lora_step
@@ -35,6 +36,10 @@ __all__ = [
     "DropPath",
     "EarthConv2d",
     "EarthConvTranspose2d",
+    "GatedDeltaNet2Block",
+    "GatedDeltaNet2HybridLayer",
+    "GatedDeltaNet2Layer",
+    "GatedDeltaNet2Mixer",
     "GraphCastDecoder",
     "GraphCastEncoder",
     "GraphCastLayer",
