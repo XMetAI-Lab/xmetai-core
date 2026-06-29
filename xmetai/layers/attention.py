@@ -219,7 +219,7 @@ class DifferentialAttention(nn.Module):
         # Merge the two value groups into 2 * head_dim, then move heads forward.
         v = v.reshape(B, N, self.num_heads, 2 * self.head_dim).permute(0, 2, 1, 3)
 
-        lambda_full = self._lambda(v.dtype)
+        lambda_full = self._lambda(v.dtype).view(1, self.num_heads, 1, 1)
 
         if self.fused_attn:
             dropout_p = self.attn_drop.p if self.training else 0.0
