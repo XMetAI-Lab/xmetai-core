@@ -2,6 +2,7 @@ import torch
 
 from xmetai.config import LazyCall as L
 from xmetai.core import get_default_optimizer_params, get_muon_params_group
+from xmetai.core.lion import Lion as LionOptimizer
 from xmetai.core.muon import MuonWithAuxAdam
 
 SGD = L(torch.optim.SGD)(
@@ -52,4 +53,17 @@ Muon = L(MuonWithAuxAdam)(
         base_lr="${..lr}",
     ),
     lr=5e-4,
+)
+
+Lion = L(LionOptimizer)(
+    params=L(get_default_optimizer_params)(
+        # params.model is meant to be set to the model object, before instantiating
+        # the optimizer.
+        base_lr="${..lr}",
+        weight_decay="${..weight_decay}",
+        weight_decay_norm=0.0,
+    ),
+    lr=1e-4,
+    betas=(0.9, 0.99),
+    weight_decay=1.0,
 )
