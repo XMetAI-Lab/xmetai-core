@@ -179,10 +179,11 @@ class DifferentialAttention(nn.Module):
         self.fused_attn = True
 
         self.lambda_init = self.lambda_init_fn(depth) if lambda_init is None else lambda_init
-        self.lambda_q1 = nn.Parameter(torch.empty(self.head_dim).normal_(mean=0.0, std=0.1))
-        self.lambda_k1 = nn.Parameter(torch.empty(self.head_dim).normal_(mean=0.0, std=0.1))
-        self.lambda_q2 = nn.Parameter(torch.empty(self.head_dim).normal_(mean=0.0, std=0.1))
-        self.lambda_k2 = nn.Parameter(torch.empty(self.head_dim).normal_(mean=0.0, std=0.1))
+        # Per-head re-parameterization vectors (num_heads, head_dim) -> lambda per head.
+        self.lambda_q1 = nn.Parameter(torch.empty(self.num_heads, self.head_dim).normal_(mean=0.0, std=0.1))
+        self.lambda_k1 = nn.Parameter(torch.empty(self.num_heads, self.head_dim).normal_(mean=0.0, std=0.1))
+        self.lambda_q2 = nn.Parameter(torch.empty(self.num_heads, self.head_dim).normal_(mean=0.0, std=0.1))
+        self.lambda_k2 = nn.Parameter(torch.empty(self.num_heads, self.head_dim).normal_(mean=0.0, std=0.1))
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
@@ -198,8 +199,8 @@ class DifferentialAttention(nn.Module):
         return 0.8 - 0.6 * np.exp(-0.3 * depth)
 
     def _lambda(self, dtype):
-        lambda_1 = torch.exp(torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float())
-        lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float())
+        lambda_1 = torch.exp(torch.sum((self.lambda_q1 * self.lambda_k1).float(), dim=-1))
+        lambda_2 = torch.exp(torch.sum((self.lambda_q2 * self.lambda_k2).float(), dim=-1))
         return (lambda_1 - lambda_2 + self.lambda_init).to(dtype)
 
     def forward(self, x, mask=None):
