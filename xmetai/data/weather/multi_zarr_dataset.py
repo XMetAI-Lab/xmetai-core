@@ -1,4 +1,5 @@
 import logging
+import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
@@ -31,12 +32,6 @@ def _select_bbox(ds: xr.Dataset, bbox: tuple[float, float, float, float] | None)
     return ds
 
 
-def _isel_time(data_array: xr.DataArray, inds: np.ndarray) -> xr.DataArray:
-    if len(inds) > 0 and np.all(np.diff(inds) == 1):
-        return data_array.isel(time=slice(int(inds[0]), int(inds[-1]) + 1))
-    return data_array.isel(time=inds)
-
-
 @DATASETS.register()
 class MultiZarrDataset(Dataset):
     def __init__(
@@ -60,6 +55,8 @@ class MultiZarrDataset(Dataset):
         self.start_frames = start_frames
         self.hist_frames = hist_frames
         self.fcst_frames = np.array(fcst_frames)
+        self.max_train_fcst_frames = int(np.max(np.atleast_1d(self.fcst_frames)))
+        self.runtime_train_fcst_frames = mp.Value("i", self.max_train_fcst_frames) if training and not inference_only else None
         self.training = training
         self.inference_only = inference_only
         self.lat_flip = lat_flip
@@ -156,7 +153,11 @@ class MultiZarrDataset(Dataset):
 
     def prepare_data(self, i):
         idx = self.inds[i]
-        inds = np.arange(idx, idx + self.total_frames)
+        total_frames = self.total_frames
+        if self.training:
+            train_fcst_frames = self.max_train_fcst_frames if self.runtime_train_fcst_frames is None else int(self.runtime_train_fcst_frames.value)
+            total_frames = self.hist_frames + self.start_frames + train_fcst_frames
+        inds = np.arange(idx, idx + total_frames)
         init_time = pd.to_datetime(self.id_to_time[idx])
         # convert time to tensor
         time_tensor = torch.tensor(init_time.value)
@@ -172,7 +173,7 @@ class MultiZarrDataset(Dataset):
             rht_inds = rht_inds[self.fcst_frames - 1]
 
         inds = np.concatenate([lft_inds, rht_inds])
-        imgs_np = _isel_time(self.ds, inds).values.astype(np.float32, copy=False)
+        imgs_np = self.ds.isel(time=inds).values.astype(np.float32, copy=False)
         imgs = torch.from_numpy(imgs_np)
         imgs.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
         if self.select_vars is not None:

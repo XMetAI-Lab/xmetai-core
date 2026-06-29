@@ -1,19 +1,39 @@
 """Unit tests for vision layers: SwinLayer, MambaVisionLayer, Block."""
 
+import sys
+import types
 from importlib.util import find_spec
 
 import pytest
 import torch
 import torch.nn as nn
 
+from xmetai.layers.gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer, GatedDeltaNet2Mixer
 from xmetai.layers.rotary_attention import precompute_freqs_cis
-from xmetai.layers.swin import SwinLayer
+from xmetai.layers.swin import SwinBlock, SwinLayer
 
 HAS_MAMBA = find_spec("mamba_ssm") is not None
 if HAS_MAMBA:
     from xmetai.layers.mamba_vision import MambaVisionLayer
 else:
     MambaVisionLayer = None
+
+
+class FakeGatedDeltaNet2(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.kwargs = kwargs
+
+    def forward(self, hidden_states, **kwargs):
+        return hidden_states, None, None
+
+
+def install_fake_fla_gdn2(monkeypatch):
+    fla_module = types.ModuleType("fla")
+    layers_module = types.ModuleType("fla.layers")
+    layers_module.GatedDeltaNet2 = FakeGatedDeltaNet2
+    monkeypatch.setitem(sys.modules, "fla", fla_module)
+    monkeypatch.setitem(sys.modules, "fla.layers", layers_module)
 
 
 class TestSwinLayer:
@@ -82,6 +102,67 @@ class TestSwinLayer:
             )
             output = layer(x)
             assert output.shape == x.shape
+
+
+class TestGatedDeltaNet2Layer:
+    def test_gdn2_mixer_forward_shape(self, torch_seed, monkeypatch):
+        install_fake_fla_gdn2(monkeypatch)
+        x = torch.randn(2, 16, 32)
+        mixer = GatedDeltaNet2Mixer(hidden_size=32, num_heads=4, use_short_conv=True, conv_size=3)
+
+        output = mixer(x)
+
+        assert output.shape == x.shape
+        assert mixer.mixer.kwargs["hidden_size"] == 32
+        assert mixer.mixer.kwargs["num_heads"] == 4
+
+    def test_gdn2_layer_forward_with_embedding_and_grad(self, torch_seed, monkeypatch):
+        install_fake_fla_gdn2(monkeypatch)
+        x = torch.randn(2, 16, 32, requires_grad=True)
+        time_embedding = torch.randn(2, 32)
+        layer = GatedDeltaNet2Layer(
+            dim=32,
+            depth=2,
+            num_heads=4,
+            mlp_ratio=2,
+            with_embedding=True,
+            use_short_conv=True,
+            conv_size=3,
+        )
+
+        output = layer(x, time_embedding=time_embedding)
+        loss = output.sum()
+        loss.backward()
+
+        assert output.shape == x.shape
+        assert x.grad is not None
+        assert x.grad.abs().sum() > 0
+
+    def test_gdn2_invalid_head_config_fails_fast(self):
+        with pytest.raises(ValueError, match="must be divisible"):
+            GatedDeltaNet2Mixer(hidden_size=30, num_heads=8)
+
+    def test_gdn2_swin_hybrid_alternates_blocks(self, torch_seed, monkeypatch):
+        install_fake_fla_gdn2(monkeypatch)
+        x = torch.randn(2, 16, 32, requires_grad=True)
+        time_embedding = torch.randn(2, 32)
+        layer = GatedDeltaNet2HybridLayer(
+            dim=32,
+            depth=4,
+            num_heads=4,
+            input_size=(4, 4),
+            window_size=2,
+            mlp_ratio=2,
+            with_embedding=True,
+        )
+
+        output = layer(x, time_embedding=time_embedding)
+        output.sum().backward()
+
+        assert isinstance(layer.blocks[0], GatedDeltaNet2Block)
+        assert isinstance(layer.blocks[1], SwinBlock)
+        assert output.shape == x.shape
+        assert x.grad is not None
 
 
 class TestBlock:
