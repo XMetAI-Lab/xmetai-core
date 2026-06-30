@@ -2,6 +2,58 @@
 """
 Convert ensemble NetCDF forecasts into daily Zarr stores.
 
+Operational context
+-------------------
+This module is used in the operational workflow of the FengShun v1.5 model at
+the National Climate Center (NCC). It ingests streaming ensemble NetCDF outputs,
+consolidates them into daily Zarr stores, and supports long-running production
+runs with resume and optional source cleanup.
+
+Workflow diagram
+----------------
+
+    Ensemble NetCDF tree                 This daemon                      Output
+    under DATA_ROOT/YYYYMMDD/*.nc
+              |
+              v
+    +----------------------+
+    | Producer: scan tree|
+    | group by init date   |
+    +----------+-----------+
+               |
+               v
+    +----------------------+
+    | Stability check:     |
+    | expected member count|
+    | held for N seconds   |
+    +----------+-----------+
+               |
+               v
+    +----------------------+
+    | Consumer: process    |
+    | pool merges members  |
+    | and lead times       |
+    +----------+-----------+
+               |
+               v
+    +----------------------+       +----------------------+
+    | Atomic write         | ----> | OUTPUT_DIR/          |
+    | YYYYMMDD.zarr.tmp    |       | YYYYMMDD.zarr        |
+    +----------------------+       +----------+-----------+
+                                              |
+                                              v
+                                   +----------------------+
+                                   | Downstream FengShun  |
+                                   | v1.5 training / infer|
+                                   +----------------------+
+               ^
+               |
+    +----------+-----------+
+    | Monitor: status log  |
+    | resume existing zarr |
+    | optional source purge|
+    +----------------------+
+
 This tool watches a directory tree of NetCDF files, groups them by initialization
 date, and merges ensemble members and lead times into one Zarr dataset per date.
 It is designed for long-running ingestion pipelines with resume support and
