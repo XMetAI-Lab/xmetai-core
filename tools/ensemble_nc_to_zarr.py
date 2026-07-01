@@ -224,9 +224,7 @@ def validate_zarr_file(zarr_path: Path) -> bool:
                 return False
             if len(dataset.data_vars) == 0:
                 return False
-            return all(
-                not dataset[var_name].isnull().all().compute().item() for var_name in dataset.data_vars
-            )
+            return all(not dataset[var_name].isnull().all().compute().item() for var_name in dataset.data_vars)
     except Exception:
         return False
 
@@ -440,9 +438,7 @@ class EnsembleProcessor:
                     if self.state.is_known(date_str):
                         continue
 
-                    lead_counts = Counter(
-                        Path(path).stem for path in files if Path(path).stem.isdigit()
-                    )
+                    lead_counts = Counter(Path(path).stem for path in files if Path(path).stem.isdigit())
                     member_count = min(lead_counts.values(), default=0)
                     if member_count >= self.config.expected_members:
                         first_seen = self._pending_stable.get(date_str)
