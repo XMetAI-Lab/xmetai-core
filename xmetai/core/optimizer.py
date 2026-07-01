@@ -169,6 +169,15 @@ def build_optimizer(cfg: CfgNode, model: torch.nn.Module) -> torch.optim.Optimiz
             betas=cfg.SOLVER.BETAS,
             weight_decay=cfg.SOLVER.WEIGHT_DECAY,
         )
+    elif optimizer_type == "LION":
+        from xmetai.core.lion import Lion
+
+        return maybe_add_gradient_clipping(cfg, Lion)(  # type: ignore[call-arg]
+            params,
+            lr=cfg.SOLVER.BASE_LR,
+            betas=cfg.SOLVER.BETAS,
+            weight_decay=cfg.SOLVER.WEIGHT_DECAY,
+        )
     else:
         raise NotImplementedError(f"no optimizer type {optimizer_type}")
 
