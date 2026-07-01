@@ -440,7 +440,10 @@ class EnsembleProcessor:
                     if self.state.is_known(date_str):
                         continue
 
-                    member_count = len(files)
+                    lead_counts = Counter(
+                        Path(path).stem for path in files if Path(path).stem.isdigit()
+                    )
+                    member_count = min(lead_counts.values(), default=0)
                     if member_count >= self.config.expected_members:
                         first_seen = self._pending_stable.get(date_str)
                         if first_seen is None:
