@@ -204,17 +204,12 @@ def scan_date_groups(data_root: Path, min_members: int) -> dict[str, list[str]]:
         logger.warning("Data root does not exist: %s", data_root)
         return {}
 
-    for file_path in sorted(data_root.rglob("*.nc")):
-        try:
-            relative = file_path.relative_to(data_root)
-            date_str = relative.parts[0]
-            if len(date_str) == 8 and date_str.isdigit():
-                groups[date_str].append(str(file_path))
-        except ValueError:
-            logger.debug("Skipping file outside data root: %s", file_path)
-        except Exception as exc:
-            logger.warning("Failed to classify %s: %s", file_path, exc)
-
+    for date_dir in sorted(data_root.iterdir()):
+        if not date_dir.is_dir():
+            continue
+        date_str = date_dir.name
+        if len(date_str) == 8 and date_str.isdigit():
+            groups[date_str].extend(str(file_path) for file_path in sorted(date_dir.rglob("*.nc")))
     filtered = {date_str: files for date_str, files in groups.items() if len(files) >= min_members}
     logger.debug("Found %d date groups (%d before min-members filter)", len(filtered), len(groups))
     return filtered
