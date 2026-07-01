@@ -229,7 +229,9 @@ def validate_zarr_file(zarr_path: Path) -> bool:
                 return False
             if len(dataset.data_vars) == 0:
                 return False
-            return all(not dataset[var_name].isnull().all() for var_name in dataset.data_vars)
+            return all(
+                not dataset[var_name].isnull().all().compute().item() for var_name in dataset.data_vars
+            )
     except Exception:
         return False
 
