@@ -471,7 +471,9 @@ class EnsembleProcessor:
         futures: dict[Future[tuple[str, str | None]], str] = {}
         max_pending = max_workers * 2
 
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        import multiprocessing as mp
+
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=mp.get_context("spawn")) as executor:
             while not self.stop_event.is_set():
                 while len(futures) < max_pending:
                     try:
