@@ -30,6 +30,7 @@ train = dict(
     eval_period=4000,
     val_metric="RMSE/z500",
     log_period=20,
+    memory_trace=False,
     device_type="cuda",
     use_ddp=True,  # Use DDP or not, default is True (use DDP)
     use_fsdp=False,  # Use FSDP or not, default is False (use DDP)
