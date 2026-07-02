@@ -212,6 +212,7 @@ def do_train(args, cfg):
             hooks.EvalHook(cfg.train.eval_period, lambda: do_test(cfg, model)),
             hooks.GradientClipHook(),
             hooks.BestCheckpointer(eval_period=cfg.train.eval_period, checkpointer=checkpointer, val_metric=cfg.train.val_metric, mode="min"),
+            (hooks.CPUMemoryStats(period=cfg.train.log_period) if cfg.train.memory_trace and comm.is_main_process() else None),
             (hooks.PeriodicWriter(default_writers(cfg.train.output_dir, cfg.train.max_iter), period=cfg.train.log_period) if comm.is_main_process() else None),
             (hooks.TorchMemoryStats(cfg.train.log_period, 20) if comm.is_main_process() else None),
             # hooks.TorchProfiler(lambda trainer: 10 < trainer.iter < 20, cfg.train.output_dir, save_tensorboard=False),
