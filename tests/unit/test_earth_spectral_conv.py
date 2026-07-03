@@ -3,7 +3,9 @@
 import pytest
 import torch
 
-from xmetai.layers.earth_spectral_conv import EarthSpectralConv2d
+pytest.importorskip("torch_harmonics")
+
+from xmetai.layers.earth_spectral_conv import EarthSpectralConv2d  # noqa: E402
 
 
 class TestEarthSpectralConv2d:

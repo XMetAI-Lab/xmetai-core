@@ -43,7 +43,7 @@ dependencies = [
   "onnx>=1.14.0",
   "onnxruntime>=1.15.0",
   "onnxruntime-extensions>=0.7.0",
-  "torch-harmonics>=0.8.0",
+  "torch-harmonics==0.8.0",
 ]
 
 [project.optional-dependencies]
@@ -71,6 +71,7 @@ dev = [
   "isort>=5.12",
   "pre-commit>=3.0",
   "build>=0.10",
+  "torch-harmonics==0.8.0",
 ]
 all = [
   "mamba-ssm>=2.2.0",

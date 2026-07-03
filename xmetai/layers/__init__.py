@@ -8,7 +8,6 @@ from .afnonet_blocks import PatchEmbed as AfnoPatchEmbed
 from .darknet_unet import DarknetConvUNet2D
 from .drop import DropPath, MCDropout
 from .earth_conv import EarthConv2d, EarthConvTranspose2d
-from .earth_spectral_conv import EarthSpectralConv2d
 from .embed import CubeEmbed, TimestepEmbed
 from .encoding import StepEncoding
 from .gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer, GatedDeltaNet2Mixer
@@ -21,11 +20,18 @@ from .rotary_attention import precompute_freqs_cis
 from .swin import SwinLayer
 
 HAS_MAMBA = find_spec("mamba_ssm") is not None
+HAS_TORCH_HARMONICS = find_spec("torch_harmonics") is not None
 
 MambaVisionLayer: Any = None
 if HAS_MAMBA:
     _mamba_vision = import_module(".mamba_vision", package=__name__)
     MambaVisionLayer = _mamba_vision.MambaVisionLayer
+
+EarthSpectralConv2d: Any = None
+if HAS_TORCH_HARMONICS:
+    from .earth_spectral_conv import EarthSpectralConv2d as _EarthSpectralConv2d
+
+    EarthSpectralConv2d = _EarthSpectralConv2d
 
 __all__ = [
     "AFNOBlock",
@@ -46,6 +52,7 @@ __all__ = [
     "GraphCastEncoder",
     "GraphCastLayer",
     "HAS_MAMBA",
+    "HAS_TORCH_HARMONICS",
     "LayerNorm",
     "MCDropout",
     "MambaVisionLayer",
@@ -65,3 +72,5 @@ __all__ = [
 del import_module, find_spec
 if HAS_MAMBA:
     del _mamba_vision
+if HAS_TORCH_HARMONICS:
+    del _EarthSpectralConv2d

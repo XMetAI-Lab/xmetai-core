@@ -12,7 +12,11 @@ from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from torch_harmonics import InverseRealSHT, RealSHT
+
+try:
+    from torch_harmonics import InverseRealSHT, RealSHT
+except ImportError as exc:
+    raise ImportError("EarthSpectralConv2d requires torch-harmonics. " "Install with: pip install 'torch-harmonics==0.8.0' --no-build-isolation") from exc
 
 __all__ = ["EarthSpectralConv2d"]
 
