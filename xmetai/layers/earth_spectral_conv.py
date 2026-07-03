@@ -51,6 +51,8 @@ class EarthSpectralConv2d(nn.Module):
     ):
         super().__init__()
 
+        if groups <= 0:
+            raise ValueError(f"groups must be a positive integer, got {groups}")
         if in_channels % groups != 0:
             raise ValueError(f"in_channels ({in_channels}) must be divisible by groups ({groups})")
         if out_channels % groups != 0:
