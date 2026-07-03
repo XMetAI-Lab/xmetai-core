@@ -20,14 +20,14 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/install_torch_harmonics.sh
-          python3 -m pip install --upgrade pip
-          python3 -m pip install build
-          python3 -m pip install "torch>=2.7.0" --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install --upgrade pip
+          pip install build
+          pip install "torch>=2.7.0" --extra-index-url https://download.pytorch.org/whl/cpu
           install_torch_harmonics
-          python3 -m pip install -e .
+          pip install -e .
       - name: Build sdist & wheel
         run: |
-          python3 -m build
+          python -m build
       - name: Smoke import
         run: |
-          python3 -c "import xmetai as xm; print(getattr(xm, '__version__', 'unknown'))"
+          python -c "import xmetai as xm; print(getattr(xm, '__version__', 'unknown'))"
