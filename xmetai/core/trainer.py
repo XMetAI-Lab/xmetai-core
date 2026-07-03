@@ -77,6 +77,12 @@ class HookBase:
         """
         pass
 
+    def after_optimizer(self, data):
+        """
+        Called after the optimizer step while the current batch is still alive.
+        """
+        pass
+
     def after_step(self):
         """
         Called after each iteration.
@@ -183,6 +189,10 @@ class TrainerBase:
     def after_backward(self):
         for h in self._hooks:
             h.after_backward()
+
+    def after_optimizer(self, data):
+        for h in self._hooks:
+            h.after_optimizer(data)
 
     def after_step(self):
         for h in self._hooks:
@@ -352,6 +362,7 @@ class SimpleTrainer(TrainerBase):
         suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
         """
         self.optimizer.step()
+        self.after_optimizer(data)
 
     @property
     def _data_loader_iter(self):
@@ -482,6 +493,13 @@ class ExpandTrainer(SimpleTrainer):
     def run_step(self):
         assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
         start = time.perf_counter()
+        current_step = self.iter // self.teacher_forcing["teach_iters"] + self.teacher_forcing["teach_start"]
+        future_step = max(1, min(current_step, self.teacher_forcing.get("teach_steps", current_step)))
+        # Must update before fetching so DataLoader workers read only this horizon.
+        runtime_train_fcst_frames = getattr(getattr(self.data_loader, "dataset", None), "runtime_train_fcst_frames", None)
+        if runtime_train_fcst_frames is not None:
+            with runtime_train_fcst_frames.get_lock():
+                runtime_train_fcst_frames.value = future_step
         if self.ens_train:
             # Broadcast same data batch (dict of tensors) from rank 0 to all ranks
             if get_rank() == 0:
@@ -496,7 +514,11 @@ class ExpandTrainer(SimpleTrainer):
         else:
             data = next(self._data_loader_iter)
         # expand the data to the next step, we set future_frames for data here.
-        self.expand_data(data)
+        future_step = max(1, min(future_step, data["targets"].shape[1]))
+        if self.future_step != future_step:
+            self.logger.info(f"Expanding data to future step {future_step} from current step {self.future_step}")
+            self.future_step = future_step
+        data["future_frames"] = future_step
         data_time = time.perf_counter() - start
 
         if self.zero_grad_before_forward:
@@ -543,15 +565,4 @@ class ExpandTrainer(SimpleTrainer):
         suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
         """
         self.optimizer.step()
-
-    def expand_data(self, data):
-        assert "targets" in data, "The data must contain the targets"
-        current_step = self.iter // self.teacher_forcing["teach_iters"]
-        current_step = current_step + self.teacher_forcing["teach_start"]
-        future_step = max(1, min(current_step, data["targets"].shape[1]))
-        if self.future_step != future_step:
-            self.logger.info(f"Expanding data to future step {future_step} from current step {self.future_step}")
-            self.future_step = future_step
-
-        data["future_frames"] = future_step
-        pass
+        self.after_optimizer(data)
