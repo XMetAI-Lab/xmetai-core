@@ -37,9 +37,11 @@ jobs:
           cache: 'pip'
       - name: Install dependencies (Torch CPU + dev extras)
         run: |
+          set -euo pipefail
+          source scripts/install_torch_harmonics.sh
           python -m pip install --upgrade pip
           pip install "torch>=2.7.0" --extra-index-url https://download.pytorch.org/whl/cpu
-          bash scripts/install_torch_harmonics.sh
+          install_torch_harmonics
           pip install -e '.[dev]'
       - name: Run tests
         run: |
@@ -53,9 +55,11 @@ jobs:
           fetch-depth: 0
       - name: Install dependencies
         run: |
+          set -euo pipefail
+          source scripts/install_torch_harmonics.sh
           python -m pip install --upgrade pip
           pip install "torch>=2.7.0"
-          bash scripts/install_torch_harmonics.sh
+          install_torch_harmonics
           pip install -e '.[dev]'
       - name: Run tests
         run: |

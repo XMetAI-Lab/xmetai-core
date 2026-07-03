@@ -1,9 +1,24 @@
 #!/usr/bin/env bash
+# Disable torch-harmonics CUDA extension builds (EarthSpectralConv2d only needs SHT).
+# Usage:
+#   source scripts/install_torch_harmonics.sh
+#   install_torch_harmonics
 set -euo pipefail
 
-# EarthSpectralConv2d only needs RealSHT/InverseRealSHT (pure PyTorch).
-# Avoid compiling DISCO CUDA extensions when CUDA headers/toolkit are incomplete.
 export FORCE_CUDA_EXTENSION=0
-unset CUDA_HOME || true
+export CUDA_VISIBLE_DEVICES=""
+unset CUDA_HOME CUDA_PATH || true
 
-python -m pip install "torch-harmonics==0.8.0" --no-build-isolation --no-cache-dir
+if command -v nvcc >/dev/null 2>&1; then
+  _nvcc_dir="$(dirname "$(command -v nvcc)")"
+  PATH="$(echo "$PATH" | tr ':' '\n' | grep -Fv "$_nvcc_dir" | paste -sd: -)"
+  export PATH
+fi
+
+install_torch_harmonics() {
+  python -m pip install "torch-harmonics==0.8.0" --no-build-isolation --no-cache-dir
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  install_torch_harmonics
+fi
