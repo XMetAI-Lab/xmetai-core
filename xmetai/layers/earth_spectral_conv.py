@@ -92,7 +92,7 @@ class EarthSpectralConv2d(nn.Module):
                 self.modes_lon,
                 self.modes_lon,
             )
-            self.contract_func = "bgixy,gioxyn->bgoxyn"
+            self.contract_func = "bgixy,gioxyn->bgoxn"
         elif operator_type == "driscoll-healy":
             weight_shape = (groups, in_channels // groups, out_channels // groups, self.modes_lat)
             self.contract_func = "bgixy,giox->bgoxy"
