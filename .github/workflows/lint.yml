@@ -45,7 +45,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "torch>=2.7.0" --extra-index-url https://download.pytorch.org/whl/cpu
-          pip install "torch-harmonics==0.8.0" --no-build-isolation --no-cache-dir
+          bash scripts/install_torch_harmonics.sh
           pip install pre-commit
           pip install -e '.[dev]'
       - name: Run pre-commit (Black + Ruff)
