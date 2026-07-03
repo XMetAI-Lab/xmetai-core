@@ -60,6 +60,15 @@ class TestEarthSpectralConv2d:
 
         assert output.shape == (1, 4, nlat, nlon)
 
+    def test_block_diagonal_operator(self, torch_seed):
+        nlat, nlon = 16, 32
+        layer = EarthSpectralConv2d(4, 4, img_size=(nlat, nlon), operator_type="block-diagonal")
+        x = torch.randn(1, 4, nlat, nlon)
+
+        output = layer(x)
+
+        assert output.shape == (1, 4, nlat, nlon)
+
     def test_bias(self, torch_seed):
         nlat, nlon = 16, 32
         layer = EarthSpectralConv2d(4, 4, img_size=(nlat, nlon), bias=True)
