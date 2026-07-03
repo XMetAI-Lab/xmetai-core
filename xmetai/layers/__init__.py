@@ -8,6 +8,7 @@ from .afnonet_blocks import PatchEmbed as AfnoPatchEmbed
 from .darknet_unet import DarknetConvUNet2D
 from .drop import DropPath, MCDropout
 from .earth_conv import EarthConv2d, EarthConvTranspose2d
+from .earth_spectral_conv import EarthSpectralConv2d
 from .embed import CubeEmbed, TimestepEmbed
 from .encoding import StepEncoding
 from .graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
@@ -35,6 +36,7 @@ __all__ = [
     "DropPath",
     "EarthConv2d",
     "EarthConvTranspose2d",
+    "EarthSpectralConv2d",
     "GraphCastDecoder",
     "GraphCastEncoder",
     "GraphCastLayer",
