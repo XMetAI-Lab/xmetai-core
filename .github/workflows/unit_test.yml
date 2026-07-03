@@ -60,6 +60,7 @@ jobs:
       - name: Install dependencies
         run: |
           set -euo pipefail
+          eval "$(conda shell.bash hook)"
           conda activate pytorch291
           source scripts/install_torch_harmonics.sh
           pip install --upgrade pip
@@ -68,5 +69,6 @@ jobs:
           pip install -e '.[dev]'
       - name: Run tests
         run: |
+          eval "$(conda shell.bash hook)"
           conda activate pytorch291
           pytest tests -m "gpu" -q --maxfail=1 --disable-warnings
