@@ -16,7 +16,7 @@ if command -v nvcc >/dev/null 2>&1; then
 fi
 
 install_torch_harmonics() {
-  python -m pip install "torch-harmonics==0.8.0" --no-build-isolation --no-cache-dir
+  python3 -m pip install "torch-harmonics==0.8.0" --no-build-isolation --no-cache-dir
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
