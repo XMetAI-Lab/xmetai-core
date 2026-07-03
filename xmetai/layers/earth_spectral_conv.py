@@ -116,7 +116,7 @@ class EarthSpectralConv2d(nn.Module):
             x = x.float()
             coeffs = self.sht(x).contiguous()
 
-        batch_size = int(torch.tensor(batch_shape).prod().item()) if batch_shape else 1
+        batch_size = math.prod(batch_shape) if batch_shape else 1
         channels = coeffs.shape[-3]
         coeffs = coeffs.reshape(batch_size, self.groups, channels // self.groups, self.modes_lat, self.modes_lon)
         out = torch.einsum(self.contract_func, coeffs, self.weight)
