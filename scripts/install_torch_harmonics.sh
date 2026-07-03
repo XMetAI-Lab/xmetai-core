@@ -5,15 +5,10 @@
 #   install_torch_harmonics
 set -euo pipefail
 
+# These env-vars tell torch-harmonics / torch.utils.cpp_extension not to compile CUDA ops.
 export FORCE_CUDA_EXTENSION=0
 export CUDA_VISIBLE_DEVICES=""
-unset CUDA_HOME CUDA_PATH || true
-
-if command -v nvcc >/dev/null 2>&1; then
-  _nvcc_dir="$(dirname "$(command -v nvcc)")"
-  PATH="$(echo "$PATH" | tr ':' '\n' | grep -Fv "$_nvcc_dir" | paste -sd: -)"
-  export PATH
-fi
+unset CUDA_HOME CUDA_PATH 2>/dev/null || true
 
 install_torch_harmonics() {
   pip install "torch-harmonics==0.8.0" --no-build-isolation --no-cache-dir
