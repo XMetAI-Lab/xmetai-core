@@ -117,6 +117,7 @@ class TrainerBase:
         self.max_iter: int
         self.storage: EventStorage
         self.logger = logging.getLogger(__name__)
+        self._early_stop_requested: bool = False
 
     def register_hooks(self, hooks: List[Optional[HookBase]]) -> None:
         """
@@ -153,6 +154,11 @@ class TrainerBase:
                     self.before_step()
                     self.run_step()
                     self.after_step()
+                    if self._early_stop_requested:
+                        self.logger.info("Early stopping requested at iteration %d.", self.iter)
+                        # Align iter so after_train hooks see a "finished" state.
+                        self.iter = self.max_iter - 1
+                        break
                 # self.iter == max_iter can be used by `after_train` to
                 # tell whether the training successfully finished or failed
                 # due to exceptions.
