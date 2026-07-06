@@ -138,7 +138,7 @@ class MultiZarrDataset(Dataset):
             if len(missing) > 0:
                 self.logger.warning(f"Variables not found in 'channel': {missing}")
             self.logger.info(f"Selected variables: {self.select_vars}, total {len(self.select_vars)} variables.")
-        if target_names:
+        if target_names is not None and len(target_names) > 0:
             self.target_select_vars = [channel_values.index(v) for v in target_names if v in channel_values]
             missing = [v for v in target_names if v not in channel_values]
             if len(missing) > 0:
