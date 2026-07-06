@@ -22,6 +22,7 @@ from torch.nn.modules.batchnorm import _BatchNorm
 from torch.nn.utils import clip_grad_norm_
 
 from xmetai.utils import EventStorage, EventWriter, PathManager, Timer, get_rank, synchronize
+from xmetai.utils.memory import bytes_to_mb, model_cpu_memory_bytes, object_cpu_memory_bytes, optimizer_cpu_memory_bytes, process_memory_bytes
 
 from .checkpoint import Checkpointer, PeriodicCheckpointer
 from .scheduler import LRMultiplier, ParamScheduler
@@ -44,6 +45,7 @@ __all__ = [
     "PreciseBN",
     "TorchProfiler",
     "TorchMemoryStats",
+    "CPUMemoryStats",
     "GradientClipHook",
 ]
 
@@ -762,6 +764,93 @@ class TorchMemoryStats(HookBase):
                     self._logger.info("\n" + mem_summary)
 
                 torch.cuda.reset_peak_memory_stats()
+
+
+class CPUMemoryStats(HookBase):
+    """
+    Periodically records current CPU memory split by data, model, optimizer, and
+    untracked RSS. This intentionally does not query CUDA memory.
+    """
+
+    def __init__(self, period=20):
+        if period <= 0:
+            raise ValueError(f"period must be positive, got {period}")
+        self._logger = logging.getLogger(__name__)
+        self._period = period
+
+    def after_optimizer(self, data):
+        if (self.trainer.iter + 1) % self._period != 0 and self.trainer.iter != self.trainer.max_iter - 1:
+            return
+
+        batch_stats = object_cpu_memory_bytes(data)
+        model_stats = model_cpu_memory_bytes(self.trainer.model)
+        optimizer_bytes = optimizer_cpu_memory_bytes(self.trainer.optimizer)
+        process_stats = process_memory_bytes(include_children=True)
+        tracked_main_bytes = batch_stats["total_cpu_bytes"] + model_stats["model_cpu_bytes"] + optimizer_bytes
+
+        process_rss_bytes = process_stats["process_rss_bytes"]
+        rss_untracked_bytes = None
+        if process_rss_bytes is not None:
+            rss_untracked_bytes = max(process_rss_bytes - tracked_main_bytes, 0)
+
+        cpu_memory_data_mb = bytes_to_mb(batch_stats["total_cpu_bytes"])
+        cpu_memory_data_tensor_mb = bytes_to_mb(batch_stats["tensor_cpu_bytes"])
+        cpu_memory_data_pinned_tensor_mb = bytes_to_mb(batch_stats["pinned_tensor_cpu_bytes"])
+        cpu_memory_data_numpy_mb = bytes_to_mb(batch_stats["numpy_bytes"])
+        cpu_memory_model_mb = bytes_to_mb(model_stats["model_cpu_bytes"])
+        cpu_memory_model_param_mb = bytes_to_mb(model_stats["model_param_cpu_bytes"])
+        cpu_memory_model_buffer_mb = bytes_to_mb(model_stats["model_buffer_cpu_bytes"])
+        cpu_memory_model_grad_mb = bytes_to_mb(model_stats["model_grad_cpu_bytes"])
+        cpu_memory_optimizer_mb = bytes_to_mb(optimizer_bytes)
+        cpu_memory_tracked_main_mb = bytes_to_mb(tracked_main_bytes)
+        cpu_memory_process_rss_mb = bytes_to_mb(process_rss_bytes) or 0.0
+        cpu_memory_process_vms_mb = bytes_to_mb(process_stats["process_vms_bytes"]) or 0.0
+        cpu_memory_child_process_rss_mb = bytes_to_mb(process_stats["child_process_rss_bytes"]) or 0.0
+        cpu_memory_total_process_rss_mb = bytes_to_mb(process_stats["total_process_rss_bytes"]) or 0.0
+        cpu_memory_untracked_or_fragmented_mb = bytes_to_mb(rss_untracked_bytes) or 0.0
+
+        self.trainer.storage.put_scalars(
+            smoothing_hint=False,
+            cpu_memory_data_mb=cpu_memory_data_mb,
+            cpu_memory_data_tensor_mb=cpu_memory_data_tensor_mb,
+            cpu_memory_data_pinned_tensor_mb=cpu_memory_data_pinned_tensor_mb,
+            cpu_memory_data_numpy_mb=cpu_memory_data_numpy_mb,
+            cpu_memory_model_mb=cpu_memory_model_mb,
+            cpu_memory_model_param_mb=cpu_memory_model_param_mb,
+            cpu_memory_model_buffer_mb=cpu_memory_model_buffer_mb,
+            cpu_memory_model_grad_mb=cpu_memory_model_grad_mb,
+            cpu_memory_optimizer_mb=cpu_memory_optimizer_mb,
+            cpu_memory_tracked_main_mb=cpu_memory_tracked_main_mb,
+            cpu_memory_process_rss_mb=cpu_memory_process_rss_mb,
+            cpu_memory_process_vms_mb=cpu_memory_process_vms_mb,
+            cpu_memory_child_process_rss_mb=cpu_memory_child_process_rss_mb,
+            cpu_memory_total_process_rss_mb=cpu_memory_total_process_rss_mb,
+            cpu_memory_untracked_or_fragmented_mb=cpu_memory_untracked_or_fragmented_mb,
+        )
+        self._logger.info(
+            (
+                " iter: %s rank: %s CPU memory "
+                "data: %.0fMB (tensor: %.0fMB pinned: %.0fMB numpy: %.0fMB) "
+                "model: %.0fMB (param: %.0fMB buffer: %.0fMB grad: %.0fMB) "
+                "optimizer: %.0fMB tracked: %.0fMB rss: %.0fMB child_rss: %.0fMB total_rss: %.0fMB untracked_or_fragmented: %.0fMB"
+            ),
+            self.trainer.iter,
+            get_rank(),
+            cpu_memory_data_mb,
+            cpu_memory_data_tensor_mb,
+            cpu_memory_data_pinned_tensor_mb,
+            cpu_memory_data_numpy_mb,
+            cpu_memory_model_mb,
+            cpu_memory_model_param_mb,
+            cpu_memory_model_buffer_mb,
+            cpu_memory_model_grad_mb,
+            cpu_memory_optimizer_mb,
+            cpu_memory_tracked_main_mb,
+            cpu_memory_process_rss_mb,
+            cpu_memory_child_process_rss_mb,
+            cpu_memory_total_process_rss_mb,
+            cpu_memory_untracked_or_fragmented_mb,
+        )
 
 
 class GradientClipHook(HookBase):

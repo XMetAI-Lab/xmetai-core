@@ -77,6 +77,12 @@ class HookBase:
         """
         pass
 
+    def after_optimizer(self, data):
+        """
+        Called after the optimizer step while the current batch is still alive.
+        """
+        pass
+
     def after_step(self):
         """
         Called after each iteration.
@@ -189,6 +195,10 @@ class TrainerBase:
     def after_backward(self):
         for h in self._hooks:
             h.after_backward()
+
+    def after_optimizer(self, data):
+        for h in self._hooks:
+            h.after_optimizer(data)
 
     def after_step(self):
         for h in self._hooks:
@@ -358,6 +368,7 @@ class SimpleTrainer(TrainerBase):
         suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
         """
         self.optimizer.step()
+        self.after_optimizer(data)
 
     @property
     def _data_loader_iter(self):
@@ -560,3 +571,4 @@ class ExpandTrainer(SimpleTrainer):
         suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
         """
         self.optimizer.step()
+        self.after_optimizer(data)
