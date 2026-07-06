@@ -41,6 +41,7 @@ __all__ = [
     "SchedulerMultiplier",
     "AutogradProfiler",
     "EvalHook",
+    "EarlyStoppingHook",
     "PreciseBN",
     "TorchProfiler",
     "TorchMemoryStats",
@@ -887,3 +888,133 @@ def _clip_dtensor_grad_norm_(grads, max_norm, norm_type):
     for grad in grads:
         grad.mul_(clip_coef)
     return torch.tensor(total_norm)
+
+
+class EarlyStoppingHook(HookBase):
+    """Stop training early when a monitored validation metric stops improving.
+
+    The hook reads the metric from ``trainer.storage.latest()`` every
+    ``eval_period`` iterations (aligned with :class:`EvalHook`).  If the metric
+    does not improve by at least ``min_delta`` for ``patience`` consecutive
+    evaluation rounds, it sets ``trainer._early_stop_requested = True``, which
+    causes :class:`TrainerBase` to break out of its training loop after the
+    current step and call ``after_train`` as if training finished normally.
+
+    Args:
+        eval_period (int): How often (in iterations) to check the metric.
+            Must match the ``eval_period`` passed to :class:`EvalHook`.
+        val_metric (str): Flattened key as written to the event storage, e.g.
+            ``"RMSE/z500"`` or ``"IPS/t2m"``.
+        mode (str): ``"min"`` to stop when the metric stops decreasing,
+            ``"max"`` to stop when it stops increasing.
+        patience (int): Number of evaluation rounds with no improvement before
+            training is stopped.
+        min_delta (float): Minimum absolute change in the metric to qualify as
+            an improvement.  Defaults to ``0.0``.
+    """
+
+    def __init__(
+        self,
+        eval_period: int,
+        val_metric: str,
+        mode: str = "min",
+        patience: int = 5,
+        min_delta: float = 0.0,
+    ) -> None:
+        if mode not in ("min", "max"):
+            raise ValueError(f'mode must be "min" or "max", got {mode!r}')
+        if patience <= 0:
+            raise ValueError(f"patience must be a positive integer, got {patience}")
+        if eval_period <= 0:
+            raise ValueError(f"eval_period must be a positive integer, got {eval_period}")
+
+        self._logger = logging.getLogger(__name__)
+        self._period = eval_period
+        self._val_metric = val_metric
+        self._patience = patience
+        self._min_delta = float(min_delta)
+        self._mode = mode
+
+        self.best_metric: float | None = None
+        self.best_iter: int | None = None
+        self._num_no_improve: int = 0
+
+    def _is_improvement(self, val: float) -> bool:
+        if self.best_metric is None:
+            return True
+        delta = self._min_delta
+        if self._mode == "max":
+            return val > self.best_metric + delta
+        return val < self.best_metric - delta
+
+    def after_step(self) -> None:
+        assert self.trainer is not None
+        next_iter = self.trainer.iter + 1
+        if next_iter % self._period != 0:
+            return
+        # Skip at the very last iteration — EvalHook's after_train handles it.
+        if next_iter == self.trainer.max_iter:
+            return
+
+        metric_tuple = self.trainer.storage.latest().get(self._val_metric)
+        if metric_tuple is None:
+            self._logger.warning(
+                "EarlyStoppingHook: metric %r not found in storage at iter %d. " "Make sure EvalHook runs before EarlyStoppingHook.",
+                self._val_metric,
+                self.trainer.iter,
+            )
+            return
+
+        latest_metric, _ = metric_tuple
+        if math.isnan(latest_metric) or math.isinf(latest_metric):
+            self._logger.warning(
+                "EarlyStoppingHook: metric %r is %s at iter %d, skipping.",
+                self._val_metric,
+                latest_metric,
+                self.trainer.iter,
+            )
+            return
+
+        if self._is_improvement(latest_metric):
+            self._logger.info(
+                "EarlyStoppingHook: %r improved from %s to %.6g at iter %d.",
+                self._val_metric,
+                f"{self.best_metric:.6g}" if self.best_metric is not None else "N/A",
+                latest_metric,
+                self.trainer.iter,
+            )
+            self.best_metric = latest_metric
+            self.best_iter = self.trainer.iter
+            self._num_no_improve = 0
+        else:
+            self._num_no_improve += 1
+            self._logger.info(
+                "EarlyStoppingHook: %r did not improve (best=%.6g @ iter %d). " "No-improvement count: %d / %d.",
+                self._val_metric,
+                self.best_metric,
+                self.best_iter,
+                self._num_no_improve,
+                self._patience,
+            )
+
+        if self._num_no_improve >= self._patience:
+            self._logger.info(
+                "EarlyStoppingHook: stopping training — %r has not improved for " "%d evaluations (best=%.6g @ iter %d).",
+                self._val_metric,
+                self._patience,
+                self.best_metric,
+                self.best_iter,
+            )
+            self.trainer._early_stop_requested = True
+
+    def state_dict(self) -> dict:
+        return {
+            "best_metric": self.best_metric,
+            "best_iter": self.best_iter,
+            "num_no_improve": self._num_no_improve,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        self.best_metric = state["best_metric"]
+        self.best_iter = state["best_iter"]
+        self._num_no_improve = state["num_no_improve"]
