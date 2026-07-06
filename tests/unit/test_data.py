@@ -141,6 +141,7 @@ class TestWeatherDataset:
             test_workers=0,
             test_interval=1,
             in_names=["c", "a"],
+            test_target_names=["b"],
             eval_test_names=["c"],
         )
         train_dataset = instantiate(dataloader_cfg.train.dataset)
@@ -153,7 +154,8 @@ class TestWeatherDataset:
         assert dataloader_cfg.evaluator[0].test_times == [6, 12]
         assert train_sample["inputs"].shape == (2, 2, 2, 3)
         assert train_sample["targets"].shape == (1, 2, 2, 3)
-        assert test_sample["targets"].shape == (2, 2, 2, 3)
+        assert test_sample["targets"].shape == (2, 1, 2, 3)
+        torch.testing.assert_close(test_sample["targets"], torch.from_numpy(values[[2, 3]][:, [1]]))
 
     def test_multi_zarr_dataset_accepts_channel_dimension(self, monkeypatch):
         """Test MultiZarrDataset accepts zarr stores using channel instead of level."""
