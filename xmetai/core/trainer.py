@@ -347,9 +347,6 @@ class SimpleTrainer(TrainerBase):
 
         self.after_backward()
 
-        if self.use_ema:
-            self.ema(self.model)
-
         if self.async_write_metrics:
             # write metrics asynchronically
             self.concurrent_executor.submit(self._write_metrics, loss_dict, data_time, iter=self.iter)
@@ -362,6 +359,8 @@ class SimpleTrainer(TrainerBase):
         suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
         """
         self.optimizer.step()
+        if self.use_ema:
+            self.ema(self.model)
         self.after_optimizer(data)
 
     @property
@@ -550,9 +549,6 @@ class ExpandTrainer(SimpleTrainer):
 
         self.after_backward()
 
-        if self.use_ema:
-            self.ema(self.model)
-
         if self.async_write_metrics:
             # write metrics asynchronically
             self.concurrent_executor.submit(self._write_metrics, loss_dict, data_time, iter=self.iter)
@@ -565,4 +561,6 @@ class ExpandTrainer(SimpleTrainer):
         suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
         """
         self.optimizer.step()
+        if self.use_ema:
+            self.ema(self.model)
         self.after_optimizer(data)
