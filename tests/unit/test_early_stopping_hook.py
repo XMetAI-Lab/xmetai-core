@@ -328,8 +328,6 @@ def test_trainer_breaks_on_early_stop_flag():
     import weakref
 
     from xmetai.core.trainer import TrainerBase
-    from xmetai.utils import EventStorage
-
     class _MinimalTrainer(TrainerBase):
         def __init__(self):
             super().__init__()
