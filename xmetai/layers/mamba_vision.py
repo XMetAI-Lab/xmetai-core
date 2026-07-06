@@ -673,8 +673,15 @@ class MambaVisionLayer(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
+        mamba_mixer_prefixes = tuple(
+            f"blocks.{i}.mixer."
+            for i, block in enumerate(self.blocks)
+            if isinstance(block.mixer, (MambaVisionMixer, MambaMetWrapper)) or type(block.mixer).__module__.startswith("mamba_ssm.")
+        )
         for name, param in self.named_parameters():
             if getattr(param, "_no_reinit", False) or getattr(param, "_no_weight_decay", False):
+                continue
+            if name.startswith(mamba_mixer_prefixes):
                 continue
             if "norm" in name.lower() or "ln" in name.lower() or "layernorm" in name.lower():
                 if name.endswith("weight") and param.dim() == 1:

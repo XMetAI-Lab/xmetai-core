@@ -9,7 +9,6 @@ import logging
 import os
 
 import numpy as np
-import onnxruntime as ort
 import torch
 
 from xmetai.registries import MODELS
@@ -20,6 +19,13 @@ from .base_predictor import BasePredictor
 logger = logging.getLogger(__name__)
 CUSTOM_OPS_LIB_PATH = "/workspace/cma/xmetai_onnx_plugins.cpython-311-x86_64-linux-gnu.so"
 get_library_path = None
+
+try:
+    import onnxruntime as ort
+except ImportError:
+    ort = None  # type: ignore[assignment]
+    logger.warning("ONNX Runtime is not available. ONNX inference requires onnxruntime or onnxruntime-gpu.")
+
 if os.path.exists(CUSTOM_OPS_LIB_PATH):
     # use custom ops library by default
     def get_library_path():
@@ -79,6 +85,8 @@ class OnnxInferModel(BasePredictor):
         self.load_model(onnx_path)
 
     def load_model(self, onnx_path):
+        if ort is None:
+            raise ImportError("OnnxInferModel requires onnxruntime. Install onnxruntime or onnxruntime-gpu before using ONNX inference.")
         # ort.set_default_logger_severity(0)  # 0 = VERBOSE
         options = self._build_session_options()
 

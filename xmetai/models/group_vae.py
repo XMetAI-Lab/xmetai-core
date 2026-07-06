@@ -463,6 +463,7 @@ class _BaseGroupVAE(BasePredictor):
         head_type: str = "2fc",
         norm_type: str = "adaln",
         ffn_type: str = "gegluffn",
+        layer_type: str = "swin",
         group_slice_indices: list[list[int]] | None = None,
         vt_attn_type: str = "std",
         vt_window_size: int | None = None,
@@ -554,6 +555,7 @@ class _BaseGroupVAE(BasePredictor):
             mask_type=mask_type,
             norm_type=norm_type,
             ffn_type=ffn_type,
+            layer_type=layer_type,
         )
         common_decoder_kwargs = dict(
             image_size=image_size,
@@ -568,6 +570,7 @@ class _BaseGroupVAE(BasePredictor):
             head_type=head_type,
             norm_type=norm_type,
             ffn_type=ffn_type,
+            layer_type=layer_type,
         )
 
         vae_encoder_list: list[GroupEncoder] = []
