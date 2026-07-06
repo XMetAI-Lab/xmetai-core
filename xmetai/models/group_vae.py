@@ -463,7 +463,7 @@ class _BaseGroupVAE(BasePredictor):
         head_type: str = "2fc",
         norm_type: str = "adaln",
         ffn_type: str = "gegluffn",
-        layer_type: str | list[str] = "swin",
+        layer_type: str = "swin",
         group_slice_indices: list[list[int]] | None = None,
         vt_attn_type: str = "std",
         vt_window_size: int | None = None,
