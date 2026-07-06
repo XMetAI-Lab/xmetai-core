@@ -33,7 +33,17 @@ try:
         inference_on_dataset,
         launch,
     )
-    from xmetai.layers import HAS_MAMBA, GraphCastDecoder, GraphCastEncoder, GraphCastLayer, SwinLayer, apply_lora_to_model, merge_lora_weights
+    from xmetai.layers import (
+        HAS_MAMBA,
+        GatedDeltaNet2HybridLayer,
+        GatedDeltaNet2Layer,
+        GraphCastDecoder,
+        GraphCastEncoder,
+        GraphCastLayer,
+        SwinLayer,
+        apply_lora_to_model,
+        merge_lora_weights,
+    )
     from xmetai.layers.darknet_unet import DarknetBlock, DarknetConv
 
     if HAS_MAMBA:
@@ -71,7 +81,17 @@ def build_model(cfg):
         logger.info("Model parameters: {:.3f}M".format(model.params() / 1e6))
     model.freeze(cfg.train.freeze)
     model.to(cfg.train.device_type)
-    mods = [DarknetBlock, DarknetConv, SwinLayer, torch.nn.TransformerEncoderLayer, GraphCastLayer, GraphCastEncoder, GraphCastDecoder]
+    mods = [
+        DarknetBlock,
+        DarknetConv,
+        SwinLayer,
+        GatedDeltaNet2Layer,
+        GatedDeltaNet2HybridLayer,
+        torch.nn.TransformerEncoderLayer,
+        GraphCastLayer,
+        GraphCastEncoder,
+        GraphCastDecoder,
+    ]
     # mods += [WindowAttention, WindowAttentionV2, RotaryAttention, Attention]
     if HAS_MAMBA:
         mods.extend([MambaVisionLayer])

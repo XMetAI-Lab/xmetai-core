@@ -57,8 +57,8 @@ function setup_onnxruntime() {
     # Get installed onnxruntime package directory using python import (more reliable than pip show)
     pkg_dir=$(python -c "import onnxruntime, os; print(os.path.dirname(onnxruntime.__file__))" 2>/dev/null || true)
     if [[ -z "${pkg_dir}" ]]; then
-        echo "ERROR: onnxruntime package not found in current Python environment."
-        return 1
+        echo "WARNING: onnxruntime package not found in current Python environment. Skipping optional ONNX Runtime setup."
+        return 0
     fi
     echo "Found onnxruntime package at: ${pkg_dir}"
 
@@ -68,16 +68,16 @@ function setup_onnxruntime() {
     # Find the real SONAME file
     ort_real_so=$(find "${ort_dir}" -maxdepth 1 -type f -name 'libonnxruntime.so.1.*' -print -quit 2>/dev/null || true)
     if [[ -z "${ort_real_so}" ]]; then
-        echo "ERROR: libonnxruntime.so.1.* was not found under ${ort_dir}."
-        return 1
+        echo "WARNING: libonnxruntime.so.1.* was not found under ${ort_dir}. Skipping optional ONNX Runtime setup."
+        return 0
     fi
     echo "Found ONNX Runtime library: ${ort_real_so}"
 
     # Ensure symlink exists; create atomically from inside directory
     if [[ ! -e "${ort_so}" ]]; then
         if ! (cd "${ort_dir}" && ln -sf "$(basename "${ort_real_so}")" "$(basename "${ort_so}")"); then
-            echo "ERROR: failed to create symlink ${ort_so}."
-            return 1
+            echo "WARNING: failed to create symlink ${ort_so}. Skipping optional ONNX Runtime setup."
+            return 0
         fi
     fi
     echo "Using ONNX Runtime library: ${ort_real_so} (symlink: ${ort_so})"
