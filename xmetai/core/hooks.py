@@ -844,7 +844,6 @@ class EarlyStoppingHook(HookBase):
         self._val_metric = val_metric
         self._patience = patience
         self._min_delta = float(min_delta)
-        self._compare = operator.gt if mode == "max" else operator.lt
         self._mode = mode
 
         self.best_metric: float | None = None
