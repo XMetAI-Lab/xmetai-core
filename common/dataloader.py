@@ -31,6 +31,7 @@ def zarr_dataloader(
     test_pin_memory: bool = True,
     train_do_augment: bool = False,
     eval_test_names: Optional[Sequence[str]] = None,
+    test_target_names: Optional[Sequence[str]] = None,
     in_names: Optional[Sequence[str]] = None,
     lat_flip: bool = False,
     start_frames: int = 0,
@@ -38,6 +39,7 @@ def zarr_dataloader(
     in_names = [] if in_names is None else list(in_names)
     test_frames = list(range(1, 43)) if test_frames is None else list(test_frames)
     eval_test_names = [] if eval_test_names is None else list(eval_test_names)
+    test_target_names = [] if test_target_names is None else list(test_target_names)
     dataset_kwargs = {} if dataset_kwargs is None else dict(dataset_kwargs)
     train_total_batch_size = total_batch_size if train_total_batch_size is None else train_total_batch_size
     test_total_batch_size = total_batch_size if test_total_batch_size is None else test_total_batch_size
@@ -71,6 +73,8 @@ def zarr_dataloader(
         lat_flip=lat_flip,
         **dataset_kwargs,
     )
+    if test_target_names:
+        test_dataset_kwargs["target_names"] = test_target_names
 
     dataloader.train = L(build_train_loader)(
         dataset=L(DATASETS.get(dataset_name))(**train_dataset_kwargs),

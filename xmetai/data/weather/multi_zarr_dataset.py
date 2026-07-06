@@ -46,6 +46,7 @@ class MultiZarrDataset(Dataset):
         inference_only: bool = False,
         years: tuple = ("19790101", "20161231"),
         in_names: list[str] = [],  # list of variable names to use, if empty, use all variables in the dataset
+        target_names: list[str] | None = None,
         lat_flip: bool = False,  # whether to flip latitude axis
         freq_unit: str = "hours",
         bbox: tuple[float, float, float, float] | None = None,
@@ -129,19 +130,37 @@ class MultiZarrDataset(Dataset):
         stage = "train" if self.training else "test"
         self.logger.info(f"{stage}_times: {self.start_time} ~ {self.end_time} = {len(self.inds)} samples")
         self.select_vars: list[int] | None = None
+        self.target_select_vars: list[int] | None = None
+        channel_values = self.ds.channel.values.tolist()
         if len(in_names) > 0:
-            channel_values = self.ds.channel.values.tolist()
             self.select_vars = [channel_values.index(v) for v in in_names if v in channel_values]
             missing = [v for v in in_names if v not in channel_values]
             if len(missing) > 0:
                 self.logger.warning(f"Variables not found in 'channel': {missing}")
             self.logger.info(f"Selected variables: {self.select_vars}, total {len(self.select_vars)} variables.")
+        if target_names is not None and len(target_names) > 0:
+            self.target_select_vars = [channel_values.index(v) for v in target_names if v in channel_values]
+            missing = [v for v in target_names if v not in channel_values]
+            if len(missing) > 0:
+                raise ValueError(f"Target variables not found in 'channel': {missing}")
+            self.logger.info(f"Selected target variables: {self.target_select_vars}, total {len(self.target_select_vars)} variables.")
 
     def __len__(self):
         return len(self.inds)
 
     def _rand_another(self):
         return np.random.randint(len(self))
+
+    def _read_frames(self, time_inds, channel_inds=None):
+        indexers = {"time": time_inds}
+        if channel_inds is not None:
+            indexers["channel"] = channel_inds
+        frames_np = self.ds.isel(**indexers).values.astype(np.float32, copy=False)
+        frames = torch.from_numpy(frames_np)
+        frames.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+        if self.lat_flip:
+            frames = torch.flip(frames, dims=[2])
+        return frames
 
     def __getitem__(self, idx):
         while True:
@@ -172,14 +191,13 @@ class MultiZarrDataset(Dataset):
         else:
             rht_inds = rht_inds[self.fcst_frames - 1]
 
+        if not self.training and not self.inference_only and self.target_select_vars is not None:
+            inputs = self._read_frames(lft_inds, self.select_vars)
+            targets = self._read_frames(rht_inds, self.target_select_vars)
+            return dict(times=time_tensor, inputs=inputs, targets=targets)
+
         inds = np.concatenate([lft_inds, rht_inds])
-        imgs_np = self.ds.isel(time=inds).values.astype(np.float32, copy=False)
-        imgs = torch.from_numpy(imgs_np)
-        imgs.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
-        if self.select_vars is not None:
-            imgs = imgs[:, self.select_vars, ...]
-        if self.lat_flip:  # flip latitude axis
-            imgs = torch.flip(imgs, dims=[2])
+        imgs = self._read_frames(inds, self.select_vars)
         inputs = imgs[: self.hist_frames]
         if self.inference_only:
             return dict(times=time_tensor, inputs=inputs)
