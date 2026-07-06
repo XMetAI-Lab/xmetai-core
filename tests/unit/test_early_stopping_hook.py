@@ -1,7 +1,6 @@
 """Unit tests for EarlyStoppingHook and TrainerBase early-stop integration."""
 
 import math
-from types import SimpleNamespace
 
 import pytest
 
