@@ -11,6 +11,7 @@ from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from xmetai.core.defaults import create_fsdp2_model
+from xmetai.core.trainer import SimpleTrainer
 from xmetai.models.ema import EMA
 
 
@@ -90,10 +91,9 @@ def _validate_backend_roundtrip(model, device, expect_model_dtensor):
     loss = torch.nn.functional.mse_loss(model(inputs), targets)
     loss.backward()
 
-    # Preserve the trainer's existing update order: EMA before optimizer.step().
-    ema(model)
     optimizer.step()
     optimizer.zero_grad(set_to_none=True)
+    ema(model)
     after_step = _clone_parameters(model)
 
     ema.reverse(model)
@@ -235,6 +235,34 @@ def test_ema_keeps_existing_state_dict_semantics():
     ema = EMA(model)
 
     assert set(ema.state_dict()) == {"decay", "num_updates"}
+
+
+def test_simple_trainer_updates_ema_after_optimizer_step():
+    class OneBatchLoader:
+        def __iter__(self):
+            return iter([{"inputs": torch.ones(1, 1), "targets": torch.zeros(1, 1)}])
+
+    class TrainModel(torch.nn.Module):
+        device = "cpu"
+        dtype = torch.float32
+
+        def __init__(self):
+            super().__init__()
+            self.linear = torch.nn.Linear(1, 1, bias=False)
+            torch.nn.init.constant_(self.linear.weight, 1.0)
+
+        def forward(self, batch):
+            pred = self.linear(batch["inputs"])
+            return {"loss": torch.nn.functional.mse_loss(pred, batch["targets"])}
+
+    model = TrainModel()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    trainer = SimpleTrainer(model, OneBatchLoader(), optimizer, use_ema=True)
+    trainer.ema.decay.fill_(0.0)
+
+    trainer.train(0, 1)
+
+    torch.testing.assert_close(trainer.ema.ema_params["linear.weight"], model.linear.weight.detach())
 
 
 def test_ema_two_rank_cpu_dtensor(tmp_path):

@@ -14,11 +14,11 @@ import torch.nn as nn
 from iopath.common.file_io import HTTPURLHandler, PathManager
 from torch.distributed.checkpoint.state_dict import (
     StateDictOptions,
+    get_model_state_dict,
     set_model_state_dict,
 )
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.tensor import DTensor
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 
 from xmetai.utils import is_main_process
@@ -452,18 +452,15 @@ class PeriodicCheckpointer:
 
 class FSDPCheckpointer(Checkpointer):
     def _get_full_model_state_dict(self) -> Dict[str, Any]:
-        sharded_sd = self.model.state_dict()
-        cpu_state_dict = {}
-        for name, param in sharded_sd.items():
-            if isinstance(param, DTensor):
-                full_param = param.full_tensor()
-            else:
-                full_param = param
-            if is_main_process():
-                cpu_state_dict[name] = full_param.cpu()
-            else:
-                del full_param
-        return cpu_state_dict
+        if isinstance(self.model, FSDP) or any(isinstance(module, FSDPModule) for module in self.model.modules()):
+            return get_model_state_dict(
+                self.model,
+                options=StateDictOptions(full_state_dict=True, cpu_offload=True),
+            )
+
+        if not is_main_process():
+            return {}
+        return {name: param.cpu() if isinstance(param, torch.Tensor) else param for name, param in self.model.state_dict().items()}
 
     def save(self, name: str, **kwargs: Any) -> None:
         if not self.save_dir or not self.save_to_disk:

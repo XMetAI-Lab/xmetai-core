@@ -80,19 +80,19 @@ class MSE(DatasetEvaluator):
                     self.top_rmse[top_key].append(top_rmse.item())
 
     def process(self, inputs: Any, outputs: dict[str, Any]) -> None:
-        target = outputs["target"].cpu()
+        target = outputs["target"]
         frame_start = int(outputs.get("frame_start", 0))
 
         if "weight" in outputs:
-            weight = outputs["weight"].cpu()
+            weight = outputs["weight"]
         else:
             weight = 1
 
         if "output_by_mode" in outputs:
             for mode, output in outputs["output_by_mode"].items():
-                self._process_output(output.cpu(), target, weight, prefix=mode, frame_start=frame_start)
+                self._process_output(output, target, weight, prefix=mode, frame_start=frame_start)
         else:
-            self._process_output(outputs["output"].cpu(), target, weight, frame_start=frame_start)
+            self._process_output(outputs["output"], target, weight, frame_start=frame_start)
 
     def evaluate(self) -> dict[str, Any] | None:
         comm.synchronize()
