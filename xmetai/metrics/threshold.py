@@ -23,11 +23,12 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
     def __init__(
         self,
         thresholds: Sequence[float],
+        *,
+        test_times: Sequence[int],
         neighborhood_size: int = 1,
         channel_index: int = 0,
         output_key: str = "output",
         target_key: str = "target",
-        test_times: Sequence[int] = (0,),
     ) -> None:
         super().__init__()
         self.thresholds = tuple(float(v) for v in thresholds)
