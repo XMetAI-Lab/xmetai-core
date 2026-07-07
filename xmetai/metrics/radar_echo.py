@@ -136,15 +136,9 @@ class _RadarEchoMetric(DatasetEvaluator):
         output = outputs[self.output_key]
         target = outputs[self.target_key]
         if output.ndim != 5 or target.ndim != 5:
-            raise ValueError(
-                f"{type(self).__name__} expects output/target as (B, T, C, H, W), "
-                f"got {tuple(output.shape)} and {tuple(target.shape)}"
-            )
+            raise ValueError(f"{type(self).__name__} expects output/target as (B, T, C, H, W), " f"got {tuple(output.shape)} and {tuple(target.shape)}")
         if self.channel_index < 0 or self.channel_index >= output.shape[2] or self.channel_index >= target.shape[2]:
-            raise ValueError(
-                f"channel_index={self.channel_index} is out of range for output/target shapes "
-                f"{tuple(output.shape)} and {tuple(target.shape)}"
-            )
+            raise ValueError(f"channel_index={self.channel_index} is out of range for output/target shapes " f"{tuple(output.shape)} and {tuple(target.shape)}")
 
         pred = output[:, :, self.channel_index]
         obs = target[:, :, self.channel_index]
@@ -253,9 +247,7 @@ class RadarFSS(_RadarEchoMetric):
         if self.neighborhood_size <= 0:
             raise ValueError(f"neighborhood_size must be positive, got {neighborhood_size}")
         if self.neighborhood_size % 2 == 0:
-            raise ValueError(
-                f"neighborhood_size must be odd to keep the neighborhood centered, got {neighborhood_size}"
-            )
+            raise ValueError(f"neighborhood_size must be odd to keep the neighborhood centered, got {neighborhood_size}")
 
     def _empty_components(self) -> dict[float, dict[str, float]]:
         return {threshold: {"diff_sq": 0.0, "reference": 0.0} for threshold in self.thresholds}
