@@ -74,6 +74,25 @@ def test_radar_fss_partial_overlap_below_one():
     assert results["RadarFSS"]["FSS"][0] < 1.0
 
 
+def test_radar_fss_uses_test_times_with_frame_start():
+    metric = RadarFSS(thresholds=(35.0,), test_times=(6, 12, 18), neighborhood_size=1)
+    target = torch.zeros(1, 2, 1, 8, 8)
+    output = torch.zeros_like(target)
+    target[:, 0, 0, 2:4, 2:4] = 45.0
+    output[:, 0, 0, 2:4, 2:4] = 45.0
+    target[:, 1, 0, 2:4, 2:4] = 45.0
+    output[:, 1, 0, 5:7, 5:7] = 45.0
+
+    metric.reset()
+    metric.process({}, {"output": output, "target": target, "frame_start": 1})
+    results = metric.evaluate()
+    assert results is not None
+    assert results["RadarFSS"]["Times"] == [6, 12, 18]
+    assert results["RadarFSS"]["Threshold"] == [35.0, 35.0, 35.0]
+    assert results["RadarFSS"]["FSS"][0] == 0.0
+    assert abs(results["RadarFSS"]["FSS"][1] - 1.0) < 1.0e-6
+    assert results["RadarFSS"]["FSS"][2] < 0.1
+
 def test_radar_fss_requires_test_times():
     with pytest.raises(TypeError, match="test_times"):
         RadarFSS(thresholds=(35.0,), neighborhood_size=5)
