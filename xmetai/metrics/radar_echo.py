@@ -283,16 +283,16 @@ class RadarFSS(_RadarEchoMetric):
 
         results: dict[str, list[int | float]] = {"Times": [], "Threshold": [], self.metric_prefix: []}
         eps = 1.0e-6
-for frame_index, lead_time in enumerate(self.test_times):
-    has_frame = frame_index in components_by_frame
-    frame_components = components_by_frame.get(frame_index, self._empty_components())
-    for threshold in self.thresholds:
-        diff_sq = frame_components[threshold]["diff_sq"]
-        reference = frame_components[threshold]["reference"]
-        if not has_frame:
-            fss = 0.0
-        else:
-            fss = 1.0 - diff_sq / (reference + eps) if reference > 0 else 1.0
+        for frame_index, lead_time in enumerate(self.test_times):
+            has_frame = frame_index in components_by_frame
+            frame_components = components_by_frame.get(frame_index, self._empty_components())
+            for threshold in self.thresholds:
+                diff_sq = frame_components[threshold]["diff_sq"]
+                reference = frame_components[threshold]["reference"]
+                if not has_frame:
+                    fss = 0.0
+                else:
+                    fss = 1.0 - diff_sq / (reference + eps) if reference > 0 else 1.0
                 results["Times"].append(lead_time)
                 results["Threshold"].append(threshold)
                 results[self.metric_prefix].append(fss)
