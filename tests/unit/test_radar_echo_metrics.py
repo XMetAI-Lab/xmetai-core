@@ -93,6 +93,7 @@ def test_radar_fss_uses_test_times_with_frame_start():
     assert abs(results["RadarFSS"]["FSS"][1] - 1.0) < 1.0e-6
     assert results["RadarFSS"]["FSS"][2] < 0.1
 
+
 def test_radar_fss_requires_test_times():
     with pytest.raises(TypeError, match="test_times"):
         RadarFSS(thresholds=(35.0,), neighborhood_size=5)
