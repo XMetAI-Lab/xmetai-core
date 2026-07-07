@@ -377,7 +377,7 @@ class SchedulerMultiplier(HookBase):
         for k in self._schedulers:
             v = self._schedulers[k][self.trainer.iter]
             self.hyp[k] = v
-            print(k, self.trainer.iter, v)
+            logging.getLogger(__name__).debug("SchedulerMultiplier %s @ iter %d: %s", k, self.trainer.iter, v)
             self.trainer.storage.put_scalar(k, v, smoothing_hint=False)
 
         for param_group in self._optimizer.param_groups:
