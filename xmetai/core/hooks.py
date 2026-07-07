@@ -368,6 +368,7 @@ class SchedulerMultiplier(HookBase):
     def __init__(self, optimizer: Any = None, schedulers: dict | None = None):
         self._optimizer = optimizer
         self._schedulers = {} if schedulers is None else schedulers
+        self._logger = logging.getLogger(__name__)
 
     def before_train(self):
         self._optimizer = self._optimizer or self.trainer.optimizer
@@ -377,7 +378,7 @@ class SchedulerMultiplier(HookBase):
         for k in self._schedulers:
             v = self._schedulers[k][self.trainer.iter]
             self.hyp[k] = v
-            logging.getLogger(__name__).debug("SchedulerMultiplier %s @ iter %d: %s", k, self.trainer.iter, v)
+            self._logger.debug("SchedulerMultiplier %s @ iter %d: %s", k, self.trainer.iter, v)
             self.trainer.storage.put_scalar(k, v, smoothing_hint=False)
 
         for param_group in self._optimizer.param_groups:
