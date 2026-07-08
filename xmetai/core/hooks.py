@@ -11,7 +11,7 @@ import tempfile
 import time
 import warnings
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -93,7 +93,7 @@ def flatten_results_dict(results):
         if isinstance(v, Mapping):
             v = flatten_results_dict(v)
             for kk, vv in v.items():
-                if isinstance(vv, Iterable):  # use mean for list
+                if isinstance(vv, (list, tuple, np.ndarray)):
                     vv = np.mean(vv)
                 r[k + "/" + kk] = vv
         else:
