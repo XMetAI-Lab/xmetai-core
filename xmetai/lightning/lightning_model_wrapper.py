@@ -6,7 +6,7 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import math
-from typing import Iterable, Mapping
+from typing import Mapping
 
 import numpy as np
 import pytorch_lightning as pl
@@ -35,7 +35,7 @@ def flatten_results_dict(results):
         if isinstance(v, Mapping):
             v = flatten_results_dict(v)
             for kk, vv in v.items():
-                if isinstance(vv, Iterable):  # use mean for list
+                if isinstance(vv, (list, tuple, np.ndarray)):
                     vv = np.mean(vv)
                 r[k + "_" + kk] = vv
         else:
