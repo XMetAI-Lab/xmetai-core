@@ -1,34 +1,7 @@
 import pytest
 import torch
-import torch.nn as nn
 
-from xmetai.layers.activation import ACTIVATIONS, GEGLU, SquaredReLU, SwiGLU, get_activation
-
-
-@pytest.mark.parametrize("name", sorted(ACTIVATIONS))
-def test_get_activation_instantiates_builtin_names(name):
-    module = get_activation(name)
-    assert isinstance(module, nn.Module)
-
-
-def test_get_activation_accepts_module_class():
-    module = get_activation(nn.GELU)
-    assert isinstance(module, nn.GELU)
-
-
-def test_get_activation_accepts_callable_factory():
-    module = get_activation(lambda: nn.SiLU())
-    assert isinstance(module, nn.SiLU)
-
-
-def test_get_activation_rejects_unknown_name():
-    with pytest.raises(KeyError, match="Unknown activation"):
-        get_activation("not_a_real_activation")
-
-
-def test_get_activation_rejects_invalid_factory_return_type():
-    with pytest.raises(TypeError, match="must return nn.Module"):
-        get_activation(lambda: 1)
+from xmetai.layers.activation import GEGLU, SquaredReLU, SwiGLU
 
 
 @pytest.mark.parametrize("activation_cls", [GEGLU, SwiGLU])

@@ -2,7 +2,7 @@ from importlib import import_module
 from importlib.util import find_spec
 from typing import Any
 
-from .activation import ACTIVATIONS, GEGLU, SquaredReLU, SwiGLU, get_activation, trunc_exp
+from .activation import GEGLU, SquaredReLU, SwiGLU, trunc_exp
 from .afnonet_blocks import Block as AFNOBlock
 from .afnonet_blocks import PatchEmbed as AfnoPatchEmbed
 from .darknet_unet import DarknetConvUNet2D
@@ -34,7 +34,6 @@ if HAS_TORCH_HARMONICS:
     EarthSpectralConv2d = _EarthSpectralConv2d
 
 __all__ = [
-    "ACTIVATIONS",
     "AFNOBlock",
     "AdaptiveLN",
     "AfnoPatchEmbed",
@@ -65,7 +64,6 @@ __all__ = [
     "SwiGLU",
     "TimestepEmbed",
     "apply_lora_to_model",
-    "get_activation",
     "kaming_init",
     "merge_lora_weights",
     "precompute_freqs_cis",
