@@ -12,6 +12,7 @@ from typing import Any, List, Optional, Tuple, Type, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from xmetai.utils.env import ensure_torchvision_nms_schema
 
@@ -33,6 +34,122 @@ def _load_external_gdn2() -> Any:
     except ImportError as exc:
         raise ImportError("GatedDeltaNet-2 layer_type requires flash-linear-attention with " "`from fla.layers import GatedDeltaNet2` available.") from exc
     return GatedDeltaNet2
+
+
+class GatedDeltaNet2OnnxFn(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q, k, v, g, b, w, initial_state, scale, use_qk_l2norm_in_kernel):
+        del ctx, q, k, g, b, w, initial_state, scale, use_qk_l2norm_in_kernel
+        return torch.empty_like(v)
+
+    @staticmethod
+    def symbolic(g, q, k, v, decay, beta, w, initial_state, scale, use_qk_l2norm_in_kernel):
+        node = g.op(
+            "xmetai_plugins::GatedDeltaNet2Fn",
+            q,
+            k,
+            v,
+            decay,
+            beta,
+            w,
+            initial_state,
+            scale_f=float(scale),
+            use_qk_l2norm_in_kernel_i=int(use_qk_l2norm_in_kernel),
+            output_final_state_i=0,
+            use_gate_in_kernel_i=0,
+            has_cu_seqlens_i=0,
+            state_v_first_i=0,
+        )
+        node.setType(v.type())
+        return node
+
+
+def _reshape_heads(x: torch.Tensor, num_heads: int, head_dim: int) -> torch.Tensor:
+    return x.reshape(*x.shape[:-1], num_heads, head_dim)
+
+
+def _short_conv_onnx(conv: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    kernel_size = conv.kernel_size[0]
+    y = F.conv1d(
+        x.transpose(1, 2),
+        conv.weight,
+        bias=conv.bias,
+        padding=kernel_size - 1,
+        groups=conv.groups,
+    )
+    y = y[..., : x.shape[1]].transpose(1, 2)
+    if getattr(conv, "activation", None) in ("silu", "swish"):
+        y = F.silu(y)
+    return y
+
+
+def _rms_norm_gated_onnx(norm: nn.Module, x: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+    dtype = x.dtype
+    y = x.float()
+    y = y * torch.rsqrt(y.pow(2).mean(dim=-1, keepdim=True) + norm.eps)
+    if norm.weight is not None:
+        y = y * norm.weight.float()
+    if getattr(norm, "bias", None) is not None:
+        y = y + norm.bias.float()
+    activation = getattr(norm, "activation", "swish")
+    gate = gate.float()
+    if activation in ("silu", "swish"):
+        y = y * F.silu(gate)
+    elif activation == "sigmoid":
+        y = y * torch.sigmoid(gate)
+    else:
+        raise RuntimeError(f"GatedDeltaNet2 ONNX export does not support norm activation {activation!r}")
+    return y.to(dtype)
+
+
+def _gdn2_mixer_onnx_forward(mixer: nn.Module, hidden_states: torch.Tensor) -> torch.Tensor:
+    if getattr(mixer, "use_short_conv", False):
+        q = _short_conv_onnx(mixer.q_conv1d, mixer.q_proj(hidden_states))
+        k = _short_conv_onnx(mixer.k_conv1d, mixer.k_proj(hidden_states))
+        v = _short_conv_onnx(mixer.v_conv1d, mixer.v_proj(hidden_states))
+    else:
+        q = F.silu(mixer.q_proj(hidden_states))
+        k = F.silu(mixer.k_proj(hidden_states))
+        v = F.silu(mixer.v_proj(hidden_states))
+
+    decay = F.softplus(mixer.f_proj(hidden_states).float() + mixer.dt_bias)
+    beta = torch.sigmoid(mixer.b_proj(hidden_states))
+    w = torch.sigmoid(mixer.w_proj(hidden_states))
+
+    q = _reshape_heads(q, mixer.num_heads, mixer.head_k_dim)
+    k = _reshape_heads(k, mixer.num_heads, mixer.head_k_dim)
+    decay = _reshape_heads(decay, mixer.num_heads, mixer.head_k_dim)
+    beta = _reshape_heads(beta, mixer.num_heads, mixer.head_k_dim)
+    v = _reshape_heads(v, mixer.num_v_heads, mixer.head_v_dim)
+    w = _reshape_heads(w, mixer.num_v_heads, mixer.head_v_dim)
+
+    decay = -mixer.A_log.float().exp().view(1, 1, mixer.num_heads, 1) * decay
+    if mixer.num_v_heads > mixer.num_heads:
+        repeats = mixer.num_v_heads // mixer.num_heads
+        q = q.repeat_interleave(repeats, dim=-2)
+        k = k.repeat_interleave(repeats, dim=-2)
+        decay = decay.repeat_interleave(repeats, dim=-2)
+        beta = beta.repeat_interleave(repeats, dim=-2)
+    if mixer.allow_neg_eigval:
+        beta = beta * 2.0
+
+    initial_state = q.new_empty((0,), dtype=torch.float32)
+    scale = mixer.head_k_dim**-0.5
+    o = GatedDeltaNet2OnnxFn.apply(
+        q.float(),
+        k.float(),
+        v.float(),
+        decay.float(),
+        beta.float(),
+        w.float(),
+        initial_state,
+        float(scale),
+        True,
+    )
+    gate = _reshape_heads(mixer.g_proj(hidden_states), mixer.num_v_heads, mixer.head_v_dim)
+    o = _rms_norm_gated_onnx(mixer.o_norm, o, gate)
+    o = o.reshape(*o.shape[:-2], mixer.value_dim)
+    return mixer.o_proj(o.to(hidden_states.dtype))
 
 
 class GatedDeltaNet2Mixer(nn.Module):
@@ -76,6 +193,8 @@ class GatedDeltaNet2Mixer(nn.Module):
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if torch.onnx.is_in_onnx_export():
+            return _gdn2_mixer_onnx_forward(self.mixer, hidden_states)
         output = self.mixer(hidden_states)
         if isinstance(output, tuple):
             output = output[0]
