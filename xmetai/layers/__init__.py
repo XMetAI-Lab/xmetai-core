@@ -2,7 +2,7 @@ from importlib import import_module
 from importlib.util import find_spec
 from typing import Any
 
-from .activation import trunc_exp
+from .activation import GEGLU, SquaredReLU, SwiGLU, trunc_exp
 from .afnonet_blocks import Block as AFNOBlock
 from .afnonet_blocks import PatchEmbed as AfnoPatchEmbed
 from .darknet_unet import DarknetConvUNet2D
@@ -44,6 +44,7 @@ __all__ = [
     "EarthConv2d",
     "EarthConvTranspose2d",
     "EarthSpectralConv2d",
+    "GEGLU",
     "GatedDeltaNet2Block",
     "GatedDeltaNet2HybridLayer",
     "GatedDeltaNet2Layer",
@@ -58,7 +59,9 @@ __all__ = [
     "MambaVisionLayer",
     "PuYunBlock",
     "StepEncoding",
+    "SquaredReLU",
     "SwinLayer",
+    "SwiGLU",
     "TimestepEmbed",
     "apply_lora_to_model",
     "kaming_init",
