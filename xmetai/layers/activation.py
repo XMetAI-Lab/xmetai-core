@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,13 +34,13 @@ class SquaredReLU(nn.Module):
 
 class TruncExp(Function):
     @staticmethod
-    def forward(ctx: Function, x: torch.Tensor) -> torch.Tensor:
+    def forward(ctx: Any, x: torch.Tensor) -> torch.Tensor:
         x = x.float()
         ctx.save_for_backward(x)
         return torch.exp(x)
 
     @staticmethod
-    def backward(ctx: Function, g: torch.Tensor) -> torch.Tensor:
+    def backward(ctx: Any, g: torch.Tensor) -> torch.Tensor:
         x = ctx.saved_tensors[0]
         return g * torch.exp(torch.clamp(x, max=15))
 
