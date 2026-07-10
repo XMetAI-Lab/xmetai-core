@@ -5,15 +5,80 @@ import logging
 import time
 import weakref
 from contextlib import contextmanager
-from typing import List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 import torch
+import torch.distributed as dist
 
 from xmetai.models import EMA
 from xmetai.utils import EventStorage, gather, get_event_storage, get_rank, is_main_process
 
 __all__ = ["HookBase", "TrainerBase", "SimpleTrainer", "ExpandTrainer"]
+
+
+def _to_device_tensor(value: Any, device: torch.device) -> torch.Tensor:
+    if torch.is_tensor(value):
+        return value.to(device, non_blocking=True)
+    if isinstance(value, np.ndarray):
+        return torch.from_numpy(value).to(device, non_blocking=True)
+    return torch.as_tensor(value, device=device)
+
+
+def _broadcast_batch_from_rank0(
+    batch: Optional[Dict[str, Any]],
+    *,
+    src: int = 0,
+) -> Dict[str, torch.Tensor]:
+    """Broadcast a training batch from ``src`` using NCCL tensor broadcasts.
+
+    Only lightweight key/shape/dtype metadata uses ``broadcast_object_list``.
+    Tensor payloads are broadcast in place to avoid pickling large weather batches.
+    """
+    if not dist.is_initialized():
+        if batch is None:
+            raise ValueError("src rank must provide batch when distributed is not initialized")
+        device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+        return {k: _to_device_tensor(v, device) for k, v in batch.items()}
+
+    rank = dist.get_rank()
+    backend = dist.get_backend()
+    if backend == "nccl":
+        if not torch.cuda.is_available():
+            raise RuntimeError("NCCL backend requires CUDA for ensemble batch broadcast")
+        device = torch.device("cuda", torch.cuda.current_device())
+    else:
+        device = torch.device("cpu")
+    if rank == src:
+        if batch is None:
+            raise ValueError("src rank must provide batch")
+        batch_tensors = {k: _to_device_tensor(v, device) for k, v in batch.items()}
+        keys = sorted(batch_tensors.keys())
+        meta = {k: (batch_tensors[k].shape, batch_tensors[k].dtype) for k in keys}
+    else:
+        batch_tensors = {}
+        keys = None
+        meta = None
+
+    keys_payload: list[Optional[list[str]]] = [keys]
+    meta_payload: list[Optional[dict[str, tuple[Any, Any]]]] = [meta]
+    dist.broadcast_object_list(keys_payload, src=src)
+    dist.broadcast_object_list(meta_payload, src=src)
+    keys = keys_payload[0]
+    meta = meta_payload[0]
+    if keys is None or meta is None:
+        raise RuntimeError("failed to receive ensemble batch metadata from src rank")
+
+    synced: Dict[str, torch.Tensor] = {}
+    for key in keys:
+        shape, dtype = meta[key]
+        if rank == src:
+            tensor = batch_tensors[key]
+        else:
+            tensor = torch.empty(shape, dtype=dtype, device=device)
+        dist.broadcast(tensor, src=src)
+        synced[key] = tensor
+    return synced
 
 
 class HookBase:
@@ -506,16 +571,8 @@ class ExpandTrainer(SimpleTrainer):
             with runtime_train_fcst_frames.get_lock():
                 runtime_train_fcst_frames.value = future_step
         if self.ens_train:
-            # Broadcast same data batch (dict of tensors) from rank 0 to all ranks
-            if get_rank() == 0:
-                data = next(self._data_loader_iter)
-                data = {k: v.cuda() for k, v in data.items()}
-            else:
-                data = None
-            # Use broadcast_object_list to sync the entire dict across all ranks
-            data_list = [data]
-            torch.distributed.broadcast_object_list(data_list, src=0)
-            data = data_list[0]
+            raw_batch = next(self._data_loader_iter) if get_rank() == 0 else None
+            data = _broadcast_batch_from_rank0(raw_batch)
         else:
             data = next(self._data_loader_iter)
         # expand the data to the next step, we set future_frames for data here.
