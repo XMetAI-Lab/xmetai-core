@@ -42,8 +42,13 @@ def _broadcast_batch_from_rank0(
         return {k: _to_device_tensor(v, device) for k, v in batch.items()}
 
     rank = dist.get_rank()
-    device = torch.device("cuda", torch.cuda.current_device())
-
+    backend = dist.get_backend()
+    if backend == "nccl":
+        if not torch.cuda.is_available():
+            raise RuntimeError("NCCL backend requires CUDA for ensemble batch broadcast")
+        device = torch.device("cuda", torch.cuda.current_device())
+    else:
+        device = torch.device("cpu")
     if rank == src:
         if batch is None:
             raise ValueError("src rank must provide batch")
