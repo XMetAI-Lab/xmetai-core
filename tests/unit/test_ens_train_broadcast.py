@@ -10,6 +10,7 @@ def test_to_device_tensor_from_numpy():
     tensor = _to_device_tensor(value, torch.device("cpu"))
     assert torch.equal(tensor, torch.ones(2, 3, dtype=torch.float32))
 
+
 def test_broadcast_batch_from_rank0_single_process():
     batch = {
         "inputs": torch.randn(1, 2, 4, 8, 8),
