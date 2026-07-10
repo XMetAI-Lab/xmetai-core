@@ -17,6 +17,8 @@ __all__ = [
     "FSS",
     "RadarLPIPS",
     "LPIPS",
+    "RadarRAPSD",
+    "RAPSD",
 ]
 
 
@@ -98,6 +100,51 @@ def _resolve_data_range(pred: torch.Tensor, target: torch.Tensor, data_range: fl
         return float(data_range)
     value_range = max(pred.max().item(), target.max().item()) - min(pred.min().item(), target.min().item())
     return value_range if value_range > 1.0e-6 else 1.0
+
+
+def _rapsd_batch(fields: torch.Tensor, *, normalize: bool = False) -> torch.Tensor:
+    """Compute radially averaged PSD curves for ``(B, H, W)`` fields."""
+    if fields.ndim != 3:
+        raise ValueError(f"fields must have shape (B, H, W), got {tuple(fields.shape)}")
+
+    batch_size, height, width = fields.shape
+    fft = torch.fft.fft2(fields)
+    psd = torch.fft.fftshift(fft, dim=(-2, -1))
+    psd = psd.abs() ** 2 / (height * width)
+
+    yc = torch.arange(height, device=fields.device, dtype=fields.dtype) - (height - 1) / 2.0
+    xc = torch.arange(width, device=fields.device, dtype=fields.dtype) - (width - 1) / 2.0
+    yy, xx = torch.meshgrid(yc, xc, indexing="ij")
+    radius_grid = torch.sqrt(xx * xx + yy * yy).round().long()
+
+    max_side = max(height, width)
+    num_bins = max_side // 2 + 1 if max_side % 2 == 1 else max_side // 2
+    rapsd = torch.zeros(batch_size, num_bins, device=fields.device, dtype=fields.dtype)
+    for radius in range(num_bins):
+        mask = radius_grid == radius
+        if mask.any():
+            rapsd[:, radius] = psd[:, mask].mean(dim=1)
+
+    if normalize:
+        rapsd = rapsd / rapsd.sum(dim=1, keepdim=True).clamp_min(1.0e-12)
+    return rapsd
+
+
+def _rapsd_lsd_per_sample(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    normalize: bool,
+    eps: float = 1.0e-12,
+) -> torch.Tensor:
+    """Return mean log-spectral distance per batch element for ``(B, 1, H, W)`` tensors."""
+    if pred.shape != target.shape:
+        raise ValueError(f"pred and target must share shape, got {tuple(pred.shape)} and {tuple(target.shape)}")
+
+    pred_rapsd = _rapsd_batch(pred[:, 0], normalize=normalize)
+    target_rapsd = _rapsd_batch(target[:, 0], normalize=normalize)
+    ratio = (pred_rapsd + eps) / (target_rapsd + eps)
+    return torch.log10(ratio).abs().mean(dim=1)
 
 
 def _normalize_to_lpips_input(
@@ -377,6 +424,75 @@ class RadarLPIPS(_RadarEchoMetric):
         return {self.metric_name: results}
 
 
+@METRICS.register()
+class RadarRAPSD(_RadarEchoMetric):
+    """Radially averaged power spectral density (RAPSD) verification metric.
+
+    Each frame is transformed with a 2-D FFT, radially averaged into wavenumber
+    bins, and compared against the observation spectrum via log-spectral distance
+    (LSD). Lower scores indicate better multi-scale spatial fidelity.
+    """
+
+    metric_name = "RadarRAPSD"
+    metric_prefix = "RAPSD"
+
+    def __init__(
+        self,
+        test_times: Sequence[int],
+        *,
+        normalize: bool = True,
+        channel_index: int = 0,
+        output_key: str = "output",
+        target_key: str = "target",
+    ) -> None:
+        super().__init__(
+            test_times,
+            channel_index=channel_index,
+            output_key=output_key,
+            target_key=target_key,
+        )
+        self.normalize = bool(normalize)
+
+    def reset(self) -> None:
+        self._sum_by_frame: dict[int, float] = {}
+        self._count_by_frame: dict[int, float] = {}
+
+    def process(self, inputs: Any, outputs: dict[str, Any]) -> None:
+        pred, obs, frame_start = self._extract_frames(outputs)
+        for frame_offset in range(pred.shape[1]):
+            frame_index = frame_start + frame_offset
+            pred_frame = pred[:, frame_offset : frame_offset + 1]
+            obs_frame = obs[:, frame_offset : frame_offset + 1]
+            lsd_values = _rapsd_lsd_per_sample(pred_frame, obs_frame, normalize=self.normalize)
+            self._sum_by_frame[frame_index] = self._sum_by_frame.get(frame_index, 0.0) + float(lsd_values.sum().item())
+            self._count_by_frame[frame_index] = self._count_by_frame.get(frame_index, 0.0) + float(lsd_values.numel())
+
+    def evaluate(self) -> dict[str, Any] | None:
+        comm.synchronize()
+        gathered_sum = comm.gather(self._sum_by_frame, dst=0)
+        gathered_count = comm.gather(self._count_by_frame, dst=0)
+        if not comm.is_main_process():
+            return None
+
+        sum_by_frame: dict[int, float] = {}
+        count_by_frame: dict[int, float] = {}
+        for worker_sum, worker_count in zip(gathered_sum, gathered_count):
+            for frame_index, value in worker_sum.items():
+                sum_by_frame[frame_index] = sum_by_frame.get(frame_index, 0.0) + value
+            for frame_index, value in worker_count.items():
+                count_by_frame[frame_index] = count_by_frame.get(frame_index, 0.0) + value
+
+        results: dict[str, list[int | float]] = {"Times": [], self.metric_prefix: []}
+        for frame_index, lead_time in enumerate(self.test_times):
+            total = sum_by_frame.get(frame_index, 0.0)
+            count = count_by_frame.get(frame_index, 0.0)
+            value = total / count if count > 0 else 0.0
+            results["Times"].append(lead_time)
+            results[self.metric_prefix].append(value)
+        return {self.metric_name: results}
+
+
 SSIM = RadarSSIM
 FSS = RadarFSS
 LPIPS = RadarLPIPS
+RAPSD = RadarRAPSD
