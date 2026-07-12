@@ -150,9 +150,9 @@ def test_radar_lpips_different_fields_score_higher():
 
 def test_radar_rapsd_identical_fields_score_near_zero():
     metric = RadarRAPSD(test_times=(6,))
-    field = torch.zeros(2, 1, 1, 32, 32)
-    field[..., 6:18, 6:18] = 45.0
-    field[..., 20:26, 20:26] = 20.0
+    field = torch.zeros(2, 1, 1, 16, 16)
+    field[..., 4:12, 4:12] = 45.0
+    field[..., 10:14, 10:14] = 20.0
     metric.reset()
     metric.process({}, {"output": field, "target": field})
     results = metric.evaluate()
@@ -163,16 +163,29 @@ def test_radar_rapsd_identical_fields_score_near_zero():
 
 def test_radar_rapsd_blurred_fields_score_higher():
     metric = RAPSD(test_times=(6,))
-    target = torch.zeros(1, 1, 1, 32, 32)
-    target[..., 8:24, 8:24] = 45.0
+    target = torch.zeros(1, 1, 1, 16, 16)
+    target[..., 4:12, 4:12] = 45.0
     target += torch.randn_like(target) * 2.0
-    blurred = F.avg_pool2d(target[:, 0], kernel_size=5, stride=1, padding=2)
+    blurred = F.avg_pool2d(target[:, 0], kernel_size=3, stride=1, padding=1)
     output = blurred.unsqueeze(1)
     metric.reset()
     metric.process({}, {"output": output, "target": target})
     results = metric.evaluate()
     assert results is not None
     assert results["RadarRAPSD"]["RAPSD"][0] > 0.01
+
+
+def test_radar_rapsd_uses_cpu_for_gpu_inputs():
+    metric = RadarRAPSD(test_times=(6,))
+    field = torch.zeros(1, 1, 1, 16, 16)
+    field[..., 4:10, 4:10] = 40.0
+    if torch.cuda.is_available():
+        field = field.cuda()
+    metric.reset()
+    metric.process({}, {"output": field, "target": field})
+    results = metric.evaluate()
+    assert results is not None
+    assert results["RadarRAPSD"]["RAPSD"][0] < 1.0e-6
 
 
 def test_radar_rapsd_uses_test_times_with_frame_start():

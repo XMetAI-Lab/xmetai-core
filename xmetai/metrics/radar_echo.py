@@ -102,28 +102,44 @@ def _resolve_data_range(pred: torch.Tensor, target: torch.Tensor, data_range: fl
     return value_range if value_range > 1.0e-6 else 1.0
 
 
+_RADIUS_CACHE: dict[tuple[int, int, torch.device], tuple[torch.Tensor, int]] = {}
+
+
+def _get_radius_bins(height: int, width: int, device: torch.device) -> tuple[torch.Tensor, int]:
+    key = (height, width, device)
+    cached = _RADIUS_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    yc = torch.arange(height, device=device, dtype=torch.float32) - (height - 1) / 2.0
+    xc = torch.arange(width, device=device, dtype=torch.float32) - (width - 1) / 2.0
+    yy, xx = torch.meshgrid(yc, xc, indexing="ij")
+    radii = torch.sqrt(xx * xx + yy * yy).round().long().reshape(-1)
+    max_side = max(height, width)
+    num_bins = max_side // 2 + 1 if max_side % 2 == 1 else max_side // 2
+    radii = radii.clamp(0, num_bins - 1)
+    _RADIUS_CACHE[key] = (radii, num_bins)
+    return radii, num_bins
+
+
 def _rapsd_batch(fields: torch.Tensor, *, normalize: bool = False) -> torch.Tensor:
     """Compute radially averaged PSD curves for ``(B, H, W)`` fields."""
     if fields.ndim != 3:
         raise ValueError(f"fields must have shape (B, H, W), got {tuple(fields.shape)}")
 
+    fields = fields.float()
     batch_size, height, width = fields.shape
+    radii, num_bins = _get_radius_bins(height, width, fields.device)
+
     fft = torch.fft.fft2(fields)
-    psd = torch.fft.fftshift(fft, dim=(-2, -1))
-    psd = psd.abs() ** 2 / (height * width)
+    power = torch.fft.fftshift(fft, dim=(-2, -1)).abs() ** 2 / (height * width)
+    power_flat = power.reshape(batch_size, -1)
 
-    yc = torch.arange(height, device=fields.device, dtype=fields.dtype) - (height - 1) / 2.0
-    xc = torch.arange(width, device=fields.device, dtype=fields.dtype) - (width - 1) / 2.0
-    yy, xx = torch.meshgrid(yc, xc, indexing="ij")
-    radius_grid = torch.sqrt(xx * xx + yy * yy).round().long()
-
-    max_side = max(height, width)
-    num_bins = max_side // 2 + 1 if max_side % 2 == 1 else max_side // 2
-    rapsd = torch.zeros(batch_size, num_bins, device=fields.device, dtype=fields.dtype)
-    for radius in range(num_bins):
-        mask = radius_grid == radius
-        if mask.any():
-            rapsd[:, radius] = psd[:, mask].mean(dim=1)
+    sums = torch.zeros(batch_size, num_bins, device=fields.device, dtype=torch.float32)
+    counts = torch.zeros(num_bins, device=fields.device, dtype=torch.float32)
+    sums.scatter_add_(1, radii.unsqueeze(0).expand(batch_size, -1), power_flat)
+    counts.scatter_add_(0, radii, torch.ones_like(radii, dtype=torch.float32))
+    rapsd = sums / counts.unsqueeze(0).clamp_min(1.0)
 
     if normalize:
         rapsd = rapsd / rapsd.sum(dim=1, keepdim=True).clamp_min(1.0e-12)
@@ -141,10 +157,13 @@ def _rapsd_lsd_per_sample(
     if pred.shape != target.shape:
         raise ValueError(f"pred and target must share shape, got {tuple(pred.shape)} and {tuple(target.shape)}")
 
-    pred_rapsd = _rapsd_batch(pred[:, 0], normalize=normalize)
-    target_rapsd = _rapsd_batch(target[:, 0], normalize=normalize)
-    ratio = (pred_rapsd + eps) / (target_rapsd + eps)
-    return torch.log10(ratio).abs().mean(dim=1)
+    lsd_values: list[torch.Tensor] = []
+    for sample_index in range(pred.shape[0]):
+        pred_rapsd = _rapsd_batch(pred[sample_index : sample_index + 1, 0], normalize=normalize)
+        target_rapsd = _rapsd_batch(target[sample_index : sample_index + 1, 0], normalize=normalize)
+        ratio = (pred_rapsd + eps) / (target_rapsd + eps)
+        lsd_values.append(torch.log10(ratio).abs().mean())
+    return torch.stack(lsd_values)
 
 
 def _normalize_to_lpips_input(
@@ -461,8 +480,8 @@ class RadarRAPSD(_RadarEchoMetric):
         pred, obs, frame_start = self._extract_frames(outputs)
         for frame_offset in range(pred.shape[1]):
             frame_index = frame_start + frame_offset
-            pred_frame = pred[:, frame_offset : frame_offset + 1]
-            obs_frame = obs[:, frame_offset : frame_offset + 1]
+            pred_frame = pred[:, frame_offset : frame_offset + 1].detach().float().cpu()
+            obs_frame = obs[:, frame_offset : frame_offset + 1].detach().float().cpu()
             lsd_values = _rapsd_lsd_per_sample(pred_frame, obs_frame, normalize=self.normalize)
             self._sum_by_frame[frame_index] = self._sum_by_frame.get(frame_index, 0.0) + float(lsd_values.sum().item())
             self._count_by_frame[frame_index] = self._count_by_frame.get(frame_index, 0.0) + float(lsd_values.numel())
