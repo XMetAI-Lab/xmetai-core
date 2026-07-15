@@ -116,7 +116,7 @@ def _get_radius_bins(height: int, width: int, device: torch.device) -> tuple[tor
     yy, xx = torch.meshgrid(yc, xc, indexing="ij")
     radii = torch.sqrt(xx * xx + yy * yy).round().long().reshape(-1)
     max_side = max(height, width)
-    num_bins = max_side // 2 + 1 if max_side % 2 == 1 else max_side // 2
+    num_bins = max_side // 2 + 1
     radii = radii.clamp(0, num_bins - 1)
     _RADIUS_CACHE[key] = (radii, num_bins)
     return radii, num_bins
