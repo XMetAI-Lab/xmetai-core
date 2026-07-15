@@ -217,10 +217,12 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
         weight_decay: weight decay for every group by default. Can be omitted to use the one
             in optimizer.
         weight_decay_norm: override weight decay for params in normalization layers
-            overrides: if not `None`, provides values for optimizer hyperparameters
+        overrides: if not `None`, provides values for optimizer hyperparameters
             (LR, weight decay) for parameters whose full name or module path matches
             a prefix; e.g. ``{"backbone": {"lr": 0.01, "weight_decay": 0.1}}`` will
             set the LR and weight decay values for all parameters under ``backbone``.
+            Transparent DDP, FSDP, and activation-checkpoint wrapper names are ignored
+            when matching prefixes.
 
     For common detection models, ``weight_decay_norm`` is the only option
     needed to be set.
@@ -278,10 +280,19 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
         torch.nn.LayerNorm,
         torch.nn.LocalResponseNorm,
     )
+    model_is_data_parallel = isinstance(model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel))
+    transparent_wrapper_names = {"_checkpoint_wrapped_module", "_fsdp_wrapped_module"}
+
+    def normalize_module_name(module_name: str) -> str:
+        parts = [part for part in module_name.split(".") if part not in transparent_wrapper_names]
+        if model_is_data_parallel and parts and parts[0] == "module":
+            parts = parts[1:]
+        return ".".join(parts)
+
     params: List[Dict[str, Any]] = []
     memo: Set[torch.nn.parameter.Parameter] = set()
     for module_name, module in model.named_modules():
-        module_name = module_name.replace("_checkpoint_wrapped_module.", "")
+        module_name = normalize_module_name(module_name)
 
         for param_name, value in module.named_parameters(recurse=False):
             full_param_name = f"{module_name}.{param_name}" if module_name else param_name
