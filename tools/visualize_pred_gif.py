@@ -36,8 +36,9 @@ if "PROJ_DATA" not in os.environ:
         import pyproj
 
         os.environ["PROJ_DATA"] = pyproj.datadir.get_data_dir()
-    except Exception:
-        pass
+    except Exception as exc:
+        # Non-fatal: continue without overriding PROJ_DATA if pyproj/datadir is unavailable.
+        print(f"Warning: could not auto-configure PROJ_DATA ({exc}).", file=sys.stderr)
 
 PRED_PATTERN = re.compile(r"^pred_(\d{8})\.nc$", re.IGNORECASE)
 
