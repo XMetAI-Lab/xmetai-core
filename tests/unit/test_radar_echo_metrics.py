@@ -165,6 +165,7 @@ def test_radar_rapsd_blurred_fields_score_higher():
     metric = RAPSD(test_times=(6,))
     target = torch.zeros(1, 1, 1, 16, 16)
     target[..., 4:12, 4:12] = 45.0
+    torch.manual_seed(7)
     target += torch.randn_like(target) * 2.0
     blurred = F.avg_pool2d(target[:, 0], kernel_size=3, stride=1, padding=1)
     output = blurred.unsqueeze(1)
