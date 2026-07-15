@@ -157,13 +157,10 @@ def _rapsd_lsd_per_sample(
     if pred.shape != target.shape:
         raise ValueError(f"pred and target must share shape, got {tuple(pred.shape)} and {tuple(target.shape)}")
 
-    lsd_values: list[torch.Tensor] = []
-    for sample_index in range(pred.shape[0]):
-        pred_rapsd = _rapsd_batch(pred[sample_index : sample_index + 1, 0], normalize=normalize)
-        target_rapsd = _rapsd_batch(target[sample_index : sample_index + 1, 0], normalize=normalize)
-        ratio = (pred_rapsd + eps) / (target_rapsd + eps)
-        lsd_values.append(torch.log10(ratio).abs().mean())
-    return torch.stack(lsd_values)
+    pred_rapsd = _rapsd_batch(pred[:, 0], normalize=normalize)
+    target_rapsd = _rapsd_batch(target[:, 0], normalize=normalize)
+    ratio = (pred_rapsd + eps) / (target_rapsd + eps)
+    return torch.log10(ratio).abs().mean(dim=1)
 
 
 def _normalize_to_lpips_input(
