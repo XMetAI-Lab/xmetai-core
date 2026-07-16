@@ -380,7 +380,11 @@ def render_frame(
     fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white", pad_inches=0.08)
     plt.close(fig)
     buf.seek(0)
-    return Image.open(buf).convert("P", palette=Image.ADAPTIVE)
+    im = Image.open(buf)
+    out = im.convert("P", palette=Image.Palette.ADAPTIVE)
+    im.close()
+    buf.close()
+    return out
 
 
 def save_gif(frames: list[dict], variable: str, output_path: Path, duration_ms: int, vmin, vmax, extent, figsize, dpi):
