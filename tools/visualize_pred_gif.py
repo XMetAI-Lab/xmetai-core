@@ -403,7 +403,7 @@ def save_gif(frames: list[dict], variable: str, output_path: Path, duration_ms: 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="pred_*.nc 可视化并导出 GIF")
-    parser.add_argument("--dir", default=r"D:\groupvaeinfer", help="pred 文件目录")
+    parser.add_argument("--dir", required=True, help="pred 文件目录")
     parser.add_argument("--var", default=None, help="变量名或序号")
     parser.add_argument(
         "--mode",
