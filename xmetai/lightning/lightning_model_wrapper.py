@@ -6,7 +6,7 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import math
-from typing import Mapping
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 import pytorch_lightning as pl
@@ -35,7 +35,7 @@ def flatten_results_dict(results):
         if isinstance(v, Mapping):
             v = flatten_results_dict(v)
             for kk, vv in v.items():
-                if isinstance(vv, (list, tuple, np.ndarray)):
+                if isinstance(vv, (Sequence, np.ndarray)) and not isinstance(vv, (str, bytes)):
                     vv = np.mean(vv)
                 r[k + "_" + kk] = vv
         else:
