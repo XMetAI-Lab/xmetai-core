@@ -1,7 +1,8 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
-from xmetai.metrics.radar_echo import FSS, LPIPS, SSIM, RadarFSS, RadarLPIPS, RadarSSIM
+from xmetai.metrics.radar_echo import FSS, LPIPS, RAPSD, SSIM, RadarFSS, RadarLPIPS, RadarRAPSD, RadarSSIM
 
 
 def test_radar_ssim_identical_fields_score_one():
@@ -109,7 +110,7 @@ def test_radar_ssim_requires_odd_window_size():
         RadarSSIM(test_times=(6,), window_size=10)
 
 
-@pytest.mark.parametrize("metric_cls", [RadarSSIM, RadarFSS, RadarLPIPS])
+@pytest.mark.parametrize("metric_cls", [RadarSSIM, RadarFSS, RadarLPIPS, RadarRAPSD])
 def test_radar_metrics_validate_tensor_shape(metric_cls):
     if metric_cls is RadarFSS:
         metric = metric_cls(thresholds=(35.0,), test_times=(6,))
@@ -145,3 +146,63 @@ def test_radar_lpips_different_fields_score_higher():
     results = metric.evaluate()
     assert results is not None
     assert results["RadarLPIPS"]["LPIPS"][0] > 0.05
+
+
+def test_radar_rapsd_identical_fields_score_near_zero():
+    metric = RadarRAPSD(test_times=(6,))
+    field = torch.zeros(2, 1, 1, 16, 16)
+    field[..., 4:12, 4:12] = 45.0
+    field[..., 10:14, 10:14] = 20.0
+    metric.reset()
+    metric.process({}, {"output": field, "target": field})
+    results = metric.evaluate()
+    assert results is not None
+    assert results["RadarRAPSD"]["Times"] == [6]
+    assert results["RadarRAPSD"]["RAPSD"][0] < 1.0e-6
+
+
+def test_radar_rapsd_blurred_fields_score_higher():
+    metric = RAPSD(test_times=(6,))
+    target = torch.zeros(1, 1, 1, 16, 16)
+    target[..., 4:12, 4:12] = 45.0
+    torch.manual_seed(7)
+    target += torch.randn_like(target) * 2.0
+    blurred = F.avg_pool2d(target[:, 0], kernel_size=3, stride=1, padding=1)
+    output = blurred.unsqueeze(1)
+    metric.reset()
+    metric.process({}, {"output": output, "target": target})
+    results = metric.evaluate()
+    assert results is not None
+    assert results["RadarRAPSD"]["RAPSD"][0] > 0.01
+
+
+def test_radar_rapsd_uses_cpu_for_gpu_inputs():
+    metric = RadarRAPSD(test_times=(6,))
+    field = torch.zeros(1, 1, 1, 16, 16)
+    field[..., 4:10, 4:10] = 40.0
+    if torch.cuda.is_available():
+        field = field.cuda()
+    metric.reset()
+    metric.process({}, {"output": field, "target": field})
+    results = metric.evaluate()
+    assert results is not None
+    assert results["RadarRAPSD"]["RAPSD"][0] < 1.0e-6
+
+
+def test_radar_rapsd_uses_test_times_with_frame_start():
+    metric = RadarRAPSD(test_times=(6, 12, 18))
+    target = torch.zeros(1, 2, 1, 16, 16)
+    output = torch.zeros_like(target)
+    target[:, 0, 0, 4:10, 4:10] = 40.0
+    output[:, 0, 0, 4:10, 4:10] = 40.0
+    target[:, 1, 0, 4:10, 4:10] = 40.0
+    output[:, 1, 0, 10:14, 10:14] = 40.0
+
+    metric.reset()
+    metric.process({}, {"output": output, "target": target, "frame_start": 1})
+    results = metric.evaluate()
+    assert results is not None
+    assert results["RadarRAPSD"]["Times"] == [6, 12, 18]
+    assert results["RadarRAPSD"]["RAPSD"][0] == 0.0
+    assert results["RadarRAPSD"]["RAPSD"][1] < 1.0e-6
+    assert results["RadarRAPSD"]["RAPSD"][2] > 0.01

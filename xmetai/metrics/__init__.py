@@ -4,7 +4,7 @@ from .mse import MSE
 from .mse import __all__ as _mse_all
 from .ps import PS, ClimatePSScore
 from .ps import __all__ as _ps_all
-from .radar_echo import FSS, LPIPS, SSIM, RadarFSS, RadarLPIPS, RadarSSIM
+from .radar_echo import FSS, LPIPS, RAPSD, SSIM, RadarFSS, RadarLPIPS, RadarRAPSD, RadarSSIM
 from .radar_echo import __all__ as _radar_echo_all
 from .tcc import TCC
 from .tcc import __all__ as _tcc_all
