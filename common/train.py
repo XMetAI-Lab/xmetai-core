@@ -28,6 +28,7 @@ train = dict(
         max_to_keep=3,
     ),
     eval_period=4000,
+    eval_after_train=True,
     val_metric="RMSE/z500",
     log_period=20,
     memory_trace=False,

@@ -229,7 +229,7 @@ def do_train(args, cfg):
             hooks.IterationTimer(),
             hooks.LRScheduler(scheduler=lr_scheduler),
             hooks.PeriodicCheckpointerHook(checkpointer, **cfg.train.checkpointer),
-            hooks.EvalHook(cfg.train.eval_period, lambda: do_test(cfg, model)),
+            hooks.EvalHook(cfg.train.eval_period, lambda: do_test(cfg, model), eval_after_train=cfg.train.eval_after_train),
             hooks.GradientClipHook(),
             hooks.BestCheckpointer(eval_period=cfg.train.eval_period, checkpointer=checkpointer, val_metric=cfg.train.val_metric, mode="min"),
             (hooks.CPUMemoryStats(period=cfg.train.log_period) if cfg.train.memory_trace and comm.is_main_process() else None),
