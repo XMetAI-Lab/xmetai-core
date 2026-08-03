@@ -9,38 +9,13 @@ import torch.nn as nn
 from torch import Tensor
 
 from xmetai.layers import DarknetConvUNet2D
+from xmetai.loss import charbonnier_loss
 from xmetai.registries import MODELS
 
 from .base_predictor import BasePredictor
 from .utransformer import UTransformer
 
 __all__ = ["ConditionalGenerativeForecast", "DiffusionForecast", "FlowMatchingForecast", "JiTForecast", "ODEGenerativeForecast"]
-
-
-def _weighted_mean(loss: Tensor, weight: Tensor | None) -> Tensor:
-    if weight is None:
-        return loss.mean()
-    weight = weight.to(loss)
-    return (loss * weight).sum() / weight.expand_as(loss).sum().clamp_min(torch.finfo(loss.dtype).eps)
-
-
-def weighted_mse_loss(output: Tensor, target: Tensor, weight: Tensor | None = None) -> Tensor:
-    """Return a spatially/channel weighted float32 mean squared error."""
-    return _weighted_mean((output - target).float().square(), weight)
-
-
-def weighted_charbonnier_loss(output: Tensor, target: Tensor, weight: Tensor | None = None, eps: float = 1e-6) -> Tensor:
-    """Return a spatially/channel weighted Charbonnier loss."""
-    return _weighted_mean(torch.sqrt((output - target).float().square() + eps), weight)
-
-
-def pad_to_multiple(x: Tensor, multiple: int | tuple[int, int]) -> Tensor:
-    """Pad the bottom and right edges to a rectangular backbone multiple."""
-    multiple = (multiple, multiple) if isinstance(multiple, int) else multiple
-    height, width = x.shape[-2:]
-    pad_h = (multiple[0] - height % multiple[0]) % multiple[0]
-    pad_w = (multiple[1] - width % multiple[1]) % multiple[1]
-    return torch.nn.functional.pad(x, (0, pad_w, 0, pad_h))
 
 
 class TimeConditionedUTransformer(UTransformer):
@@ -112,6 +87,7 @@ class ConditionalGenerativeForecast(BasePredictor):
     """Shared data, conditioning, backbone, and autoregressive rollout contract."""
 
     backbone_module = "backbone"
+    loss_name = "loss"
 
     def __init__(
         self,
@@ -122,8 +98,11 @@ class ConditionalGenerativeForecast(BasePredictor):
         noise_scale: float = 1.0,
         predict_residual: bool = True,
         const_chans: int = 0,
-        use_timestamp: bool = False,
+        use_timestamp: bool = True,
         train_chans: list[int] | None = None,
+        rollout_max: int = 0,
+        rollout_alpha: float = 1.0,
+        rollout_sample_steps: int = 1,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -135,6 +114,12 @@ class ConditionalGenerativeForecast(BasePredictor):
             raise ValueError(f"noise_scale must be positive, got {noise_scale}")
         if self.members <= 0:
             raise ValueError(f"members must be positive, got {self.members}")
+        if rollout_max < 0:
+            raise ValueError(f"rollout_max must be non-negative, got {rollout_max}")
+        if not 0.0 < rollout_alpha <= 1.0:
+            raise ValueError(f"rollout_alpha must be in (0, 1], got {rollout_alpha}")
+        if rollout_sample_steps <= 0:
+            raise ValueError(f"rollout_sample_steps must be positive, got {rollout_sample_steps}")
 
         self.sample_steps = sample_steps
         self.sample_init = sample_init
@@ -142,6 +127,9 @@ class ConditionalGenerativeForecast(BasePredictor):
         self.predict_residual = predict_residual
         self.const_chans = const_chans
         self.use_timestamp = use_timestamp
+        self.rollout_max = rollout_max
+        self.rollout_alpha = rollout_alpha
+        self.rollout_sample_steps = rollout_sample_steps
         self.train_chans = list(train_chans) if train_chans is not None else []
         self.model_out_chans = len(self.train_chans) if self.train_chans else self.out_chans
         self.condition_chans = self.in_chans * self.in_frames + self.const_chans + (3 if self.use_timestamp else 0)
@@ -154,11 +142,13 @@ class ConditionalGenerativeForecast(BasePredictor):
     def generative_backbone(self) -> nn.Module:
         return self._modules[self.backbone_module]
 
-    def predict_backbone(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor | None) -> Tensor:
+    def predict_backbone(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor) -> Tensor:
         """Run the selected backbone with identical conditioning and spatial handling."""
-        model_input = torch.cat([cond, state], dim=1) if extra is None else torch.cat([cond, extra, state], dim=1)
+        model_input = torch.cat([cond, extra, state], dim=1)
         height, width = model_input.shape[-2:]
-        model_input = pad_to_multiple(model_input, self.backbone_multiple)
+        pad_h = (self.backbone_multiple[0] - height % self.backbone_multiple[0]) % self.backbone_multiple[0]
+        pad_w = (self.backbone_multiple[1] - width % self.backbone_multiple[1]) % self.backbone_multiple[1]
+        model_input = torch.nn.functional.pad(model_input, (0, pad_w, 0, pad_h))
         prediction = self.generative_backbone(model_input, time.reshape(-1).to(model_input), return_dict=False)[0]
         return cast(Tensor, prediction[:, :, :height, :width])
 
@@ -175,27 +165,28 @@ class ConditionalGenerativeForecast(BasePredictor):
             targets = targets - residual_base
         return einops.rearrange(targets, "B T C H W -> B (T C) H W")
 
-    def preprocess_batch(self, batched_inputs: dict[str, Tensor]) -> tuple[Tensor, Tensor]:
-        return self.prepare_condition(batched_inputs["input"]), self.prepare_target(batched_inputs["input"], batched_inputs["targets"])
-
-    def condition_extra(self, data: dict[str, Any], input: Tensor, step: int = 0) -> Tensor | None:
+    def condition_extra(self, data: dict[str, Any], input: Tensor, step: int = 0) -> Tensor:
         extras = []
         if self.const_chans > 0:
-            extras.append(self.condition_const(data, input))
+            const = data["const"].to(input)
+            if const.ndim == 3:
+                const = const.unsqueeze(0).expand(input.shape[0], -1, -1, -1)
+            elif const.shape[0] != input.shape[0]:
+                if input.shape[0] % const.shape[0] != 0:
+                    raise ValueError(f"constant batch size {const.shape[0]} cannot broadcast to input batch size {input.shape[0]}")
+                const = const.repeat(input.shape[0] // const.shape[0], 1, 1, 1)
+            extras.append(const[:, : self.const_chans])
         if self.use_timestamp:
-            extras.append(self.condition_timestamp(data, input, step))
-        return torch.cat(extras, dim=1) if extras else None
-
-    def condition_const(self, data: dict[str, Any], input: Tensor) -> Tensor:
-        const = data["const"].to(input)
-        if const.ndim == 3:
-            const = const.unsqueeze(0).expand(input.shape[0], -1, -1, -1)
-        return const[:, : self.const_chans]
-
-    def condition_timestamp(self, data: dict[str, Any], input: Tensor, step: int) -> Tensor:
-        height, width = input.shape[-2:]
-        timestamp = self.get_timestamp(input, data["times"], step)
-        return torch.cat([timestamp[key].to(input).reshape(input.shape[0], 1, 1, 1).expand(-1, 1, height, width) for key in ("step", "hour", "doy")], dim=1)
+            height, width = input.shape[-2:]
+            timestamp = self.get_timestamp(input, data["times"], step)
+            for key in ("step", "hour", "doy"):
+                value = timestamp[key].to(input).reshape(-1)
+                if value.shape[0] != input.shape[0]:
+                    if input.shape[0] % value.shape[0] != 0:
+                        raise ValueError(f"timestamp batch size {value.shape[0]} cannot broadcast to input batch size {input.shape[0]}")
+                    value = value.repeat(input.shape[0] // value.shape[0])
+                extras.append(value.reshape(input.shape[0], 1, 1, 1).expand(-1, 1, height, width))
+        return torch.cat(extras, dim=1) if extras else input.new_empty(input.shape[0], 0, *input.shape[-2:])
 
     def reconstruction_weight(self, target: Tensor) -> Tensor | None:
         if "channel_weights" in self._buffers:
@@ -219,13 +210,37 @@ class ConditionalGenerativeForecast(BasePredictor):
             output[:, :, self.train_chans] = pred
         return output
 
-    def initialize_sample(self, reference: Tensor, sample_shape: tuple[int, ...]) -> Tensor:
-        if self.sample_init == "noise" or self.members > 1:
-            return torch.randn(sample_shape, device=reference.device, dtype=reference.dtype) * self.noise_scale
-        return torch.zeros(sample_shape, device=reference.device, dtype=reference.dtype)
-
-    def sample_residual(self, cond: Tensor, extra: Tensor | None, sample_shape: tuple[int, ...]) -> Tensor:
+    def training_objective(self, cond: Tensor, target: Tensor, extra: Tensor) -> Tensor:
         raise NotImplementedError
+
+    def sample_residual(self, cond: Tensor, extra: Tensor, sample_steps: int | None = None, stochastic: bool | None = None) -> Tensor:
+        raise NotImplementedError
+
+    def forward(self, data: dict[str, Tensor]) -> dict[str, Tensor]:
+        if not self.training:
+            return self.test(data)  # type: ignore[return-value]
+        data = self.process_data(data)
+        input = data["input"]
+        targets = data["targets"]
+        future_steps = targets.shape[1]
+        if future_steps == 0:
+            raise ValueError(f"{type(self).__name__} rollout training requires at least one target frame")
+
+        loss_steps, rolling_weights = self.build_loss_steps_and_weights(future_steps, self.rollout_alpha, self.rollout_max)
+        loss_steps = set(loss_steps)
+        loss = targets.new_zeros((), dtype=torch.float32)
+        for step in range(future_steps):
+            input = self.reset_input(input)
+            cond = self.prepare_condition(input)
+            target = self.prepare_target(input, targets[:, step : step + 1])
+            extra = self.condition_extra(data, input, step=self.start_frames + step)
+            if step in loss_steps:
+                loss = loss + rolling_weights[step] * self.training_objective(cond, target, extra)
+            if step + 1 < future_steps:
+                with torch.no_grad():
+                    output = self.merge_prediction(input, self.sample_residual(cond, extra, self.rollout_sample_steps, stochastic=True))
+                    input = torch.cat([input, output], dim=1)[:, -self.in_frames :].detach()
+        return {self.loss_name: loss}
 
     @torch.no_grad()
     def test_cascade(self, data: dict[str, Tensor]) -> Tensor:
@@ -236,7 +251,6 @@ class ConditionalGenerativeForecast(BasePredictor):
             raise ValueError(f"sum(step_range)={sum(self.step_range)} exceeds max(test_frames)={total_step}")
 
         channels, height, width = original_input.shape[-3:]
-        sample_shape = (original_input.shape[0], self.model_out_chans, height, width)
         outputs = torch.zeros(original_input.shape[0], len(steps), channels, height, width, device=original_input.device, dtype=torch.float32)
 
         self.logger.info(f"Start testing with {self.members} ensemble members and step_range {self.step_range} with time:{data.get('times', None)}.")
@@ -248,7 +262,7 @@ class ConditionalGenerativeForecast(BasePredictor):
                 for step in range(num_step):
                     input = self.reset_input(input)
                     cond = self.prepare_condition(input)
-                    pred = self.sample_residual(cond, self.condition_extra(data, input, step=self.start_frames + step), sample_shape)
+                    pred = self.sample_residual(cond, self.condition_extra(data, input, step=self.start_frames + step))
                     output = self.merge_prediction(input, pred.detach())
                     input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
                     if step + 1 in steps:
@@ -266,12 +280,17 @@ class ODEGenerativeForecast(ConditionalGenerativeForecast):
             raise ValueError(f"sampling_method must be 'euler' or 'heun', got {sampling_method}")
         self.sampling_method = sampling_method
 
-    def predict_velocity(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor | None) -> Tensor:
+    def predict_velocity(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor) -> Tensor:
         raise NotImplementedError
 
-    def _integrate_residual(self, cond: Tensor, extra: Tensor | None, state: Tensor, sample_steps: int) -> Tensor:
+    def sample_residual(self, cond: Tensor, extra: Tensor, sample_steps: int | None = None, stochastic: bool | None = None) -> Tensor:
+        sample_steps = self.sample_steps if sample_steps is None else sample_steps
         if sample_steps <= 0:
             raise ValueError(f"sample_steps must be positive, got {sample_steps}")
+        if stochastic is None:
+            stochastic = self.sample_init == "noise" or self.members > 1
+        sample_shape = (cond.shape[0], self.model_out_chans, *cond.shape[-2:])
+        state = torch.randn(sample_shape, device=cond.device, dtype=cond.dtype) * self.noise_scale if stochastic else cond.new_zeros(sample_shape)
         times = torch.linspace(0.0, 1.0, sample_steps + 1, device=cond.device, dtype=torch.float32)
         for index in range(sample_steps):
             time = times[index].expand(state.shape[0])
@@ -284,9 +303,6 @@ class ODEGenerativeForecast(ConditionalGenerativeForecast):
             else:
                 state = euler_state
         return state
-
-    def sample_residual(self, cond: Tensor, extra: Tensor | None, sample_shape: tuple[int, ...]) -> Tensor:
-        return self._integrate_residual(cond, extra, self.initialize_sample(cond, sample_shape), self.sample_steps)
 
 
 @torch.jit.script
@@ -337,6 +353,7 @@ class DiffusionForecast(ConditionalGenerativeForecast):
     """Predict a diffusion target during training and generate residuals with DDIM."""
 
     backbone_module = "unet"
+    loss_name = "loss_rec"
 
     def __init__(
         self,
@@ -373,6 +390,8 @@ class DiffusionForecast(ConditionalGenerativeForecast):
             raise ValueError(f"sample_timestep_max must be in [0, {num_steps - 1}], got {self.sample_timestep_max}")
         if not 0 <= self.train_timestep_max < num_steps:
             raise ValueError(f"train_timestep_max must be in [0, {num_steps - 1}], got {self.train_timestep_max}")
+        if self.rollout_sample_steps > num_steps:
+            raise ValueError(f"rollout_sample_steps must be in [1, {num_steps}], got {self.rollout_sample_steps}")
 
         if zero_init_output:
             output_layer: nn.Linear | nn.Conv2d
@@ -402,12 +421,7 @@ class DiffusionForecast(ConditionalGenerativeForecast):
         self.register_buffer("sample_timesteps", sample_timesteps, persistent=False)
         self.register_buffer("sample_prev_timesteps", sample_prev_timesteps, persistent=False)
 
-    def forward(self, data: dict[str, Tensor]) -> dict[str, Tensor]:
-        if not self.training:
-            return self.test(data)  # type: ignore[return-value]
-        data = self.process_data(data)
-        cond, target = self.preprocess_batch(data)
-        extra = self.condition_extra(data, data["input"], step=self.start_frames)
+    def training_objective(self, cond: Tensor, target: Tensor, extra: Tensor) -> Tensor:
         timesteps = torch.randint(0, self.train_timestep_max + 1, (target.shape[0],), device=target.device)
         noise = torch.randn_like(target)
         sqrt_alpha = _extract_timestep_values(self.sqrt_alphas_cumprod, timesteps, target)
@@ -416,11 +430,27 @@ class DiffusionForecast(ConditionalGenerativeForecast):
         loss_target = noise if self.predict_type == "epsilon" else target
         if self.predict_type == "v_prediction":
             loss_target = sqrt_alpha * noise - sqrt_one_minus_alpha * target
-        return {"loss_rec": weighted_charbonnier_loss(prediction, loss_target, self.reconstruction_weight(target))}
+        return charbonnier_loss(prediction, loss_target, self.reconstruction_weight(target))
 
-    def sample_residual(self, cond: Tensor, extra: Tensor | None, sample_shape: tuple[int, ...]) -> Tensor:
-        state = self.initialize_sample(cond, sample_shape)
-        for timestep, prev_timestep in zip(self.sample_timesteps, self.sample_prev_timesteps):
+    def sample_residual(self, cond: Tensor, extra: Tensor, sample_steps: int | None = None, stochastic: bool | None = None) -> Tensor:
+        sample_steps = self.sample_steps if sample_steps is None else sample_steps
+        if not 1 <= sample_steps <= self.num_steps:
+            raise ValueError(f"sample_steps must be in [1, {self.num_steps}], got {sample_steps}")
+        if stochastic is None:
+            stochastic = self.sample_init == "noise" or self.members > 1
+        sample_shape = (cond.shape[0], self.model_out_chans, *cond.shape[-2:])
+        state = torch.randn(sample_shape, device=cond.device, dtype=cond.dtype) * self.noise_scale if stochastic else cond.new_zeros(sample_shape)
+        if sample_steps == self.sample_steps:
+            sample_timesteps = self.sample_timesteps
+            sample_prev_timesteps = self.sample_prev_timesteps
+        elif sample_steps == 1:
+            sample_timesteps = torch.tensor([self.sample_timestep_max], device=state.device, dtype=torch.long)
+            sample_prev_timesteps = torch.tensor([-1], device=state.device, dtype=torch.long)
+        else:
+            sample_timesteps = torch.linspace(float(self.sample_timestep_max), 0.0, sample_steps, device=state.device).round().to(torch.long)
+            sample_prev_timesteps = torch.cat([sample_timesteps[1:], sample_timesteps.new_tensor([-1])])
+
+        for timestep, prev_timestep in zip(sample_timesteps, sample_prev_timesteps):
             prediction = self.predict_backbone(cond, state, timestep, extra)
             ddim_noise = torch.randn_like(state) if self.ddim_eta > 0.0 else torch.zeros_like(state)
             state = _jit_ddim_step(
@@ -443,64 +473,23 @@ class FlowMatchingForecast(ODEGenerativeForecast):
     """Learn the straight conditional flow from Gaussian noise to a forecast residual."""
 
     backbone_module = "flow_net"
+    loss_name = "loss_flow"
 
-    def __init__(
-        self,
-        time_scale: float = 1000.0,
-        rollout_max: int = 0,
-        rollout_alpha: float = 1.0,
-        rollout_sample_steps: int = 1,
-        **kwargs: Any,
-    ):
+    def __init__(self, time_scale: float = 1000.0, **kwargs: Any):
         super().__init__(**kwargs)
         if time_scale <= 0:
             raise ValueError(f"time_scale must be positive, got {time_scale}")
-        if rollout_max < 0:
-            raise ValueError(f"rollout_max must be non-negative, got {rollout_max}")
-        if not 0.0 < rollout_alpha <= 1.0:
-            raise ValueError(f"rollout_alpha must be in (0, 1], got {rollout_alpha}")
-        if rollout_sample_steps <= 0:
-            raise ValueError(f"rollout_sample_steps must be positive, got {rollout_sample_steps}")
         self.time_scale = time_scale
-        self.rollout_max = rollout_max
-        self.rollout_alpha = rollout_alpha
-        self.rollout_sample_steps = rollout_sample_steps
 
-    def predict_velocity(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor | None) -> Tensor:
+    def predict_velocity(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor) -> Tensor:
         return self.predict_backbone(cond, state, time * self.time_scale, extra)
 
-    def forward(self, data: dict[str, Tensor]) -> dict[str, Tensor]:
-        if not self.training:
-            return self.test(data)  # type: ignore[return-value]
-        data = self.process_data(data)
-        input = data["input"]
-        targets = data["targets"]
-        future_steps = targets.shape[1]
-        if future_steps == 0:
-            raise ValueError("FlowMatchingForecast rollout training requires at least one target frame")
-
-        loss_steps, rolling_weights = self.build_loss_steps_and_weights(future_steps, self.rollout_alpha, self.rollout_max)
-        loss_steps = set(loss_steps)
-        loss_flow = targets.new_zeros((), dtype=torch.float32)
-        for step in range(future_steps):
-            input = self.reset_input(input)
-            cond = self.prepare_condition(input)
-            target = self.prepare_target(input, targets[:, step : step + 1])
-            extra = self.condition_extra(data, input, step=self.start_frames + step)
-            if step in loss_steps:
-                time = torch.rand(target.shape[0], device=target.device, dtype=torch.float32)
-                time_view = time.reshape(target.shape[0], *([1] * (target.ndim - 1)))
-                noise = torch.randn_like(target) * self.noise_scale
-                state = (1.0 - time_view) * noise + time_view * target
-                loss_flow = loss_flow + rolling_weights[step] * weighted_mse_loss(
-                    self.predict_velocity(cond, state, time, extra), target - noise, self.reconstruction_weight(target)
-                )
-            if step + 1 < future_steps:
-                with torch.no_grad():
-                    rollout_state = torch.randn_like(target) * self.noise_scale
-                    output = self.merge_prediction(input, self._integrate_residual(cond, extra, rollout_state, self.rollout_sample_steps))
-                    input = torch.cat([input, output], dim=1)[:, -self.in_frames :].detach()
-        return {"loss_flow": loss_flow}
+    def training_objective(self, cond: Tensor, target: Tensor, extra: Tensor) -> Tensor:
+        time = torch.rand(target.shape[0], device=target.device, dtype=torch.float32)
+        time_view = time.reshape(target.shape[0], *([1] * (target.ndim - 1)))
+        noise = torch.randn_like(target) * self.noise_scale
+        state = (1.0 - time_view) * noise + time_view * target
+        return charbonnier_loss(self.predict_velocity(cond, state, time, extra), target - noise, self.reconstruction_weight(target))
 
 
 @MODELS.register()
@@ -508,6 +497,7 @@ class JiTForecast(ODEGenerativeForecast):
     """Optimize the velocity induced by a clean-residual prediction backbone."""
 
     backbone_module = "jit"
+    loss_name = "loss_jit"
 
     def __init__(self, p_mean: float = -0.8, p_std: float = 0.8, t_eps: float = 0.05, **kwargs: Any):
         super().__init__(**kwargs)
@@ -519,20 +509,15 @@ class JiTForecast(ODEGenerativeForecast):
         self.p_std = p_std
         self.t_eps = t_eps
 
-    def predict_velocity(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor | None) -> Tensor:
+    def predict_velocity(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor) -> Tensor:
         clean = self.predict_backbone(cond, state, time, extra)
         denominator = (1.0 - time.to(state)).reshape(state.shape[0], 1, 1, 1).clamp_min(self.t_eps)
         return (clean - state) / denominator
 
-    def forward(self, data: dict[str, Tensor]) -> dict[str, Tensor]:
-        if not self.training:
-            return self.test(data)  # type: ignore[return-value]
-        data = self.process_data(data)
-        cond, target = self.preprocess_batch(data)
-        extra = self.condition_extra(data, data["input"], step=self.start_frames)
+    def training_objective(self, cond: Tensor, target: Tensor, extra: Tensor) -> Tensor:
         time = torch.sigmoid(torch.randn(target.shape[0], device=target.device) * self.p_std + self.p_mean)
         time_view = time.reshape(target.shape[0], *([1] * (target.ndim - 1))).to(target)
         noise = torch.randn_like(target) * self.noise_scale
         state = time_view * target + (1.0 - time_view) * noise
         target_velocity = (target - state) / (1.0 - time_view).clamp_min(self.t_eps)
-        return {"loss_jit": weighted_mse_loss(self.predict_velocity(cond, state, time, extra), target_velocity, self.reconstruction_weight(target))}
+        return charbonnier_loss(self.predict_velocity(cond, state, time, extra), target_velocity, self.reconstruction_weight(target))

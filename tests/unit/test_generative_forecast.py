@@ -93,13 +93,14 @@ def test_all_generative_objectives_support_rollout_training(model_type, loss_nam
         params.update(num_steps=4, sample_steps=2, sample_timestep_max=3, train_timestep_max=3)
     model = model_type(**params)
     rollout_states = []
-    generate_residual = model.generate_residual
+    sample_residual = model.sample_residual
 
-    def record_generate_residual(cond, extra, state, sample_steps):
+    def record_sample_residual(cond, extra, sample_steps=None, stochastic=None):
+        state = sample_residual(cond, extra, sample_steps, stochastic)
         rollout_states.append(state.detach().clone())
-        return generate_residual(cond, extra, state, sample_steps)
+        return state
 
-    model.generate_residual = record_generate_residual
+    model.sample_residual = record_sample_residual
     loss = model(_batch(future_steps=3))[loss_name]
     loss.backward()
 
@@ -159,8 +160,9 @@ def test_cascade_averages_independent_member_trajectories(model_type):
     model = model_type(backbone="darknet_unet", backbone_kwargs=dict(base_channels=4, ch_mults=(1, 2), layers_per_block=1), **params)
     calls = []
 
-    def sample_residual(cond, extra, sample_shape):
+    def sample_residual(cond, extra, sample_steps=None, stochastic=None):
         calls.append(cond.detach().clone())
+        sample_shape = (cond.shape[0], model.model_out_chans, *cond.shape[-2:])
         if len(calls) == 1:
             return cond.new_ones(sample_shape)
         if len(calls) == 3:
@@ -183,12 +185,14 @@ def test_multiple_members_use_stochastic_initial_samples():
     params = _base_params()
     params.update(members=2)
     model = FlowMatchingForecast(backbone="darknet_unet", backbone_kwargs=dict(base_channels=4, ch_mults=(1, 2), layers_per_block=1), **params)
-    reference = torch.zeros(1, 1, 2, 2)
+    cond = torch.zeros(1, model.in_chans * model.in_frames, 2, 2)
+    extra = cond.new_empty(1, 0, 2, 2)
+    model.predict_velocity = lambda cond, state, time, extra: torch.zeros_like(state)
 
     torch.manual_seed(7)
-    ensemble_sample = model.initialize_sample(reference, reference.shape)
+    ensemble_sample = model.sample_residual(cond, extra, sample_steps=1)
     model.members = 1
-    single_sample = model.initialize_sample(reference, reference.shape)
+    single_sample = model.sample_residual(cond, extra, sample_steps=1)
 
     assert torch.count_nonzero(ensemble_sample) > 0
     assert torch.count_nonzero(single_sample) == 0
