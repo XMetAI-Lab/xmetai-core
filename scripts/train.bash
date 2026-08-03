@@ -92,9 +92,15 @@ function setup_onnxruntime() {
 }
 
 function setup_environment() {
-    # Create temporary config file
-    CONFIG_FILE_TMP="${ROOT_DIR}/configs/tmp_config.py"
+    # Keep the temporary config under xmetai-core/configs so __file__-relative paths resolve against xmetai-core.
+    local source_config_dir
+    source_config_dir=$(cd "$(dirname "${CONFIG_FILE}")" && pwd)
+    CONFIG_FILE_TMP=$(mktemp "${ROOT_DIR}/configs/.xmetai_tmp_config.XXXXXX")
+    mv "${CONFIG_FILE_TMP}" "${CONFIG_FILE_TMP}.py"
+    CONFIG_FILE_TMP="${CONFIG_FILE_TMP}.py"
+    trap 'rm -f "${CONFIG_FILE_TMP}"' EXIT
     cp "${CONFIG_FILE}" "${CONFIG_FILE_TMP}"
+    export PYTHONPATH="${ROOT_DIR}/..:${ROOT_DIR}/configs:${source_config_dir}:${PYTHONPATH:-}"
 
     # Format depth list for directory naming
     export DEPTH_LIST="${DEPTH_LIST}"
