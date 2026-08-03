@@ -295,11 +295,12 @@ class ODEGenerativeForecast(ConditionalGenerativeForecast):
         for index in range(sample_steps):
             time = times[index].expand(state.shape[0])
             next_time = times[index + 1].expand(state.shape[0])
-            dt = next_time[0] - time[0]
-            velocity = self.predict_velocity(cond, state, time, extra)
+            dt = (next_time[0] - time[0]).to(state)
+            velocity = self.predict_velocity(cond, state, time, extra).to(state)
             euler_state = state + dt * velocity
-            if self.sampling_method == "heun" and index < sample_steps - 1:
-                state = state + 0.5 * dt * (velocity + self.predict_velocity(cond, euler_state, next_time, extra))
+            if self.sampling_method == "heun":
+                correction = self.predict_velocity(cond, euler_state, next_time, extra).to(state)
+                state = state + 0.5 * dt * (velocity + correction)
             else:
                 state = euler_state
         return state
