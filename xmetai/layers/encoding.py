@@ -246,8 +246,9 @@ def patch_root_area(
 def lat_lon_meshgrid(lat: torch.Tensor, lon: torch.Tensor) -> torch.Tensor:
     """Construct a 2-channel (lat, lon) meshgrid from coordinate vectors.
 
-    Uses ``torch.meshgrid(..., indexing="xy")``, which matches NumPy's
-    ``indexing="ij"`` convention::
+    Uses ``torch.meshgrid(..., indexing="xy")`` and then permutes axes so the
+    returned grid is shaped ``(2, H, W)`` with lat varying along ``H`` and
+    lon along ``W``::
 
         >>> lat = torch.tensor([1., 2., 3.])
         >>> lon = torch.tensor([4., 5., 6.])

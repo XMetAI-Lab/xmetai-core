@@ -84,7 +84,7 @@ def area(polygon: torch.Tensor) -> torch.Tensor:
         :class:`torch.Tensor`: Area in square kilometers.
     """
     # Be sure to close the loop.
-    polygon = torch.cat((polygon, polygon[..., -1:, :]), axis=-2)
+    polygon = torch.cat((polygon, polygon[..., :1, :]), axis=-2)
 
     area = torch.zeros(polygon.shape[:-2], dtype=polygon.dtype, device=polygon.device)
     n = polygon.shape[-2]  # Number of points of the polygon
@@ -224,8 +224,8 @@ class LevelPatchEmbed(nn.Module):
         B, V, T, H, W = x.shape
         assert len(var_names) == V, f"{V} != {len(var_names)}."
         assert self.kernel_size[0] >= T, f"{T} > {self.kernel_size[0]}."
-        assert H % self.kernel_size[1] == 0, f"{H} % {self.kernel_size[0]} != 0."
-        assert W % self.kernel_size[2] == 0, f"{W} % {self.kernel_size[1]} != 0."
+        assert H % self.kernel_size[1] == 0, f"{H} % {self.kernel_size[1]} != 0."
+        assert W % self.kernel_size[2] == 0, f"{W} % {self.kernel_size[2]} != 0."
         assert len(set(var_names)) == len(var_names), f"{var_names} contains duplicates."
 
         # Select the weights of the variables and history dimensions that are present in the batch.
@@ -1636,41 +1636,6 @@ class TianQuan(BasePredictor):
                     )
                 )
         return out
-
-    def predict(
-        self,
-        x,
-        anomaly,
-        hours,
-        variables,
-        out_vars,
-        transform,
-        lats,
-        lons,
-        region_info,
-        max_predict_range,
-    ):
-        """
-        Generate final NetCDF predictions. Saves via `np2nc_preds`.
-        """
-        surf_p, atmo_p = self.forward_encoder(x, anomaly, hours, variables, lats, lons, region_info)
-        preds = x.clone()
-        # Map upper & surface predictions back into full variable stack
-        for i, var in enumerate(self.upper_variables):
-            for j, lvl in enumerate(self.levels):
-                idx = self.get_var_ids((f"{var}_{lvl}",), x.device)
-                preds[:, idx] = atmo_p[:, j, i : i + 1]
-        for i, var in enumerate(self.surface_variables):
-            idx = self.get_var_ids((var,), x.device)
-            preds[:, idx] = surf_p[:, i : i + 1]
-
-        preds = transform(preds)
-        out_ids = self.get_var_ids(tuple(out_vars), x.device)
-        mi, ma = region_info["min_h"], region_info["max_h"]
-        mj, mj = region_info["min_w"], region_info["max_w"]
-        final = preds[:, out_ids, mi : ma + 1, mj : mj + 1].cpu().numpy()
-
-        return final
 
     @torch.no_grad()
     def test_cascade(self, data):
