@@ -5,24 +5,18 @@ Author: shenZheWen
 Date: 2026-04-19
 Description: Config for TianQuan (ResCast sub-seasonal-to-seasonal forecasting model).
 """
+
 import logging
 import os
 
-from xmetai import (
-    DATASETS,
-    METRICS,
-    LazyConfig,
-    build_test_loader,
-    build_train_loader,
-    get_data_info,
-)
-
+from omegaconf import OmegaConf
 from s2s_base import (  # noqa: F401
     ROOT_PATH,
     buffers,
     depths,
     in_chans,
     in_frames,
+    in_names,
     load_from_pretrain,
     maskid,
     optimizer,
@@ -32,12 +26,17 @@ from s2s_base import (  # noqa: F401
     step_range,
     test_frames,
     train,
-    in_names,
 )
 
-from xmetai import LazyCall as L, MODELS
-from omegaconf import OmegaConf
-import numpy as np
+from xmetai import (
+    DATASETS,
+    METRICS,
+    MODELS,
+    LazyConfig,
+    build_test_loader,
+    build_train_loader,
+)
+from xmetai import LazyCall as L
 
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
@@ -80,62 +79,149 @@ drop_path = 0.1
 drop_rate = 0.1
 
 tianquan_vars = [
-    "2m_temperature", "wind_speed_10m",
-    "geopotential_50", "geopotential_100", "geopotential_150", "geopotential_200",
-    "geopotential_250", "geopotential_300", "geopotential_400", "geopotential_500",
-    "geopotential_600", "geopotential_700", "geopotential_850", "geopotential_925",
+    "2m_temperature",
+    "wind_speed_10m",
+    "geopotential_50",
+    "geopotential_100",
+    "geopotential_150",
+    "geopotential_200",
+    "geopotential_250",
+    "geopotential_300",
+    "geopotential_400",
+    "geopotential_500",
+    "geopotential_600",
+    "geopotential_700",
+    "geopotential_850",
+    "geopotential_925",
     "geopotential_1000",
-    "wind_speed_50", "wind_speed_100", "wind_speed_150", "wind_speed_200",
-    "wind_speed_250", "wind_speed_300", "wind_speed_400", "wind_speed_500",
-    "wind_speed_600", "wind_speed_700", "wind_speed_850", "wind_speed_925",
+    "wind_speed_50",
+    "wind_speed_100",
+    "wind_speed_150",
+    "wind_speed_200",
+    "wind_speed_250",
+    "wind_speed_300",
+    "wind_speed_400",
+    "wind_speed_500",
+    "wind_speed_600",
+    "wind_speed_700",
+    "wind_speed_850",
+    "wind_speed_925",
     "wind_speed_1000",
-    "temperature_50", "temperature_100", "temperature_150", "temperature_200",
-    "temperature_250", "temperature_300", "temperature_400", "temperature_500",
-    "temperature_600", "temperature_700", "temperature_850", "temperature_925",
+    "temperature_50",
+    "temperature_100",
+    "temperature_150",
+    "temperature_200",
+    "temperature_250",
+    "temperature_300",
+    "temperature_400",
+    "temperature_500",
+    "temperature_600",
+    "temperature_700",
+    "temperature_850",
+    "temperature_925",
     "temperature_1000",
-    "relative_humidity_50", "relative_humidity_100", "relative_humidity_150", "relative_humidity_200",
-    "relative_humidity_250", "relative_humidity_300", "relative_humidity_400", "relative_humidity_500",
-    "relative_humidity_600", "relative_humidity_700", "relative_humidity_850", "relative_humidity_925",
+    "relative_humidity_50",
+    "relative_humidity_100",
+    "relative_humidity_150",
+    "relative_humidity_200",
+    "relative_humidity_250",
+    "relative_humidity_300",
+    "relative_humidity_400",
+    "relative_humidity_500",
+    "relative_humidity_600",
+    "relative_humidity_700",
+    "relative_humidity_850",
+    "relative_humidity_925",
     "relative_humidity_1000",
-    "specific_humidity_50", "specific_humidity_100", "specific_humidity_150", "specific_humidity_200",
-    "specific_humidity_250", "specific_humidity_300", "specific_humidity_400", "specific_humidity_500",
-    "specific_humidity_600", "specific_humidity_700", "specific_humidity_850", "specific_humidity_925",
+    "specific_humidity_50",
+    "specific_humidity_100",
+    "specific_humidity_150",
+    "specific_humidity_200",
+    "specific_humidity_250",
+    "specific_humidity_300",
+    "specific_humidity_400",
+    "specific_humidity_500",
+    "specific_humidity_600",
+    "specific_humidity_700",
+    "specific_humidity_850",
+    "specific_humidity_925",
     "specific_humidity_1000",
 ]
 
 # 严格匹配 TianQuan 模型的 67 个气象变量（已转换为标准库存短命名）
 tianquan_vars_2 = [
     # ---- 2 个地表变量 ----
-    "t2m", "10u",  # 用 10u 代替 10m风速 (库存无标量风速)
-
+    "t2m",
+    "10u",  # 用 10u 代替 10m风速 (库存无标量风速)
     # ---- 13 层位势高度 (geopotential -> z) ----
-    "z50", "z100", "z150", "z200",
-    "z250", "z300", "z400", "z500",
-    "z600", "z700", "z850", "z925",
+    "z50",
+    "z100",
+    "z150",
+    "z200",
+    "z250",
+    "z300",
+    "z400",
+    "z500",
+    "z600",
+    "z700",
+    "z850",
+    "z925",
     "z1000",
-
     # ---- 13 层 U 侧风 (u，代替原本的 wind_speed) ----
-    "u50", "u100", "u150", "u200",
-    "u250", "u300", "u400", "u500",
-    "u600", "u700", "u850", "u925",
+    "u50",
+    "u100",
+    "u150",
+    "u200",
+    "u250",
+    "u300",
+    "u400",
+    "u500",
+    "u600",
+    "u700",
+    "u850",
+    "u925",
     "u1000",
-
     # ---- 13 层温度 (temperature -> t) ----
-    "t50", "t100", "t150", "t200",
-    "t250", "t300", "t400", "t500",
-    "t600", "t700", "t850", "t925",
+    "t50",
+    "t100",
+    "t150",
+    "t200",
+    "t250",
+    "t300",
+    "t400",
+    "t500",
+    "t600",
+    "t700",
+    "t850",
+    "t925",
     "t1000",
-
     # ---- 13 层 V 侧风 (v，代替原本的 relative_humidity) ----
-    "v50", "v100", "v150", "v200",
-    "v250", "v300", "v400", "v500",
-    "v600", "v700", "v850", "v925",
+    "v50",
+    "v100",
+    "v150",
+    "v200",
+    "v250",
+    "v300",
+    "v400",
+    "v500",
+    "v600",
+    "v700",
+    "v850",
+    "v925",
     "v1000",
-
     # ---- 13 层比湿 (specific_humidity -> q) ----
-    "q50", "q100", "q150", "q200",
-    "q250", "q300", "q400", "q500",
-    "q600", "q700", "q850", "q925",
+    "q50",
+    "q100",
+    "q150",
+    "q200",
+    "q250",
+    "q300",
+    "q400",
+    "q500",
+    "q600",
+    "q700",
+    "q850",
+    "q925",
     "q1000",
 ]
 
@@ -145,7 +231,7 @@ buffers["mean"] = buffers["mean"][needed_ids]
 buffers["std"] = buffers["std"][needed_ids]
 
 in_names = tianquan_vars_2
-idx = [in_names.index('tp')] if 'tp' in in_names else []
+idx = [in_names.index("tp")] if "tp" in in_names else []
 logid, accumid = idx, idx
 
 test_names = ["z500", "u200", "u850", "t2m", "t850"]
@@ -214,14 +300,7 @@ dataloader.evaluator = [
 
 dataloader.train = L(build_train_loader)(
     dataset=L(DATASETS.get("ERA5"))(
-        data_name=data_dir,
-        hist_frames=in_frames,
-        fcst_frames=2,
-        interval=1,
-        freq=freq,
-        training=True,
-        years=train_times,
-        in_names=tianquan_vars_2
+        data_name=data_dir, hist_frames=in_frames, fcst_frames=2, interval=1, freq=freq, training=True, years=train_times, in_names=tianquan_vars_2
     ),
     total_batch_size=total_batch_size,
     num_workers=1,
@@ -238,7 +317,7 @@ dataloader.test = L(build_test_loader)(
         training=False,
         inference_only=False,
         years=test_times,
-        in_names=tianquan_vars_2
+        in_names=tianquan_vars_2,
     ),
     total_batch_size=total_batch_size,
     num_workers=1,

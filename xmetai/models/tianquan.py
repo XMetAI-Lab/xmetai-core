@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 """
 Author: shenzhewen &&
 Date: 2026-04-20 12:00:00
@@ -10,13 +12,14 @@ Channel layout (s2s 67-channel):
 Copyright (c) 2026 by XMetAI/shenzhewen, All Rights Reserved.
 """
 
-# !/usr/bin/env python
-# -*- coding: utf-8 -*-
+# ==============================================================================
+# 1. 标准库
+# ==============================================================================
 import math
 import os
 from datetime import timedelta
 from functools import lru_cache
-from typing import List, Optional, Tuple, TypeVar, Union
+from typing import Optional, Tuple, Union
 
 # ==============================================================================
 # 2. 第三方科学计算库
@@ -24,16 +27,13 @@ from typing import List, Optional, Tuple, TypeVar, Union
 import numpy as np
 import pandas as pd
 import xarray as xr
-import xskillscore as xs
-from scipy import stats
-from xmetai.loss import charbonnier_loss
 
 # NumPy 兼容性处理 (针对旧代码调用 np.float 的补丁)
 if not hasattr(np, "float"):
     np.float = float
 
 # ==============================================================================
-# 3. PyTorch 深度学习体系
+# 3. PyTorch 及深度学习生态
 # ==============================================================================
 import torch
 import torch.nn as nn
@@ -43,137 +43,28 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 from timm.layers import Mlp, to_2tuple, trunc_normal_
 
-from xmetai.registries import MODELS
 from xmetai.layers.attention import Attention as FrameworkAttention
+from xmetai.layers.encoding import (
+    FourierExpansion,
+    pos_scale_enc,
+)
+from xmetai.layers.tianquan_blocks import PerceiverResampler
 from xmetai.layers.weight_init import vit_fill
+
+# ==============================================================================
+# 4. xmetai 框架
+# ==============================================================================
+from xmetai.loss import charbonnier_loss
+from xmetai.registries import MODELS
 
 from .base_predictor import BasePredictor
 
 # ==============================================================================
-# 4. 类型定义与全局常量
+# 5. 类型定义与全局常量
 # ==============================================================================
-T = TypeVar("T", Tuple[int, int], Tuple[int, int, int])
 
 # 地球半径 (单位: km)
 radius_earth = 6378137 / 1000
-# ==============================================================================
-# 5. 气象变量映射配置
-# ==============================================================================
-
-# 基础变量名映射
-NAME_TO_VAR = {
-    "2m_temperature": "t2m",
-    "10m_u_component_of_wind": "u10",
-    "10m_v_component_of_wind": "v10",
-    "mean_sea_level_pressure": "msl",
-    "surface_pressure": "sp",
-    "toa_incident_solar_radiation": "tisr",
-    "total_precipitation": "tp",
-    "land_sea_mask": "lsm",
-    "orography": "orography",
-    "lattitude": "lat2d",
-    "geopotential": "z",
-    "u_component_of_wind": "u",
-    "v_component_of_wind": "v",
-    "temperature": "t",
-    "relative_humidity": "r",
-    "specific_humidity": "q",
-}
-
-# 1.40625分辨率或特定数据集的映射
-NAME_TO_VAR_14 = {
-    "2m_temperature": "t2m_avg",
-    "wind_speed_10m": "wind_speed_10m_avg",
-    "mean_sea_level_pressure": "msl",
-    "surface_pressure": "sp",
-    "toa_incident_solar_radiation": "tisr_avg",
-    "surface_net_thermal_radiation": "str_avg",
-    "boundary_layer_height": "blh_avg",
-    "sshf": "sshf_avg",
-    "slhf": "slhf_avg",
-    "msl": "msl_avg",
-    "total_precipitation": "tp_sum",
-    "land_sea_mask": "lsm_avg",
-    "orography": "orography",
-    "lattitude": "lat2d",
-    "geopotential": "z_avg",
-    "wind_speed": "wind_speed_avg",
-    "temperature": "t_avg",
-    "relative_humidity": "r_avg",
-    "specific_humidity": "q_avg",
-}
-
-VAR_TO_NAME = {v: k for k, v in NAME_TO_VAR.items()}
-
-# 变量分类定义
-SINGLE_LEVEL_VARS = [
-    "2m_temperature",
-    "10m_u_component_of_wind",
-    "10m_v_component_of_wind",
-    "mean_sea_level_pressure",
-    "surface_pressure",
-    "toa_incident_solar_radiation",
-    "total_precipitation",
-    "land_sea_mask",
-    "orography",
-    "lattitude",
-]
-
-PRESSURE_LEVEL_VARS = [
-    "geopotential",
-    "u_component_of_wind",
-    "v_component_of_wind",
-    "temperature",
-    "relative_humidity",
-    "specific_humidity",
-]
-
-DEFAULT_PRESSURE_LEVELS = [
-    50,
-    100,
-    150,
-    200,
-    250,
-    300,
-    400,
-    500,
-    600,
-    700,
-    850,
-    925,
-    1000,
-]
-
-# 自动生成包含气压层级的完整变量映射
-NAME_LEVEL_TO_VAR_LEVEL = {}
-
-# 地表变量映射
-for var in SINGLE_LEVEL_VARS:
-    NAME_LEVEL_TO_VAR_LEVEL[var] = NAME_TO_VAR[var]
-
-# 高空压力层变量映射 (例如: temperature_500 -> t_500)
-for var in PRESSURE_LEVEL_VARS:
-    for level in DEFAULT_PRESSURE_LEVELS:
-        name_key = f"{var}_{level}"
-        var_val = f"{NAME_TO_VAR[var]}_{level}"
-        NAME_LEVEL_TO_VAR_LEVEL[name_key] = var_val
-
-VAR_LEVEL_TO_NAME_LEVEL = {v: k for k, v in NAME_LEVEL_TO_VAR_LEVEL.items()}
-
-# ==============================================================================
-# 6. 地理区域边界配置 (Lat: 纬度, Lon: 经度)
-# ==============================================================================
-BOUNDARIES = {
-    "NorthAmerica": {"lat_range": (15, 65), "lon_range": (220, 300)},  # 8x14
-    "SouthAmerica": {"lat_range": (-55, 20), "lon_range": (270, 330)},  # 14x10
-    "Europe": {"lat_range": (30, 65), "lon_range": (0, 40)},  # 6x8
-    "SouthAsia": {"lat_range": (-15, 45), "lon_range": (25, 110)},  # 10x14
-    "EastAsia": {"lat_range": (5, 65), "lon_range": (70, 150)},  # 10x12
-    "Australia": {"lat_range": (-50, 10), "lon_range": (100, 180)},  # 10x14
-    "Global": {"lat_range": (-90, 90), "lon_range": (0, 360)},  # 32x64
-    "China": {"lat_range": (0, 55), "lon_range": (70, 135)},  # 8x10
-    "Sichuan": {"lat_range": (20, 40), "lon_range": (90, 110)},  # 2x2
-}
 
 
 def area(polygon: torch.Tensor) -> torch.Tensor:
@@ -217,76 +108,6 @@ def area(polygon: torch.Tensor) -> torch.Tensor:
     return torch.abs(area)
 
 
-class FourierExpansion(nn.Module):
-    """A Fourier series-style expansion into a high-dimensional space.
-
-    Attributes:
-        lower (float): Lower wavelength.
-        upper (float): Upper wavelength.
-        assert_range (bool): Assert that the encoded tensor is within the specified wavelength
-            range.
-    """
-
-    def __init__(self, lower: float, upper: float, assert_range: bool = True) -> None:
-        """Initialise.
-
-        Args:
-            lower (float): Lower wavelength.
-            upper (float): Upper wavelength.
-            assert_range (bool, optional): Assert that the encoded tensor is within the specified
-                wavelength range. Defaults to `True`.
-        """
-        super().__init__()
-        self.lower = lower
-        self.upper = upper
-        self.assert_range = assert_range
-
-    def forward(self, x: torch.Tensor, d: int) -> torch.Tensor:
-        """Perform the expansion.
-
-        Adds a dimension of length `d` to the end of the shape of `x`.
-
-        Args:
-            x (:class:`torch.Tensor`): Input to expand of shape `(..., n)`. All elements of `x` must
-                lie within `[self.lower, self.upper]` if `self.assert_range` is `True`.
-            d (int): Dimensionality. Must be a multiple of two.
-
-        Raises:
-            AssertionError: If `self.assert_range` is `True` and not all elements of `x` are not
-                within `[self.lower, self.upper]`.
-            ValueError: If `d` is not a multiple of two.
-
-        Returns:
-            torch.Tensor: Fourier series-style expansion of `x` of shape `(..., n, d)`.
-        """
-        # If the input is not within the configured range, the embedding might be ambiguous!
-        in_range = torch.logical_and(self.lower <= x.abs(), torch.all(x.abs() <= self.upper))
-        in_range_or_zero = torch.all(torch.logical_or(in_range, x == 0))  # Allow zeros to pass through.
-        if self.assert_range and not in_range_or_zero:
-            raise AssertionError(
-                f"The input tensor is not within the configured range" f" `[{self.lower}, {self.upper}]`.")
-
-        # We will use half of the dimensionality for `sin` and the other half for `cos`.
-        if not (d % 2 == 0):
-            raise ValueError("The dimensionality must be a multiple of two.")
-
-        # Always perform the expansion with `float64`s to avoid numerical accuracy shenanigans.
-        x = x.double()
-
-        wavelengths = torch.logspace(
-            math.log10(self.lower),
-            math.log10(self.upper),
-            d // 2,
-            base=10,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        prod = torch.einsum("...i,j->...ij", x, 2 * np.pi / wavelengths)
-        encoding = torch.cat((torch.sin(prod), torch.cos(prod)), dim=-1)
-
-        return encoding.float()  # Cast to `float32` to avoid incompatibilities.
-
-
 # Determine a reasonable smallest value for the scale embedding by assuming a smallest delta in
 # latitudes and longitudes.
 _delta = 0.01  # Reasonable smallest delta in latitude and longitude
@@ -322,191 +143,18 @@ absolute_time_expansion = FourierExpansion(1, 24 * 365.25, assert_range=False)
 """:class:`.FourierExpansion`: Fourier expansion for the absolute time encoding in hours."""
 
 
-def patch_root_area(
-        lat_min: torch.Tensor,
-        lon_min: torch.Tensor,
-        lat_max: torch.Tensor,
-        lon_max: torch.Tensor,
-) -> torch.Tensor:
-    """For a rectangular patch on a sphere, compute the square root of the area of the patch in
-    units km^2. The root is taken to return units of km, and thus stay scalable between different
-    resolutions.
-
-    Args:
-        lat_min (torch.Tensor): Minimum latitutes of patches.
-        lon_min (torch.Tensor): Minimum longitudes of patches.
-        lat_max (torch.Tensor): Maximum latitudes of patches.
-        lon_max (torch.Tensor): Maximum longitudes of patches.
-
-    Returns:
-        torch.Tensor: Square root of the area.
-    """
-    # Calculate area of latitude-longitude grid using the following formula. Phis are latitudes
-    # and thetas are longitudes.
-    #
-    #   area = R**2 * pi * (sin(phi_1) - sin(phi_2)) * (theta_1 - theta_2)
-    #
-    # Taken from
-    #
-    #   https://www.johndcook.com/blog/2023/02/21/sphere-grid-area/
-    #
-    assert (lat_max > lat_min).all(), f"lat_max - lat_min: {torch.min(lat_max - lat_min)}."
-    assert (lon_max > lon_min).all(), f"lon_max - lon_min: {torch.min(lon_max - lon_min)}."
-    assert (abs(lat_max) <= 90.0).all() and (abs(lat_min) <= 90.0).all()
-    assert (lon_max <= 360.0).all() and (lon_min <= 360.0).all()
-    assert (lon_max >= 0.0).all() and (lon_min >= 0.0).all()
-    area = 6371 ** 2 * torch.pi * (torch.sin(torch.deg2rad(lat_max)) - torch.sin(torch.deg2rad(lat_min))) * (
-                torch.deg2rad(lon_max) - torch.deg2rad(lon_min))
-
-    assert (area > 0.0).all()
-    return torch.sqrt(area)
-
-
-def pos_scale_enc_grid(
-        encode_dim: int,
-        grid: torch.Tensor,
-        patch_dims: Tuple,
-        pos_expansion: FourierExpansion,
-        scale_expansion: FourierExpansion,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute the position and scale encoding for a latitude-longitude grid.
-
-    Requires batch dimensions in the input and returns a batch dimension.
-
-    Args:
-        encode_dim (int): Output encoding dimension `D`. Must be a multiple of four: splits
-            across latitudes and longitudes and across sines and cosines.
-        grid (torch.Tensor): Latitude-longitude grid of dimensions `(B, 2, H, W)`. `grid[:, 0]`
-            should be the latitudes of `grid[:, 1]` should be the longitudes.
-        patch_dims (tuple): Patch dimensions. Different x-values and y-values are supported.
-        pos_expansion (:class:`aurora.model.fourier.FourierExpansion`): Fourier expansion for the
-            latitudes and longitudes.
-        scale_expansion (:class:`aurora.model.fourier.FourierExpansion`): Fourier expansion for the
-            patch areas.
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: Positional encoding and scale encoding of shape
-            `(B, H/patch[0] * W/patch[1], D)`.
-    """
-    assert encode_dim % 4 == 0
-    assert grid.dim() == 4
-
-    # Take the 2D pooled values of the mesh. This is the same as subsequent 1D pooling over the
-    # x-axis and then ove the y-axis.
-    grid_h = F.avg_pool2d(grid[:, 0], patch_dims)
-    grid_w = F.avg_pool2d(grid[:, 1], patch_dims)
-
-    # Compute the square root of the area of the patches specified by the latitude-longitude
-    # grid.
-    grid_lat_max = F.max_pool2d(grid[:, 0], patch_dims)
-    grid_lat_min = -F.max_pool2d(-grid[:, 0], patch_dims)
-    grid_lon_max = F.max_pool2d(grid[:, 1], patch_dims)
-    grid_lon_min = -F.max_pool2d(-grid[:, 1], patch_dims)
-    root_area = patch_root_area(grid_lat_min, grid_lon_min, grid_lat_max, grid_lon_max)
-
-    # Use half of dimensions for the latitudes of the midpoints of the patches and the other
-    # half for the longitudes. Before computing the encodings, flatten over the spatial dimensions.
-    B = grid_h.shape[0]
-    encode_h = pos_expansion(grid_h.reshape(B, -1), encode_dim // 2)  # (B, L, D/2)
-    encode_w = pos_expansion(grid_w.reshape(B, -1), encode_dim // 2)  # (B, L, D/2)
-    pos_encode = torch.cat((encode_h, encode_w), axis=-1)  # (B, L, D)
-
-    # No need to split things up for the scale encoding.
-    scale_encode = scale_expansion(root_area.reshape(B, -1), encode_dim)  # (B, L, D)
-
-    return pos_encode, scale_encode
-
-
-def lat_lon_meshgrid(lat: torch.Tensor, lon: torch.Tensor) -> torch.Tensor:
-    """Construct a meshgrid of latitude and longitude coordinates.
-
-    `torch.meshgrid(*tensors, indexing="xy")` gives the same behavior as calling
-    `numpy.meshgrid(*arrays, indexing="ij")`::
-
-        lat = torch.tensor([1, 2, 3])
-        lon = torch.tensor([4, 5, 6])
-        grid_x, grid_y = torch.meshgrid(lat, lon, indexing='xy')
-        grid_x = tensor([[1, 2, 3], [1, 2, ,3], [1, 2, 3]])
-        grid_y = tensor([[4, 4, 4], [5, 5, ,5], [6, 6, 6]])
-
-    Args:
-        lat (torch.Tensor): Vector of latitudes.
-        lon (torch.Tensor): Vector of longitudes.
-
-    Returns:
-        torch.Tensor: Meshgrid of shape `(2, len(lat), len(lon))`.
-    """
-    assert lat.dim() == 1
-    assert lon.dim() == 1
-
-    grid = torch.meshgrid(lat, lon, indexing="xy")
-    grid = torch.stack(grid, axis=0)
-    grid = grid.permute(0, 2, 1)
-
-    return grid
-
-
-def pos_scale_enc(
-        encode_dim: int,
-        lat: torch.Tensor,
-        lon: torch.Tensor,
-        patch_dims: Union[int, List, Tuple],
-        pos_expansion: FourierExpansion,
-        scale_expansion: FourierExpansion,
-) -> torch.Tensor:
-    """Positional encoding of latitude-longitude data.
-
-    Does not support batch dimensions in the input and does not return batch dimensions either.
-
-    Args:
-        encode_dim (int): Output encoding dimension `D`.
-        lat (torch.Tensor): Latitudes, `H`. Can be either a vector or a matrix.
-        lon (torch.Tensor): Longitudes, `W`. Can be either a vector or a matrix.
-        patch_dims (Union[list, tuple]): Patch dimensions. Different x-values and y-values are
-            supported.
-        pos_expansion (:class:`aurora.model.fourier.FourierExpansion`): Fourier expansion for the
-            latitudes and longitudes.
-        scale_expansion (:class:`aurora.model.fourier.FourierExpansion`): Fourier expansion for the
-            patch areas.
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: Positional encoding and scale encoding of shape
-            `(H/patch[0] * W/patch[1], D)`.
-    """
-    if lat.dim() == lon.dim() == 1:
-        grid = lat_lon_meshgrid(lat, lon)
-    elif lat.dim() == lon.dim() == 2:
-        grid = torch.stack((lat, lon), dim=0)
-    else:
-        raise ValueError(
-            f"Latitudes and longitudes must either both be vectors or both be matrices, " f"but have dimensionalities {lat.dim()} and {lon.dim()} respectively."
-        )
-
-    grid = grid[None]  # Add batch dimension.
-
-    pos_encoding, scale_encoding = pos_scale_enc_grid(
-        encode_dim,
-        grid,
-        to_2tuple(patch_dims),
-        pos_expansion=pos_expansion,
-        scale_expansion=scale_expansion,
-    )
-
-    return pos_encoding.squeeze(0), scale_encoding.squeeze(0)  # Return without batch dimension.
-
-
 class LevelPatchEmbed(nn.Module):
     """At either the surface or at a single pressure level, maps all variables into a single
     embedding."""
 
     def __init__(
-            self,
-            var_names: Tuple[str, ...],
-            patch_size: int,
-            embed_dim: int,
-            history_size: int = 1,
-            norm_layer: Optional[nn.Module] = None,
-            flatten: bool = True,
+        self,
+        var_names: Tuple[str, ...],
+        patch_size: int,
+        embed_dim: int,
+        history_size: int = 1,
+        norm_layer: Optional[nn.Module] = None,
+        flatten: bool = True,
     ) -> None:
         """Initialise.
 
@@ -606,21 +254,21 @@ class Perceiver3DEncoder(nn.Module):
     """Multi-scale multi-source multi-variable encoder based on the Perceiver architecture."""
 
     def __init__(
-            self,
-            surf_vars: Tuple[str, ...],
-            static_vars: Union[Tuple[str, str], None],
-            atmos_vars: Tuple[str, str],
-            atmos_levels: Tuple[int,],
-            patch_size: int = 4,
-            latent_levels: int = 8,
-            embed_dim: int = 1024,
-            num_heads: int = 16,
-            head_dim: int = 64,
-            drop_rate: float = 0.1,
-            depth: int = 2,
-            mlp_ratio: float = 4.0,
-            max_history_size: int = 2,
-            perceiver_ln_eps: float = 1e-5,
+        self,
+        surf_vars: Tuple[str, ...],
+        static_vars: Union[Tuple[str, str], None],
+        atmos_vars: Tuple[str, str],
+        atmos_levels: Tuple[int,],
+        patch_size: int = 4,
+        latent_levels: int = 8,
+        embed_dim: int = 1024,
+        num_heads: int = 16,
+        head_dim: int = 64,
+        drop_rate: float = 0.1,
+        depth: int = 2,
+        mlp_ratio: float = 4.0,
+        max_history_size: int = 2,
+        perceiver_ln_eps: float = 1e-5,
     ) -> None:
         """Initialise.
 
@@ -743,14 +391,14 @@ class Perceiver3DEncoder(nn.Module):
         return x
 
     def forward(
-            self,
-            x_surf: torch.Tensor,
-            x_static: torch.Tensor,
-            x_atmos: torch.Tensor,
-            lead_time: timedelta,
-            lat: torch.Tensor,
-            lon: torch.Tensor,
-            hours: torch.Tensor,
+        self,
+        x_surf: torch.Tensor,
+        x_static: torch.Tensor,
+        x_atmos: torch.Tensor,
+        lead_time: timedelta,
+        lat: torch.Tensor,
+        lon: torch.Tensor,
+        hours: torch.Tensor,
     ) -> torch.Tensor:
         """Peform encoding.
 
@@ -861,7 +509,7 @@ def unpatchify(x: torch.Tensor, V: int, H: int, W: int, P: int) -> torch.Tensor:
     H = H // P
     W = W // P
     assert x.size(1) == H * W
-    assert x.size(-1) == V * P ** 2
+    assert x.size(-1) == V * P**2
 
     x = x.reshape(shape=(B, H, W, C, P, P, V))
     x = rearrange(x, "B H W C P1 P2 V -> B V C H P1 W P2")
@@ -900,136 +548,6 @@ def init_weights(m: nn.Module) -> None:
             nn.init.constant_(m.weight, 1.0)
 
 
-
-
-class PerceiverAttention(nn.Module):
-    """Cross attention module from the Perceiver architecture."""
-
-    def __init__(
-            self,
-            latent_dim: int,
-            context_dim: int,
-            head_dim: int = 64,
-            num_heads: int = 8,
-    ) -> None:
-        """Initialise.
-
-        Args:
-            latent_dim (int): Dimensionality of the latent features given as input.
-            context_dim (int): Dimensionality of the context features also given as input.
-            head_dim (int): Attention head dimensionality.
-            num_heads (int): Number of heads.
-        """
-        super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = head_dim
-        self.inner_dim = head_dim * num_heads
-
-        self.to_q = nn.Linear(latent_dim, self.inner_dim, bias=False)
-        self.to_kv = nn.Linear(context_dim, self.inner_dim * 2, bias=False)
-        self.to_out = nn.Linear(self.inner_dim, latent_dim, bias=False)
-
-
-    def forward(self, latents: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        """Run the cross-attention module.
-
-        Args:
-            latents (:class:`torch.Tensor`): Latent features of shape `(B, L1, Latent_D)`
-                where typically `L1 < L2` and `Latent_D <= Context_D`. `Latent_D` is equal to
-                `self.latent_dim`.
-            x (:class:`torch.Tensor`): Context features of shape `(B, L2, Context_D)`.
-
-        Returns:
-            :class:`torch.Tensor`: Latent values of shape `(B, L1, Latent_D)`.
-        """
-        h = self.num_heads
-
-        q = self.to_q(latents)  # (B, L1, D2) to (B, L1, D)
-        k, v = self.to_kv(x).chunk(2, dim=-1)  # (B, L2, D1) to twice (B, L2, D)
-        q, k, v = map(lambda t: rearrange(t, "b l (h d) -> b h l d", h=h), (q, k, v))
-
-        out = F.scaled_dot_product_attention(q, k, v)
-        out = rearrange(out, "B H L1 D -> B L1 (H D)")  # (B, L1, D)
-        return self.to_out(out)  # (B, L1, Latent_D)
-
-
-class PerceiverResampler(nn.Module):
-    """Perceiver Resampler module from the Flamingo paper."""
-
-    def __init__(
-            self,
-            latent_dim: int,
-            context_dim: int,
-            depth: int = 1,
-            head_dim: int = 64,
-            num_heads: int = 16,
-            mlp_ratio: float = 4.0,
-            drop: float = 0.0,
-            residual_latent: bool = True,
-            ln_eps: float = 1e-5,
-    ) -> None:
-        """Initialise.
-
-        Args:
-            latent_dim (int): Dimensionality of the latent features given as input.
-            context_dim (int): Dimensionality of the context features also given as input.
-            depth (int, optional): Number of attention layers.
-            head_dim (int, optional): Attention head dimensionality. Defaults to `64`.
-            num_heads (int, optional): Number of heads. Defaults to `16`
-            mlp_ratio (float, optional): Rimensionality of the hidden layer divided by that of the
-                input for all MLPs. Defaults to `4.0`.
-            drop (float, optional): Drop-out rate. Defaults to no drop-out.
-            residual_latent (bool, optional): Use residual attention w.r.t. the latent features.
-                Defaults to `True`.
-            ln_eps (float, optional): Epsilon in the layer normalisation layers. Defaults to
-                `1e-5`.
-        """
-        super().__init__()
-
-        self.residual_latent = residual_latent
-        self.layers = nn.ModuleList([])
-        mlp_hidden_dim = int(latent_dim * mlp_ratio)
-        for _ in range(depth):
-            self.layers.append(
-                nn.ModuleList(
-                    [
-                        PerceiverAttention(
-                            latent_dim=latent_dim,
-                            context_dim=context_dim,
-                            head_dim=head_dim,
-                            num_heads=num_heads,
-                        ),
-                        Mlp(in_features=latent_dim, hidden_features=mlp_hidden_dim, drop=drop),
-                        nn.LayerNorm(latent_dim, eps=ln_eps),
-                        nn.LayerNorm(latent_dim, eps=ln_eps),
-                    ]
-                )
-            )
-
-    def forward(self, latents: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        """Run the module.
-
-        Args:
-            latents (:class:`torch.Tensor`): Latent features of shape `(B, L1, D1)`.
-            x (:class:`torch.Tensor`): Context features of shape `(B, L2, D1)`.
-
-        Returns:
-            torch.Tensor: Latent features of shape `(B, L1, D1)`.
-        """
-        for attn, ff, ln1, ln2 in self.layers:
-            # We use post-res-norm like in Swin v2 and most Transformer architectures these days.
-            # This empirically works better than the pre-norm used in the original Perceiver.
-            attn_out = ln1(attn(latents, x))
-            # HuggingFace suggests using non-residual attention in Perceiver might work better when
-            # the semantics of the query and the output are different:
-            #
-            #   https://github.com/huggingface/transformers/blob/v4.35.2/src/transformers/models/perceiver/modeling_perceiver.py#L398
-            #
-            latents = attn_out + latents if self.residual_latent else attn_out
-            latents = ln2(ff(latents)) + latents
-        return latents
-
-
 def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     """
     embed_dim: output dimension for each position
@@ -1039,7 +557,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     assert embed_dim % 2 == 0
     omega = np.arange(embed_dim // 2, dtype=np.float)
     omega /= embed_dim / 2.0
-    omega = 1.0 / 10000 ** omega  # (D/2,)
+    omega = 1.0 / 10000**omega  # (D/2,)
 
     pos = pos.reshape(-1)  # (M,)
     out = np.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
@@ -1073,20 +591,18 @@ class Diffusion(nn.Module):
         return y.view(B, L, D)
 
 
-
-
 class Block(nn.Module):
     """Transformer block with optional skip and checkpointing."""
 
     def __init__(
-            self,
-            dim,
-            num_heads,
-            mlp_ratio=4.0,
-            qkv_bias=False,
-            norm_layer=nn.LayerNorm,
-            skip=False,
-            use_checkpoint=False,
+        self,
+        dim,
+        num_heads,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        norm_layer=nn.LayerNorm,
+        skip=False,
+        use_checkpoint=False,
     ):
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -1116,15 +632,15 @@ class PEDadd_UViT(nn.Module):
     """
 
     def __init__(
-            self,
-            embed_dim=1536,
-            depth=8,
-            num_heads=12,
-            mlp_ratio=4.0,
-            qkv_bias=False,
-            norm_layer=nn.LayerNorm,
-            use_checkpoint=False,
-            skip=True,
+        self,
+        embed_dim=1536,
+        depth=8,
+        num_heads=12,
+        mlp_ratio=4.0,
+        qkv_bias=False,
+        norm_layer=nn.LayerNorm,
+        use_checkpoint=False,
+        skip=True,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -1241,7 +757,7 @@ def default_conv(in_channels, out_channels, kernel_size, bias=True):
 
 class SpatialAttention(nn.Module):
     def __init__(self):
-        super(SpatialAttention, self).__init__()
+        super().__init__()
         self.sa = nn.Conv2d(2, 1, 7, padding=3, padding_mode="reflect", bias=True)
 
     def forward(self, x):
@@ -1254,7 +770,7 @@ class SpatialAttention(nn.Module):
 
 class ChannelAttention(nn.Module):
     def __init__(self, dim, reduction=8):
-        super(ChannelAttention, self).__init__()
+        super().__init__()
         self.gap = nn.AdaptiveAvgPool2d(1)
         self.ca = nn.Sequential(
             nn.Conv2d(dim, dim // reduction, 1, padding=0, bias=True),
@@ -1270,7 +786,7 @@ class ChannelAttention(nn.Module):
 
 class PixelAttention(nn.Module):
     def __init__(self, dim):
-        super(PixelAttention, self).__init__()
+        super().__init__()
         self.pa2 = nn.Conv2d(2 * dim, dim, 7, padding=3, padding_mode="reflect", groups=dim, bias=True)
         self.sigmoid = nn.Sigmoid()
 
@@ -1287,7 +803,7 @@ class PixelAttention(nn.Module):
 
 class SCA(nn.Module):
     def __init__(self, conv, dim, kernel_size, reduction=8):
-        super(SCA, self).__init__()
+        super().__init__()
         self.conv1 = conv(dim, dim, kernel_size, bias=True)
         self.act1 = nn.ReLU(inplace=True)
         self.conv2 = conv(dim, dim, kernel_size, bias=True)
@@ -1311,7 +827,7 @@ class SCA(nn.Module):
 
 class DEConv(nn.Module):
     def __init__(self, conv, dim, kernel_size):
-        super(DEConv, self).__init__()
+        super().__init__()
         self.conv1 = conv(dim, dim, kernel_size, bias=True)
         self.act1 = nn.ReLU(inplace=True)
         self.conv2 = conv(dim, dim, kernel_size, bias=True)
@@ -1327,7 +843,7 @@ class DEConv(nn.Module):
 
 class FGA(nn.Module):
     def __init__(self, dim, reduction=8):
-        super(FGA, self).__init__()
+        super().__init__()
         self.sa = SpatialAttention()
         self.ca = ChannelAttention(dim, reduction)
         self.pa = PixelAttention(dim)
@@ -1352,18 +868,18 @@ class Perceiver3DDecoder(nn.Module):
     """
 
     def __init__(
-            self,
-            surf_vars: Tuple[str, str],
-            atmos_vars: Tuple[str, str],
-            atmos_levels: Tuple[int, int],
-            patch_size: int = 4,
-            embed_dim: int = 1024,
-            depth: int = 1,
-            head_dim: int = 64,
-            num_heads: int = 8,
-            mlp_ratio: float = 4.0,
-            drop_rate: float = 0.0,
-            perceiver_ln_eps: float = 1e-5,
+        self,
+        surf_vars: Tuple[str, str],
+        atmos_vars: Tuple[str, str],
+        atmos_levels: Tuple[int, int],
+        patch_size: int = 4,
+        embed_dim: int = 1024,
+        depth: int = 1,
+        head_dim: int = 64,
+        num_heads: int = 8,
+        mlp_ratio: float = 4.0,
+        drop_rate: float = 0.0,
+        perceiver_ln_eps: float = 1e-5,
     ) -> None:
         """Initialise.
 
@@ -1404,8 +920,8 @@ class Perceiver3DDecoder(nn.Module):
             ln_eps=perceiver_ln_eps,
         )
 
-        self.surf_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size ** 2) for name in surf_vars})
-        self.atmos_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size ** 2) for name in atmos_vars})
+        self.surf_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size**2) for name in surf_vars})
+        self.atmos_heads = nn.ParameterDict({name: nn.Linear(embed_dim, patch_size**2) for name in atmos_vars})
 
         self.atmos_levels_embed = nn.Linear(embed_dim, embed_dim)
 
@@ -1434,12 +950,12 @@ class Perceiver3DDecoder(nn.Module):
         return x
 
     def forward(
-            self,
-            x: torch.Tensor,
-            lat: torch.Tensor,
-            lon: torch.Tensor,
-            patch_res: Tuple[int, int, int],
-            lead_time: timedelta,
+        self,
+        x: torch.Tensor,
+        lat: torch.Tensor,
+        lon: torch.Tensor,
+        patch_res: Tuple[int, int, int],
+        lead_time: timedelta,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of MultiScaleEncoder.
 
@@ -1477,8 +993,7 @@ class Perceiver3DDecoder(nn.Module):
         surf_preds = surf_preds.squeeze(2)  # (B, V_S, H, W)
 
         # Embed the atmospheric levels.
-        atmos_levels_encode = levels_expansion(torch.tensor(self.atmos_levels, device=x.device), self.embed_dim).to(
-            dtype=x.dtype)
+        atmos_levels_encode = levels_expansion(torch.tensor(self.atmos_levels, device=x.device), self.embed_dim).to(dtype=x.dtype)
         levels_embed = self.atmos_levels_embed(atmos_levels_encode)  # (C_A, D)
 
         # De-aggregate the hidden levels into the physical levels.
@@ -1520,327 +1035,75 @@ def mse(pred, y, vars, lat=None, mask=None):
     return loss_dict
 
 
-def get_max_min_blocks(x, block_size=8):
-    """
-    Partition tensor [B, V, H, W] into non-overlapping blocks and compute each block’s max and min.
-
-    Args:
-        x (Tensor[B, V, H, W]): Input tensor.
-        block_size (int): Block height and width.
-
-    Returns:
-        max_vals (Tensor[B, V, num_blocks]), min_vals (Tensor[B, V, num_blocks])
-    """
-    B, V, H, W = x.shape
-    assert H % block_size == 0 and W % block_size == 0
-
-    # Create blocks
-    blocks = x.unfold(2, block_size, block_size).unfold(3, block_size, block_size)
-    B, V, nH, nW, bH, bW = blocks.shape
-    blocks = blocks.contiguous().view(B, V, nH * nW, bH, bW)
-
-    max_vals = blocks.max(dim=-1)[0].max(dim=-1)[0]
-    min_vals = blocks.min(dim=-1)[0].min(dim=-1)[0]
-    return max_vals, min_vals
-
-
-def expand_blocks_to_tensor(block_vals, orig_shape, block_size=8):
-    """
-    Expand per-block values back to a full-resolution tensor by tiling.
-
-    Args:
-        block_vals (Tensor[B, V, num_blocks]): Values per block.
-        orig_shape (tuple): Desired shape (B, V, H, W).
-        block_size (int): Block size.
-
-    Returns:
-        Tensor[B, V, H, W]
-    """
-    B, V, num_blocks = block_vals.shape
-    _, _, H, W = orig_shape
-    out = torch.zeros(orig_shape, device=block_vals.device, dtype=block_vals.dtype)
-    idx = 0
-    for i in range(0, H, block_size):
-        for j in range(0, W, block_size):
-            out[:, :, i: i + block_size, j: j + block_size] = block_vals[:, :, idx].unsqueeze(-1).unsqueeze(-1)
-            idx += 1
-    return out
-
-
-def lat_weighted_mse(pred, y, vars, lat, mask=None, anomaly=None, extreme=False, weight=None):
-    """
-    针对 5D 真值 y 和 4D 预测值 pred 进行了兼容性处理的损失函数。
-    """
-    # -------------------------------------------------------------------------
-    # 1. 维度对齐：核心修复
-    # 如果 y 是 (B, T, V, H, W) 而 pred 是 (B, V, H, W)，我们需要将 y 降维
-    # -------------------------------------------------------------------------
-    if y.dim() == 5 and pred.dim() == 4:
-        # 取最后一个时间步，使 y 变为 (B, V, H, W)
-        y = y[:, -1]
-
-        # 同理处理 anomaly
-    if anomaly is not None and anomaly.dim() == 5 and pred.dim() == 4:
-        anomaly = anomaly[:, -1]
-
-    # -------------------------------------------------------------------------
-    # 2. 计算基础误差 (确保计算在正确的设备上)
-    # -------------------------------------------------------------------------
-    if anomaly is not None:
-        error = (pred - y) ** 2 + (pred - anomaly) ** 2
-    elif extreme:
-        pmax, pmin = get_max_min_blocks(pred)
-        ymax, ymin = get_max_min_blocks(y)
-        max_err = (pmax - ymax) ** 2
-        min_err = (pmin - ymin) ** 2
-        error = (pred - y) ** 2 + 0.1 * expand_blocks_to_tensor(max_err, pred.shape) + 0.1 * expand_blocks_to_tensor(
-            min_err, pred.shape)
-    elif weight is not None:
-        # 确保 weight 也是 Tensor 且在正确的 device 上
-        if not isinstance(weight, torch.Tensor):
-            weight = torch.tensor(weight, device=pred.device, dtype=pred.dtype)
-        error = (pred - y) ** 2 * weight.view(1, -1, 1, 1).to(pred.device)
-    else:
-        error = (pred - y) ** 2
-
-    # -------------------------------------------------------------------------
-    # 3. 纬度加权计算 (完全使用 Torch，避免 CUDA/NumPy 冲突)
-    # -------------------------------------------------------------------------
-    # 确保 lat 是在当前设备上的 Tensor
-    if not isinstance(lat, torch.Tensor):
-        lat = torch.tensor(lat, device=error.device, dtype=error.dtype)
-
-    w_lat = torch.cos(torch.deg2rad(lat))
-    w_lat = w_lat / w_lat.mean()
-    # 维度对齐到 (1, H, 1) 以便与 (B, H, W) 的通道进行广播
-    w_lat = w_lat.view(1, -1, 1).to(error.device)
-
-    # -------------------------------------------------------------------------
-    # 4. 计算 Loss (注意：总 Loss 的计算必须在 no_grad 之外，否则模型不更新！)
-    # -------------------------------------------------------------------------
-    loss_dict = {}
-
-    # 我们先在有梯度的情况下计算总 loss
-    if mask is not None:
-        # 确保 mask 维度对齐
-        current_loss = ((error * w_lat.unsqueeze(1)).mean(dim=1) * mask).sum() / mask.sum()
-    else:
-        # 使用自动平衡逻辑计算总 Loss
-        base = (error[:, 0] * w_lat).mean()
-        agg = 0.0
-        for i in range(len(vars)):
-            term = (error[:, i] * w_lat).mean()
-            # 使用 .detach() 动态缩放比例，但保留 term 的梯度路径
-            agg += term / (term / (base + 1e-8)).detach()
-        current_loss = agg
-
-    # -------------------------------------------------------------------------
-    # 5. 记录日志 (使用 no_grad 记录各变量具体数值，不影响反向传播)
-    # -------------------------------------------------------------------------
-    with torch.no_grad():
-        for i, var in enumerate(vars):
-            term = error[:, i] * w_lat
-            if mask is not None:
-                loss_dict[var] = (term * mask).sum() / mask.sum()
-            else:
-                loss_dict[var] = term.mean()
-
-    # 将最终用于 backward 的 loss 存入字典
-    loss_dict["loss"] = current_loss
-
-    return loss_dict
-
-
-def lat_weighted_mse_val(pred, y, transform, vars, lat, clim, log_postfix, anomaly=None):
-    """
-    Validation latitude-weighted MSE, logging per-variable with a suffix.
-
-    Args:
-        transform: function to apply to pred and y before error computation.
-        clim: (unused) climatology placeholder.
-    """
-    error = (pred - y) ** 2
-    w_lat = np.cos(np.deg2rad(lat))
-    w_lat = w_lat / w_lat.mean()
-    w_lat = torch.from_numpy(w_lat).view(1, -1, 1).to(error.device).to(error.dtype)
-
-    loss_dict = {}
-    with torch.no_grad():
-        for i, var in enumerate(vars):
-            loss_dict[f"w_mse_{var}_{log_postfix}"] = (error[:, i] * w_lat).mean()
-        loss_dict["w_mse"] = np.mean([v.cpu().item() for v in loss_dict.values()])
-    return loss_dict
-
-
-def lat_weighted_rmse(pred, y, transform, vars, lat, clim, log_postfix, anomaly=None):
-    """
-    Validation latitude-weighted RMSE (root MSE).
-
-    Args:
-        transform: callable to apply to pred and y.
-    """
-    pred_t = transform(pred)
-    y_t = transform(y)
-    error = (pred_t - y_t) ** 2
-
-    w_lat = np.cos(np.deg2rad(lat))
-    w_lat = w_lat / w_lat.mean()
-    w_lat = torch.from_numpy(w_lat).view(1, -1, 1).to(error.device).to(error.dtype)
-
-    loss_dict = {}
-    with torch.no_grad():
-        for i, var in enumerate(vars):
-            rmse_i = torch.sqrt((error[:, i] * w_lat).mean(dim=(-2, -1)))
-            loss_dict[f"w_rmse_{var}_{log_postfix}"] = rmse_i.mean()
-        loss_dict["w_rmse"] = np.mean([v.cpu().item() for v in loss_dict.values()])
-    return loss_dict
-
-
-def rmse(pred, y, transform, vars, lat, clim, log_postfix, anomaly=None):
-    """
-    Validation unweighted RMSE.
-    """
-    pred_t = transform(pred)
-    y_t = transform(y)
-    error = (pred_t - y_t) ** 2
-
-    loss_dict = {}
-    with torch.no_grad():
-        for i, var in enumerate(vars):
-            rmse_i = torch.sqrt(error[:, i].mean(dim=(-2, -1)))
-            loss_dict[f"rmse_{var}_{log_postfix}"] = rmse_i.mean()
-        loss_dict["rmse"] = np.mean([v.cpu().item() for v in loss_dict.values()])
-    return loss_dict
-
-
-def lat_weighted_acc(pred, y, transform, vars, lat, clim, log_postfix, anomaly=None):
-    """
-    Latitude-weighted anomaly correlation (accuracy).
-
-    Args:
-        clim (Tensor[V, H, W]): Climatology to remove mean seasonal cycle.
-    """
-    pred_t = transform(pred) - clim.unsqueeze(0)
-    y_t = transform(y) - clim.unsqueeze(0)
-
-    w_lat = np.cos(np.deg2rad(lat))
-    w_lat = w_lat / w_lat.mean()
-    w_lat = torch.from_numpy(w_lat).view(1, -1, 1).to(pred.device).to(pred.dtype)
-
-    loss_dict = {}
-    with torch.no_grad():
-        for i, var in enumerate(vars):
-            p = pred_t[:, i] - pred_t[:, i].mean()
-            g = y_t[:, i] - y_t[:, i].mean()
-            num = (w_lat * p * g).sum()
-            den = torch.sqrt((w_lat * p ** 2).sum() * (w_lat * g ** 2).sum())
-            loss_dict[f"acc_{var}_{log_postfix}"] = (num / den).item()
-        loss_dict["acc"] = np.mean(list(loss_dict.values()))
-    return loss_dict
-
-
 def crps(y_pred, y_true, transform, vars, lat, clim, log_postfix=None, anomaly=None):
-    """
-    Continuous Ranked Probability Score per variable and overall.
+    """Continuous Ranked Probability Score per variable and overall.
+
+    Pure PyTorch CRPS via the standard energy-score decomposition
+    (Gneiting & Raftery, 2007):
+
+        CRPS = E|X - y| - 0.5 * E|X - X'|
+
+    where X, X' are independent draws from the ensemble and y is the
+    observation.  Latitude-``cos`` weighting is applied before spatial
+    averaging.
 
     Args:
         y_pred (Tensor[B, M, V, H, W]): Ensemble predictions.
-        y_true (Tensor[B, V, H, W])
+        y_true (Tensor[B, V, H, W]): Observation / ground truth.
+        transform: Optional transform applied to both pred and truth.
+        vars (list[str]): Variable names for per-variable logging.
+        lat (Tensor[H]): Latitude vector for area weighting.
+        clim, log_postfix, anomaly: Unused; kept for API compatibility.
     """
     if transform is not None:
         y_pred = transform(y_pred)
         y_true = transform(y_true)
 
+    B, M, V, H, W = y_pred.shape
+
+    # Latitude weights: cos(lat), mean-normalised.
+    if not isinstance(lat, torch.Tensor):
+        lat = torch.tensor(lat, device=y_pred.device, dtype=y_pred.dtype)
+    w_lat = torch.cos(torch.deg2rad(lat))
+    w_lat = (w_lat / w_lat.mean()).view(1, 1, -1, 1)  # (1, 1, H, 1)
+
     crps_dict = {}
     with torch.no_grad():
+        # --- per-variable CRPS --------------------------------------------------
         for i, var in enumerate(vars):
-            yp = y_pred[:, :, i].cpu().numpy()
-            yt = y_true[:, i].cpu().numpy()
-            da_true = xr.DataArray(yt, dims=["batch", "lat", "lon"])
-            da_pred = xr.DataArray(yp, dims=["batch", "member", "lat", "lon"])
-            crps_var = xs.crps_ensemble(da_true, da_pred).item()
-            crps_dict[f"crps_{var}_{log_postfix}"] = crps_var
+            pred_i = y_pred[:, :, i]  # (B, M, H, W)
+            true_i = y_true[:, i]  # (B, H, W)
 
-        # overall CRPS
-        ytp = y_pred.cpu().numpy()
-        ytt = y_true.cpu().numpy()
-        da_true_all = xr.DataArray(ytt, dims=["batch", "var", "lat", "lon"])
-        da_pred_all = xr.DataArray(ytp, dims=["batch", "member", "var", "lat", "lon"])
-        crps_dict["crps"] = xs.crps_ensemble(da_true_all, da_pred_all).item()
+            # Observation term: E|X - y|
+            abs_err = torch.abs(pred_i - true_i.unsqueeze(1)).mean(dim=1)  # (B, H, W)
+
+            # Pair term: 0.5 * E|X - X'| via sorted-gap formula (O(M log M))
+            sorted_pred = pred_i.sort(dim=1).values  # (B, M, H, W)
+            gaps = sorted_pred[:, 1:] - sorted_pred[:, :-1]  # (B, M-1, H, W)
+            idx = torch.arange(1, M, device=pred_i.device, dtype=pred_i.dtype)
+            pair_weights = idx * (M - idx)  # (M-1,)
+            pair_weights = pair_weights.view(1, -1, 1, 1)
+            pair = (gaps * pair_weights).sum(dim=1) / (M * (M - 1))  # (B, H, W)
+
+            crps_raw = abs_err - pair  # (B, H, W)
+            crps_dict[f"crps_{var}_{log_postfix}"] = (crps_raw * w_lat.squeeze(1)).mean().item()
+
+        # --- overall CRPS (all variables jointly) ------------------------------
+        # Reshape to (B, M, V*H*W) — treat spatial+vars as a single dim.
+        flat_pred = y_pred.reshape(B, M, -1)  # (B, M, V*H*W)
+        flat_true = y_true.reshape(B, -1)  # (B, V*H*W)
+
+        abs_all = torch.abs(flat_pred - flat_true.unsqueeze(1)).mean(dim=1)
+        sorted_all = flat_pred.sort(dim=1).values
+        gaps_all = sorted_all[:, 1:] - sorted_all[:, :-1]
+        weights_all = torch.arange(1, M, device=flat_pred.device, dtype=flat_pred.dtype)
+        weights_all = weights_all * (M - weights_all)
+        pair_all = (gaps_all * weights_all.view(1, -1)).sum(dim=1) / (M * (M - 1))
+
+        crps_all = (abs_all - pair_all).mean()  # scalar
+        crps_dict["crps"] = crps_all.item()
+
     return crps_dict
-
-
-def remove_nans(pred, gt):
-    """
-    Remove NaNs and infinities from two 1D tensors.
-
-    Returns filtered (pred, gt).
-    """
-    m = ~torch.isnan(pred) & ~torch.isinf(pred) & ~torch.isnan(gt) & ~torch.isinf(gt)
-    return pred[m], gt[m]
-
-
-def pearson(pred, y, transform, vars, lat, log_steps, log_days, clim):
-    """
-    Pearson correlation at specified forecast steps.
-
-    Args:
-        pred, y (Tensor[B, T, V, H, W])
-        log_steps (list[int]), log_days (list[int])
-    """
-    pred_t = transform(pred)
-    y_t = transform(y)
-
-    loss_dict = {}
-    with torch.no_grad():
-        for i, var in enumerate(vars):
-            for day, step in zip(log_days, log_steps):
-                p = pred_t[:, step - 1, i].reshape(-1)
-                g = y_t[:, step - 1, i].reshape(-1)
-                p, g = remove_nans(p, g)
-                loss_dict[f"pearsonr_{var}_day_{day}"] = stats.pearsonr(p.cpu().numpy(), g.cpu().numpy())[0]
-        loss_dict["pearsonr"] = np.mean(list(loss_dict.values()))
-    return loss_dict
-
-
-def lat_weighted_nrmse(pred, y, transform, vars, lat, clim, log_postfix):
-    """
-    Combined normalized RMS error and bias, weighted by latitude.
-
-    Uses lat_weighted_nrmses and lat_weighted_nrmseg.
-    """
-
-    # Normalized error (space mean squared difference of time means)
-    def nrmses():
-        loss = {}
-        pred_t = transform(pred)
-        y_t = transform(y)
-        w = torch.from_numpy(np.cos(np.deg2rad(lat)) / np.cos(np.deg2rad(lat)).mean()).view(1, -1, 1).to(pred.device)
-        for i, var in enumerate(vars):
-            pr = pred_t[:, i]
-            gt = y_t[:, i]
-            mse = ((pr.mean(dim=0) - gt.mean(dim=0)) ** 2 * w).mean()
-            loss[f"w_nrmses_{var}"] = torch.sqrt(mse) / clim
-        return loss
-
-    # Normalized error of ensemble-mean bias
-    def nrmseg():
-        loss = {}
-        pred_t = transform(pred)
-        y_t = transform(y)
-        w = torch.from_numpy(np.cos(np.deg2rad(lat)) / np.cos(np.deg2rad(lat)).mean()).view(1, -1, 1).to(pred.device)
-        for i, var in enumerate(vars):
-            pr = (pred_t[:, i] * w).mean(dim=(-2, -1))
-            gt = (y_t[:, i] * w).mean(dim=(-2, -1))
-            loss[f"w_nrmseg_{var}"] = torch.sqrt(((pr - gt) ** 2).mean()) / clim
-        return loss
-
-    e1 = nrmses()
-    e2 = nrmseg()
-    combined = {k: e1[k] + 5 * e2[k] for k in e1}
-    combined.update(e1)
-    combined.update(e2)
-    return combined
 
 
 @MODELS.register()
@@ -1862,21 +1125,22 @@ class TianQuan(BasePredictor):
     """
 
     def __init__(
-            self,
-            default_vars,
-            img_size=(128, 256),
-            window_size=(8, 8),
-            patch_size=2,
-            embed_dim=384,
-            decoder_depth=2,
-            num_heads=12,
-            mlp_ratio=4,
-            drop_path=0.1,
-            drop_rate=0.1,
-            const_chans=0,
-            needed_ids=None,
-            *args,
-            **kwargs,
+        self,
+        default_vars,
+        img_size=(128, 256),
+        window_size=(8, 8),
+        patch_size=2,
+        embed_dim=384,
+        decoder_depth=2,
+        num_heads=12,
+        mlp_ratio=4,
+        drop_path=0.1,
+        drop_rate=0.1,
+        const_chans=0,
+        needed_ids=None,
+        climate_zarr="/mnt/d/cla.zarr",
+        *args,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         if needed_ids is None:
@@ -1896,20 +1160,13 @@ class TianQuan(BasePredictor):
             "relative_humidity",
             "specific_humidity",
         ]
-        self.surface_variables = ["2m_temperature", "wind_speed_10m"] if img_size == (128, 256) else ["2m_temperature",
-                                                                                                      "10m_wind_speed"]
+        self.surface_variables = ["2m_temperature", "wind_speed_10m"] if img_size == (128, 256) else ["2m_temperature", "10m_wind_speed"]
         self.static_vars = ["lsm", "orog"]
 
-        # 影响损失函数
-        # level_weight = [lvl / sum(self.levels) for lvl in self.levels]
-        # self.weight = level_weight
-
-        # Load static constants (land mask, soil type, topography)
-        # self.constants = self.load_constants(os.path.join(root_dir, "constants"))
         self.needed_ids = needed_ids
 
         # climit mean
-        self.climate_zarr = "/mnt/d/cla.zarr"
+        self.climate_zarr = climate_zarr
         self.climate_mean = xr.open_zarr(self.climate_zarr, consolidated=True)  # (time, channel, h, w)
 
         # Data fusion and anomaly branches
@@ -2036,11 +1293,11 @@ class TianQuan(BasePredictor):
 
     def _times_to_hours(self, times, start_date="1979-01-01T00:00:00"):
         """
-        把你的时间 times 转成模型需要的 hours (总小时数)
+        Convert times to hours since start_date for model input.
         Args:
-            times: list / tensor / array of datetime 或 pd.Timestamp
+            times: list / tensor / array of datetime or pd.Timestamp
         Returns:
-            hours: torch.Tensor (int64 类型)
+            hours: torch.Tensor (int64 dtype)
         """
         base_time = pd.Timestamp(start_date)
 
@@ -2054,8 +1311,8 @@ class TianQuan(BasePredictor):
         return torch.tensor(hours, dtype=torch.int64)
 
     def resize_input(self, input):
-        from einops import rearrange
         import torch.nn.functional as F
+        from einops import rearrange
 
         # 1. 记录原始的 batch (n) 和 time (t) 维度大小，方便后面还原
         n, t = input.shape[0], input.shape[1]
@@ -2068,12 +1325,7 @@ class TianQuan(BasePredictor):
 
         # 4. 用转换后的 target_size 进行对比和插值
         if x.shape[-2:] != target_size:
-            x = F.interpolate(
-                x.float(),
-                size=target_size,
-                mode="bilinear",
-                align_corners=False
-            ).to(input.dtype)
+            x = F.interpolate(x.float(), size=target_size, mode="bilinear", align_corners=False).to(input.dtype)
 
         # 5. 核心修复：将形状从 4 维恢复回 5 维
         x = rearrange(x, "(n t) c h w -> n t c h w", n=n, t=t)
@@ -2082,20 +1334,17 @@ class TianQuan(BasePredictor):
 
     def resize_output(self, output, input):
         """
-        将 output (B, C, H, W) 插值到 input 的空间尺寸 (H2, W2)
-        input 的形状为 (B, T, C', H2, W2)
+        Interpolate output (B, C, H, W) to match input spatial dimensions (H2, W2).
+        input shape is (B, T, C', H2, W2).
         """
         # 提取 input 的最后两个维度作为目标尺寸 (H2, W2)
         target_size = input.shape[-2:]
 
-        # 如果 output 的空间尺寸不等于目标尺寸，则进行插值
+        # Interpolate if output spatial size differs from target
         if output.shape[-2:] != target_size:
-            output = F.interpolate(
-                output.float(),  # 插值操作通常需要浮点型
-                size=target_size,
-                mode="bilinear",
-                align_corners=False
-            ).to(output.dtype)  # 还原回原有的数据类型（防止原来是 half 精度）
+            output = F.interpolate(output.float(), size=target_size, mode="bilinear", align_corners=False).to(  # Interpolation requires float dtype
+                output.dtype
+            )  # Restore original dtype (handles half-precision cases)
 
         return output
 
@@ -2109,8 +1358,7 @@ class TianQuan(BasePredictor):
                 resized_const = c_tmp.squeeze(0).to(const.dtype)
             elif const.dim() == 4:
                 # 形状: (B, C, H, W)
-                resized_const = F.interpolate(const.float(), size=target_size, mode="bilinear", align_corners=False).to(
-                    const.dtype)
+                resized_const = F.interpolate(const.float(), size=target_size, mode="bilinear", align_corners=False).to(const.dtype)
             else:
                 # 如果出现其他意外维度，也可以尝试直接走你自己的 resize_input 或者报错
                 resized_const = const
@@ -2138,14 +1386,14 @@ class TianQuan(BasePredictor):
 
     def forward_step(self, input, const=None, times=None, step=None, climate_tensor=None, timestamp=None):
         """
-        兼容 XMetAI 框架的单步预测逻辑。
-        完全仿照 UTransformer 的规范进行前向传播处理，包含数据变换、特征前向与残差输出。
+        Single-step forward pass compatible with XMetAI framework.
+        Follows UTransformer conventions: data transform, feature forward, and residual output.
         """
         if hasattr(self, "logger"):
             self.logger.debug(f"Processing step: {step}, times: {times}")
 
         if hasattr(self, "in_frames"):
-            input = input[:, -self.in_frames:]  # 例如 bxTxcxhxw 或 bxtxvxhxw
+            input = input[:, -self.in_frames :]  # e.g. bxTxcxhxw or bxtxvxhxw
 
         batch_size = input.shape[0]
         # 保留你原始的通道数v，方便后面裁剪
@@ -2174,10 +1422,7 @@ class TianQuan(BasePredictor):
         lons = torch.linspace(0, 360, W).view(1, -1).repeat(H, 1).to(self.device)
         region_info = {"min_h": 0, "max_h": H - 1, "min_w": 0, "max_w": W - 1}
 
-        surf_pred, atmo_pred = self.forward_encoder(
-            resized_input, anomaly, hours, self.default_vars,
-            lats, lons, region_info, lead_time, const=resize_const
-        )
+        surf_pred, atmo_pred = self.forward_encoder(resized_input, anomaly, hours, self.default_vars, lats, lons, region_info, lead_time, const=resize_const)
 
         # 拼接并 reshape 输出
         output = torch.cat([surf_pred, atmo_pred.reshape(batch_size, -1, H, W)], dim=1)
@@ -2196,8 +1441,7 @@ class TianQuan(BasePredictor):
         output = self.resize_output(output, input)
 
         if hasattr(self, "logger"):
-            self.logger.debug(
-                f"final output shape: {output.shape}, min: {output.min().item()}, max: {output.max().item()}")
+            self.logger.debug(f"final output shape: {output.shape}, min: {output.min().item()}, max: {output.max().item()}")
 
         output = output.unsqueeze(1) + input[:, -1:]
         return output
@@ -2217,8 +1461,8 @@ class TianQuan(BasePredictor):
 
     def forward(self, data):
         """
-        框架标准入口，统一接收 data 字典。
-        结合了自定义的空间尺寸变换与框架的自回归多步训练逻辑。
+        Standard framework entry point, receives a unified data dictionary.
+        Combines custom spatial resizing with the framework's autoregressive multi-step training logic.
         """
         # 1. 测试/推理模式
         if not self.training:
@@ -2233,8 +1477,7 @@ class TianQuan(BasePredictor):
 
         # 3. 规范的日志记录
         self.logger.debug(f"input shape: {input.shape}, target shape: {targets.shape}")
-        self.logger.debug(
-            f"input data min: {input.min():.3f}, max: {input.max():.3f}, target min: {targets.min():.3f}, max: {targets.max():.3f}")
+        self.logger.debug(f"input data min: {input.min():.3f}, max: {input.max():.3f}, target min: {targets.min():.3f}, max: {targets.max():.3f}")
 
         # 4. 准备自回归循环变量
         future_frames = targets.size(1)
@@ -2245,24 +1488,20 @@ class TianQuan(BasePredictor):
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
             # 切片获取当前步的 target
-            target = targets[:, k: k + self.out_frames]
+            target = targets[:, k : k + self.out_frames]
 
             self.reset_input(input)
             # 读取 climate_tensor
-            curr_climate_time = self.replace_year_with_reference([t + pd.Timedelta(hours=k * self.freq) for t in times],
-                                                                 year=1979)
-            pred_climate_time = self.replace_year_with_reference(
-                [t + pd.Timedelta(hours=(k + 1) * self.freq) for t in times],year=1979)
+            curr_climate_time = self.replace_year_with_reference([t + pd.Timedelta(hours=k * self.freq) for t in times], year=1979)
+            pred_climate_time = self.replace_year_with_reference([t + pd.Timedelta(hours=(k + 1) * self.freq) for t in times], year=1979)
 
             curr_climate_tensor = torch.stack(
-                [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(input, non_blocking=True) for idx in
-                 curr_climate_time],
+                [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(input, non_blocking=True) for idx in curr_climate_time],
                 dim=0,
             )
 
             pred_climate_tensor = torch.stack(
-                [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(input, non_blocking=True) for idx in
-                 pred_climate_time],
+                [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(input, non_blocking=True) for idx in pred_climate_time],
                 dim=0,
             )  # (bxchannelxhxw)
 
@@ -2278,11 +1517,10 @@ class TianQuan(BasePredictor):
             for k_loss, v_loss in step_losses.items():
                 loss_dict[k_loss] = loss_dict.get(k_loss, 0) + v_loss
 
-            self.logger.debug(
-                f"step {k} loss_rec: {step_losses.get('loss_rec', 0)} with future frames {future_frames}.")
+            self.logger.debug(f"step {k} loss_rec: {step_losses.get('loss_rec', 0)} with future frames {future_frames}.")
 
             # 准备下一步输入 (将当前 output 拼接到 input 后面，并截取最新的 in_frames 帧)
-            input = torch.cat([input, output], dim=1)[:, -self.in_frames:]
+            input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
 
         # 6. Loss 平均并返回
         for k_loss, v_loss in loss_dict.items():
@@ -2291,23 +1529,23 @@ class TianQuan(BasePredictor):
         return loss_dict
 
     def evaluate(
-            self,
-            x,
-            y,
-            anomaly,
-            hours,
-            variables,
-            out_vars,
-            transform,
-            metrics,
-            lats,
-            lons,
-            lat,
-            clim,
-            log_postfix,
-            region_info,
-            partition,
-            lead_time=None,
+        self,
+        x,
+        y,
+        anomaly,
+        hours,
+        variables,
+        out_vars,
+        transform,
+        metrics,
+        lats,
+        lons,
+        lat,
+        clim,
+        log_postfix,
+        region_info,
+        partition,
+        lead_time=None,
     ):
         """
         Compute evaluation metrics (excluding CRPS) on a batch.
@@ -2328,29 +1566,29 @@ class TianQuan(BasePredictor):
         )
         mi, ma = region_info["min_h"], region_info["max_h"]
         mj, mj = region_info["min_w"], region_info["max_w"]
-        y_reg = y[:, :, mi: ma + 1, mj: mj + 1]
-        lat_reg = lat[mi: ma + 1]
-        clim_reg = clim[:, mi: ma + 1, mj: mj + 1]
+        y_reg = y[:, :, mi : ma + 1, mj : mj + 1]
+        lat_reg = lat[mi : ma + 1]
+        clim_reg = clim[:, mi : ma + 1, mj : mj + 1]
 
         return [m(preds, y_reg, transform, out_vars, lat_reg, clim_reg, log_postfix) for m in metrics if m is not crps]
 
     def evaluate_ensemble(
-            self,
-            x,
-            y,
-            anomaly,
-            hours,
-            variables,
-            out_vars,
-            transform,
-            metrics,
-            lats,
-            lons,
-            lat,
-            clim,
-            log_postfix,
-            region_info,
-            partition,
+        self,
+        x,
+        y,
+        anomaly,
+        hours,
+        variables,
+        out_vars,
+        transform,
+        metrics,
+        lats,
+        lons,
+        lat,
+        clim,
+        log_postfix,
+        region_info,
+        partition,
     ):
         """
         Ensemble evaluation via Gaussian perturbations.
@@ -2377,9 +1615,9 @@ class TianQuan(BasePredictor):
 
         mi, ma = region_info["min_h"], region_info["max_h"]
         mj, mj = region_info["min_w"], region_info["max_w"]
-        y_reg = y[:, :, mi: ma + 1, mj: mj + 1]
-        lat_reg = lat[mi: ma + 1]
-        clim_reg = clim[:, mi: ma + 1, mj: mj + 1]
+        y_reg = y[:, :, mi : ma + 1, mj : mj + 1]
+        lat_reg = lat[mi : ma + 1]
+        clim_reg = clim[:, mi : ma + 1, mj : mj + 1]
 
         out = []
         for m in metrics:
@@ -2400,17 +1638,17 @@ class TianQuan(BasePredictor):
         return out
 
     def predict(
-            self,
-            x,
-            anomaly,
-            hours,
-            variables,
-            out_vars,
-            transform,
-            lats,
-            lons,
-            region_info,
-            max_predict_range,
+        self,
+        x,
+        anomaly,
+        hours,
+        variables,
+        out_vars,
+        transform,
+        lats,
+        lons,
+        region_info,
+        max_predict_range,
     ):
         """
         Generate final NetCDF predictions. Saves via `np2nc_preds`.
@@ -2421,25 +1659,25 @@ class TianQuan(BasePredictor):
         for i, var in enumerate(self.upper_variables):
             for j, lvl in enumerate(self.levels):
                 idx = self.get_var_ids((f"{var}_{lvl}",), x.device)
-                preds[:, idx] = atmo_p[:, j, i: i + 1]
+                preds[:, idx] = atmo_p[:, j, i : i + 1]
         for i, var in enumerate(self.surface_variables):
             idx = self.get_var_ids((var,), x.device)
-            preds[:, idx] = surf_p[:, i: i + 1]
+            preds[:, idx] = surf_p[:, i : i + 1]
 
         preds = transform(preds)
         out_ids = self.get_var_ids(tuple(out_vars), x.device)
         mi, ma = region_info["min_h"], region_info["max_h"]
         mj, mj = region_info["min_w"], region_info["max_w"]
-        final = preds[:, out_ids, mi: ma + 1, mj: mj + 1].cpu().numpy()
+        final = preds[:, out_ids, mi : ma + 1, mj : mj + 1].cpu().numpy()
 
         return final
 
     @torch.no_grad()
     def test_cascade(self, data):
         """
-        自回归推理 / 测试入口。
-        结合了 forward 中的动态 climate_tensor 读取逻辑，
-        并依赖 forward_step 内部的 resize 机制处理空间分辨率。
+        Autoregressive inference / test entry point.
+        Handles dynamic climate_tensor loading from forward,
+        and relies on forward_step's internal resize for spatial resolution.
         """
         # 1. 提取基础数据与配置
         # 注意：不再在外部进行插值，而是保留原始尺寸传入 forward_step
@@ -2467,26 +1705,16 @@ class TianQuan(BasePredictor):
                 # ==========================================
                 # A. 仿照 forward 构造动态 climate_tensor
                 # ==========================================
-                curr_climate_time = self.replace_year_with_reference(
-                    [t + pd.Timedelta(hours=step * self.freq) for t in times],
-                    year=1979
-                )
-                pred_climate_time = self.replace_year_with_reference(
-                    [t + pd.Timedelta(hours=(step + 1) * self.freq) for t in times],
-                    year=1979
-                )
+                curr_climate_time = self.replace_year_with_reference([t + pd.Timedelta(hours=step * self.freq) for t in times], year=1979)
+                pred_climate_time = self.replace_year_with_reference([t + pd.Timedelta(hours=(step + 1) * self.freq) for t in times], year=1979)
 
                 # 从 zarr/dataset 中取出对应时间的气候态并转为 tensor (bxchannelxhxw)
                 curr_climate_tensor = torch.stack(
-                    [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(inputs,
-                                                                                                       non_blocking=True)
-                     for idx in curr_climate_time],
+                    [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(inputs, non_blocking=True) for idx in curr_climate_time],
                     dim=0,
                 )
                 pred_climate_tensor = torch.stack(
-                    [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(inputs,
-                                                                                                       non_blocking=True)
-                     for idx in pred_climate_time],
+                    [torch.from_numpy(self.climate_mean.sel(time=idx).data.values[self.needed_ids]).to(inputs, non_blocking=True) for idx in pred_climate_time],
                     dim=0,
                 )
 
@@ -2498,26 +1726,20 @@ class TianQuan(BasePredictor):
                 # ==========================================
                 # forward_step 内部已包含 self.resize_input 和 self.resize_output
                 # 因此输出的 output 尺寸直接是 (B, 1, V, H_orig, W_orig)
-                output = self.forward_step(
-                    rolling_inputs,
-                    const=const,
-                    times=times,
-                    step=step,
-                    climate_tensor=climate_tensor
-                )
+                output = self.forward_step(rolling_inputs, const=const, times=times, step=step, climate_tensor=climate_tensor)
 
                 # ==========================================
                 # C. 滚动更新输入窗口
                 # ==========================================
                 # 拼接最新预测帧，并根据 in_frames 截取最新的历史数据
-                rolling_inputs = torch.cat([rolling_inputs, output], dim=1)[:, -self.in_frames:]
+                rolling_inputs = torch.cat([rolling_inputs, output], dim=1)[:, -self.in_frames :]
 
                 # ==========================================
                 # D. 按需记录结果
                 # ==========================================
                 if (step + 1) in steps_to_save:
                     # 此时的 output 已经是残差相加且还原尺寸后的张量，直接累加即可
-                    outputs[:, curr_step_idx: curr_step_idx + 1] += output
+                    outputs[:, curr_step_idx : curr_step_idx + 1] += output
                     curr_step_idx += 1
 
         # 4. 如果有多个 step_range (例如 multi-ensemble / 扰动测试)，取平均值
@@ -2546,8 +1768,7 @@ class TianQuan(BasePredictor):
         graph = self._build_graph_from_shape(height, width, normed_input.device)
         if self.use_multiscale:
             factors = self.coarse_factors or [2]
-            ms_graph = [self._build_multiscale_from_shape(height, width, factor, normed_input.device) for factor in
-                        factors]
+            ms_graph = [self._build_multiscale_from_shape(height, width, factor, normed_input.device) for factor in factors]
             graph = (*graph, ms_graph)
         output = self.forward_step(normed_input, None, graph, step=0, timestamp=timestamp)
         output = self.inv_normalize(output)

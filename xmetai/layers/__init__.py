@@ -9,7 +9,15 @@ from .darknet_unet import DarknetConvUNet2D
 from .drop import DropPath, MCDropout
 from .earth_conv import EarthConv2d, EarthConvTranspose2d
 from .embed import CubeEmbed, TimestepEmbed
-from .encoding import StepEncoding
+from .encoding import (
+    FourierExpansion,
+    StepEncoding,
+    TimeEncoding,
+    lat_lon_meshgrid,
+    patch_root_area,
+    pos_scale_enc,
+    pos_scale_enc_grid,
+)
 from .gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer, GatedDeltaNet2Mixer
 from .graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
 from .helpers import kaming_init, to_1tuple
@@ -18,6 +26,7 @@ from .norm import AdaptiveLN, LayerNorm
 from .puyun_blocks import ConvLayerNorm, PuYunBlock
 from .rotary_attention import precompute_freqs_cis
 from .swin import SwinLayer
+from .tianquan_blocks import PerceiverAttention, PerceiverResampler
 
 HAS_MAMBA = find_spec("mamba_ssm") is not None
 HAS_TORCH_HARMONICS = find_spec("torch_harmonics") is not None
@@ -57,8 +66,16 @@ __all__ = [
     "LayerNorm",
     "MCDropout",
     "MambaVisionLayer",
+    "PerceiverAttention",
+    "PerceiverResampler",
     "PuYunBlock",
+    "FourierExpansion",
     "StepEncoding",
+    "TimeEncoding",
+    "lat_lon_meshgrid",
+    "patch_root_area",
+    "pos_scale_enc",
+    "pos_scale_enc_grid",
     "SquaredReLU",
     "SwinLayer",
     "SwiGLU",
