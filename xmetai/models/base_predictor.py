@@ -16,6 +16,7 @@ import torch
 import xarray as xr
 
 from xmetai.loss import ChannelRegistry, pinn_loss, precip_loss
+from xmetai.utils.events import get_event_storage, has_event_storage
 
 from .meta import Meta
 
@@ -174,7 +175,12 @@ class BasePredictor(Meta):
         return dict(step=step, hour=hour, doy=doy)
 
     def build_loss_steps_and_weights(self, future_step: int, alpha: float, rollout_max: int) -> tuple:
-        """Build selected loss steps and normalized rolling weights."""
+        """Build per-iteration loss steps and normalized rolling weights.
+
+        The training iteration is part of the local RNG seed, so every DDP rank
+        selects the same steps for a batch while the selection changes between
+        iterations. Calls outside a training EventStorage use iteration zero.
+        """
         device = next(self.parameters()).device
         exponents = torch.arange(future_step, dtype=torch.float32, device=device)
         rolling_weights = torch.pow(alpha, exponents)
@@ -189,7 +195,8 @@ class BasePredictor(Meta):
                 if num_additional > 0 and len(middle_steps) > 0:
                     num_to_sample = min(num_additional, len(middle_steps))
                     gen = torch.Generator(device=rolling_weights.device)
-                    gen.manual_seed(future_step * 1070001 + rollout_max)
+                    current_iter = get_event_storage().iter if has_event_storage() else 0
+                    gen.manual_seed(future_step * 1070001 + rollout_max + current_iter)
                     selected = torch.randperm(len(middle_steps), generator=gen, device=device)[:num_to_sample].tolist()
                     loss_steps.update(middle_steps[i] for i in selected)
 
