@@ -654,6 +654,11 @@ class _BaseGroupVAE(BasePredictor):
         pred.index_copy_(2, self.residual_vae_index, residual)
         return pred
 
+    def _build_posterior_input(self, history: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Reset forecast history while preserving target observations for the posterior encoder."""
+        history = self.reset_input(history.clone())
+        return torch.cat([history, target], dim=1)[:, -self.in_frames :]
+
     def _slice_group(self, x: torch.Tensor, gi: int) -> torch.Tensor:
         indices = getattr(self, f"group_indices_{gi}")
         return x.index_select(2, indices)
@@ -946,9 +951,9 @@ class _BaseGroupVAE(BasePredictor):
         times = data["times"]
         const = data["const"] if self.const_chans > 0 else None
 
-        input = self.reset_input(input)
-        recon_base = input[:, -self.out_frames - 1 : -1]
         recon_target = input[:, -self.out_frames :]
+        input = self._build_posterior_input(input[:, : -self.out_frames], recon_target)
+        recon_base = input[:, -self.out_frames - 1 : -1]
         timestamp = self.get_timestamp(input, times, self.start_frames)
 
         aug_input = self._pretrain_augment(input, mask_ratio=self.pretrain_mask_ratio, temporal_mix_prob=self.pretrain_temporal_mix_prob)
@@ -1039,7 +1044,7 @@ class _BaseGroupVAE(BasePredictor):
 
             input = self.reset_input(input)
             true_input = self.reset_input(true_input)
-            new_target = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
+            new_target = self._build_posterior_input(true_input, target)
             timestamp = self.get_timestamp(input, times, t)
             timestamp_target = self.get_timestamp(input, times, t + self.out_frames)
             self.logger.debug(f"Time step {t}: input.shape={input.shape}, target.shape={target.shape}")
@@ -1132,8 +1137,7 @@ class _BaseGroupVAE(BasePredictor):
                     target = data["targets"][:, k : k + self.out_frames].to(new_input)
                     if target.shape[1] != self.out_frames:
                         break
-                    target_input = torch.cat([new_input, target], dim=1)[:, -self.in_frames :]
-                    target_input = self.reset_input(target_input)
+                    target_input = self._build_posterior_input(new_input, target)
                     timestamp_target = self.get_timestamp(new_input, times, t + self.out_frames)
                     h_states = self._encode_all_groups(target_input, timestamp_target, const=const, is_prior=False)
                     group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const, lora_step=t + self.out_frames)
