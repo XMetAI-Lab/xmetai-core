@@ -1,6 +1,8 @@
+from functools import reduce
+
 import torch
 from einops import rearrange
-from torch import nn
+from torch import Tensor, nn
 from torch.nn import functional as F
 
 from .weight_init import ddpm_fill
@@ -9,7 +11,25 @@ from .wrappers import BatchNorm2d
 __all__ = [
     "LayerNorm",
     "AdaptiveLN",
+    "RMSNorm",
+    "AdaRMSNorm",
+    "SpatialAdaLN",
 ]
+
+
+def _zero_init(layer: nn.Module) -> nn.Module:
+    if getattr(layer, "weight", None) is not None:
+        nn.init.zeros_(layer.weight)
+    if getattr(layer, "bias", None) is not None:
+        nn.init.zeros_(layer.bias)
+    return layer
+
+
+def _rms_norm(x: Tensor, scale: Tensor, eps: float) -> Tensor:
+    dtype = reduce(torch.promote_types, (x.dtype, scale.dtype, torch.float32))
+    mean_sq = torch.mean(x.to(dtype) ** 2, dim=-1, keepdim=True)
+    s = scale.to(dtype) * torch.rsqrt(mean_sq + eps)
+    return x * s.to(x.dtype)
 
 
 class PixelNorm(nn.Module):
@@ -250,6 +270,63 @@ class FrozenBatchNorm2d(nn.Module):
                 if new_child is not child:
                     res.add_module(name, new_child)
         return res
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.scale = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: Tensor) -> Tensor:
+        return _rms_norm(x, self.scale, self.eps)
+
+
+class AdaRMSNorm(nn.Module):
+    def __init__(self, dim: int, cond_dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.to_scale = _zero_init(nn.Linear(cond_dim, dim, bias=False))
+
+    def forward(self, x: Tensor, cond: Tensor) -> Tensor:
+        s = self.to_scale(cond)
+        while s.dim() < x.dim():
+            s = s.unsqueeze(1)
+        return _rms_norm(x, s + 1, self.eps)
+
+
+# Author: zhoushuang — SpatialAdaLN(空间变化 AdaLN:不池化地形 + 多级 interpolate)原创。
+class SpatialAdaLN(nn.Module):
+    """Spatially-varying AdaLN(条件在地形等空间场上做 FiLM,不池化)。
+
+    复合空间条件 ``cond_2d (B, cond_dim, H, W)``(如 timestep/周期向量 broadcast + static
+    patch 后 concat)→ 1×1 Conv 出 γ, β ``(B, dim, H, W)`` → ``Norm(x) * (1+γ) + β``。
+    γ,β 与 x 同 H,W(空间变化),沿 T 广播。zero-init → 初始 identity。
+
+    Args:
+        x: (B, T, H, W, dim) — token 序列(channels-last)。
+        cond_2d: (B, cond_dim, H, W) — 复合空间条件(channels-first,H,W 与 x 一致)。
+    """
+
+    def __init__(self, dim: int, cond_dim: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.eps = eps
+        self.norm = LayerNorm(dim, eps=eps, elementwise_affine=False)
+        self.proj = nn.Conv2d(cond_dim, dim * 2, kernel_size=1)
+        _zero_init(self.proj)  # γ,β zero-init → 初始 identity
+
+    def forward(self, x: Tensor, cond_2d: Tensor) -> Tensor:
+        gb = self.proj(cond_2d)  # (B, dim*2, Hc, Wc)
+        gamma, beta = gb.chunk(2, dim=1)  # (B, dim, Hc, Wc)
+        # backbone 多级下采样时,x 的 H,W 可能和 cond_2d 不同 → 插值对齐(保留空间细节)
+        H, W = x.shape[2], x.shape[3]
+        if gamma.shape[-2:] != (H, W):
+            gamma = F.interpolate(gamma, size=(H, W), mode="bilinear", align_corners=False)
+            beta = F.interpolate(beta, size=(H, W), mode="bilinear", align_corners=False)
+        x = self.norm(x)  # LN over C
+        gamma = gamma.permute(0, 2, 3, 1).unsqueeze(1)  # (B, 1, H, W, dim) 沿 T 广播
+        beta = beta.permute(0, 2, 3, 1).unsqueeze(1)
+        return x * (1.0 + gamma) + beta
 
 
 def get_norm(norm, out_channels, groups=32):

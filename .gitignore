@@ -185,3 +185,7 @@ inference/model
 
 # Agent instructions (local only)
 AGENTS.md
+
+# Regional refinement (local development, not for upstream)
+xmetai/models/regional_refinement.py
+xmetai/models/regional_refinement_predictor.py
