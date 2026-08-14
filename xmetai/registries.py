@@ -6,9 +6,8 @@ from xmetai.utils import Registry
 MODELS: Registry = Registry("models")
 METRICS: Registry = Registry("metrics")
 DATASETS: Registry = Registry("datasets")
-CONDITIONERS: Registry = Registry("conditioners")
 
-__all__ = ["CONDITIONERS", "DATASETS", "METRICS", "MODELS", "import_builtin_registrations"]
+__all__ = ["DATASETS", "METRICS", "MODELS", "import_builtin_registrations"]
 
 _BUILTIN_REGISTRATION_PACKAGES = (
     "xmetai.metrics",

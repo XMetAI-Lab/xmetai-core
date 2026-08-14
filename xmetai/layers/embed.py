@@ -6,7 +6,7 @@ from torch import nn as nn
 
 from .helpers import to_2tuple
 
-__all__ = ["CubeEmbed", "TimestepEmbed", "TimestepProjection", "TemporalPatchEmbed", "TemporalPatchUnembed", "PatchMerge2D", "PatchSplit2D"]
+__all__ = ["CubeEmbed", "TimestepEmbed", "TemporalPatchEmbed", "TemporalPatchUnembed", "PatchMerge2D", "PatchSplit2D"]
 
 
 def sincos_embedding(x, embed_dim, max_period=10000, is_periodic=False):
@@ -230,26 +230,6 @@ class TimestepEmbed(nn.Module):
         embed = sincos_embedding(x.float(), self.frequency)
         embed = self.mlp(embed.to(x))
         return embed
-
-
-class TimestepProjection(nn.Module):
-    """Projects pre-encoded timestep features through Linear → SiLU → Linear.
-
-    Unlike TimestepEmbed which applies sincos encoding before the MLP, this
-    assumes the input is already encoded (e.g. from CyclicTimesteps or Timesteps).
-    Matches diffusers.models.embeddings.TimestepEmbedding.
-    """
-
-    def __init__(self, in_channels: int, out_channels: int):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(in_channels, out_channels, bias=True),
-            nn.SiLU(),
-            nn.Linear(out_channels, out_channels, bias=True),
-        )
-
-    def forward(self, x):
-        return self.mlp(x)
 
 
 class GeoEmbed(nn.Module):

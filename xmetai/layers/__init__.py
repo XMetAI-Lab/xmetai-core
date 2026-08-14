@@ -8,8 +8,8 @@ from .afnonet_blocks import PatchEmbed as AfnoPatchEmbed
 from .darknet_unet import DarknetConvUNet2D
 from .drop import DropPath, MCDropout
 from .earth_conv import EarthConv2d, EarthConvTranspose2d
-from .embed import CubeEmbed, TimestepEmbed, TimestepProjection
-from .encoding import CyclicTimesteps, StepEncoding
+from .embed import CubeEmbed, TimestepEmbed
+from .encoding import CyclicTimesteps, StepEncoding, TimestepProjection
 from .gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer, GatedDeltaNet2Mixer
 from .graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
 from .helpers import kaming_init, to_1tuple

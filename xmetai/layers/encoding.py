@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-__all__ = ["StepEncoding", "CyclicTimesteps"]
+__all__ = ["StepEncoding", "CyclicTimesteps", "TimestepProjection"]
 
 
 class StepEncoding(nn.Module):
@@ -86,3 +86,23 @@ class CyclicTimesteps(nn.Module):
         if self.flip_sin_to_cos:
             return torch.cat([cos_part, sin_part], dim=-1)
         return torch.cat([sin_part, cos_part], dim=-1)
+
+
+class TimestepProjection(nn.Module):
+    """Projects pre-encoded timestep features through Linear → SiLU → Linear.
+
+    Unlike TimestepEmbed which applies sincos encoding before the MLP, this
+    assumes the input is already encoded (e.g. from CyclicTimesteps or Timesteps).
+    Matches diffusers.models.embeddings.TimestepEmbedding.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(in_channels, out_channels, bias=True),
+            nn.SiLU(),
+            nn.Linear(out_channels, out_channels, bias=True),
+        )
+
+    def forward(self, x):
+        return self.mlp(x)
