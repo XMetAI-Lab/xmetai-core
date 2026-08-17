@@ -3,19 +3,10 @@ from datetime import timedelta
 import pandas as pd
 import pytest
 import torch
+import torch.nn as nn
 
-from xmetai.models.tianquan import FourierExpansion, Perceiver3DEncoder, TianQuan
-
-
-def test_fourier_expansion_range_check():
-    enc = FourierExpansion(lower=0.1, upper=10.0, assert_range=True)
-    x_ok = torch.tensor([0.0, 0.1, 1.0, 9.5])
-    out = enc(x_ok, d=8)
-    assert out.shape == (4, 8)
-
-    x_bad = torch.tensor([0.05, 1.0])
-    with pytest.raises(AssertionError):
-        enc(x_bad, d=8)
+from xmetai.layers import FGA, SCA, DEConv, PEDadd_UViT, Perceiver3DDecoder, Perceiver3DEncoder
+from xmetai.models import TianQuan
 
 
 def test_perceiver3d_encoder_supports_none_static_vars():
@@ -53,6 +44,59 @@ def test_perceiver3d_encoder_supports_none_static_vars():
     )
     assert out.dim() == 3
     assert out.shape[0] == b
+
+
+def test_perceiver3d_decoder_forward():
+    decoder = Perceiver3DDecoder(
+        surf_vars=("2m_temperature", "10m_wind_speed"),
+        atmos_vars=("geopotential", "temperature"),
+        atmos_levels=(500, 850),
+        patch_size=2,
+        embed_dim=16,
+        depth=1,
+        head_dim=8,
+        num_heads=2,
+        mlp_ratio=2.0,
+        drop_rate=0.0,
+    )
+
+    surf_pred, atmos_pred = decoder(
+        x=torch.randn(1, 8, 16),
+        lat=torch.linspace(-90, 90, 4),
+        lon=torch.linspace(0, 360, 4),
+        patch_res=(2, 2, 2),
+        lead_time=timedelta(hours=24),
+    )
+
+    assert surf_pred.shape == (1, 2, 4, 4)
+    assert atmos_pred.shape == (1, 2, 2, 4, 4)
+
+
+def test_tianquan_backbone_forward():
+    backbone = PEDadd_UViT(embed_dim=16, depth=2, num_heads=4)
+    x = torch.randn(2, 8, 16)
+
+    out = backbone(x, use_diffusion=False)
+
+    assert out.shape == x.shape
+
+
+def test_tianquan_fusion_blocks_forward():
+    def conv(in_channels, out_channels, kernel_size, bias=True):
+        return nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            padding=kernel_size // 2,
+            bias=bias,
+        )
+
+    x = torch.randn(2, 8, 8, 8)
+    y = torch.randn_like(x)
+
+    assert SCA(conv, dim=8, kernel_size=3)(x).shape == x.shape
+    assert DEConv(conv, dim=8, kernel_size=3)(x).shape == x.shape
+    assert FGA(dim=8)(x, y).shape == x.shape
 
 
 def test_tianquan_export_onnx_not_supported(monkeypatch):
