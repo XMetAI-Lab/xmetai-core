@@ -412,9 +412,13 @@ class TianQuan(BasePredictor):
 
         # Interpolate if output spatial size differs from target
         if output.shape[-2:] != target_size:
-            output = F.interpolate(output.float(), size=target_size, mode="bilinear", align_corners=False).to(  # Interpolation requires float dtype
-                output.dtype
-            )  # Restore original dtype (handles half-precision cases)
+            output_dtype = output.dtype
+            output = F.interpolate(
+                output.float(),
+                size=target_size,
+                mode="bilinear",
+                align_corners=False,
+            ).to(dtype=output_dtype)
 
         return output
 
@@ -597,115 +601,6 @@ class TianQuan(BasePredictor):
             loss_dict[k_loss] = v_loss / future_frames
 
         return loss_dict
-
-    def evaluate(
-        self,
-        x,
-        y,
-        anomaly,
-        hours,
-        variables,
-        out_vars,
-        transform,
-        metrics,
-        lats,
-        lons,
-        lat,
-        clim,
-        log_postfix,
-        region_info,
-        partition,
-        lead_time=None,
-    ):
-        """
-        Compute evaluation metrics (excluding CRPS) on a batch.
-        """
-        _, preds = self.forward(
-            x,
-            y,
-            anomaly,
-            hours,
-            variables,
-            out_vars,
-            lats,
-            lons,
-            metric=None,
-            lat=lat,
-            region_info=region_info,
-            lead_time=lead_time,
-        )
-        mi, ma = region_info["min_h"], region_info["max_h"]
-        mj, mj = region_info["min_w"], region_info["max_w"]
-        y_reg = y[:, :, mi : ma + 1, mj : mj + 1]
-        lat_reg = lat[mi : ma + 1]
-        clim_reg = clim[:, mi : ma + 1, mj : mj + 1]
-
-        return [m(preds, y_reg, transform, out_vars, lat_reg, clim_reg, log_postfix) for m in metrics if m is not crps]
-
-    def evaluate_ensemble(
-        self,
-        x,
-        y,
-        anomaly,
-        hours,
-        variables,
-        out_vars,
-        transform,
-        metrics,
-        lats,
-        lons,
-        lat,
-        clim,
-        log_postfix,
-        region_info,
-        partition,
-    ):
-        """
-        Ensemble evaluation via Gaussian perturbations.
-        """
-        all_preds = []
-        for i in range(100):
-            x_in = x if i == 0 else (x + 0.3 * torch.randn_like(x))
-            _, p = self.forward(
-                x_in,
-                y,
-                anomaly,
-                hours,
-                variables,
-                out_vars,
-                lats,
-                lons,
-                metric=None,
-                lat=lat,
-                region_info=region_info,
-            )
-            all_preds.append(p)
-        stack = torch.stack(all_preds, dim=1)
-        mean_pred = stack.mean(dim=1)
-
-        mi, ma = region_info["min_h"], region_info["max_h"]
-        mj, mj = region_info["min_w"], region_info["max_w"]
-        y_reg = y[:, :, mi : ma + 1, mj : mj + 1]
-        lat_reg = lat[mi : ma + 1]
-        clim_reg = clim[:, mi : ma + 1, mj : mj + 1]
-
-        out = []
-        for m in metrics:
-            if m is crps:
-                out.append(m(stack, y_reg, transform, out_vars, lat_reg, clim_reg, log_postfix))
-            else:
-                out.append(
-                    m(
-                        mean_pred,
-                        y_reg,
-                        transform,
-                        out_vars,
-                        lat_reg,
-                        clim_reg,
-                        log_postfix,
-                    )
-                )
-        return out
 
     @torch.no_grad()
     def test_cascade(self, data):
