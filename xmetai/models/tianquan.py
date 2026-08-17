@@ -15,7 +15,6 @@ Copyright (c) 2026 by XMetAI/shenzhewen, All Rights Reserved.
 # ==============================================================================
 # 1. 标准库
 # ==============================================================================
-import os
 from datetime import timedelta
 from functools import lru_cache
 
@@ -168,7 +167,7 @@ def crps(y_pred, y_true, transform, vars, lat, clim, log_postfix=None, anomaly=N
         gaps_all = sorted_all[:, 1:] - sorted_all[:, :-1]
         weights_all = torch.arange(1, M, device=flat_pred.device, dtype=flat_pred.dtype)
         weights_all = weights_all * (M - weights_all)
-        pair_all = (gaps_all * weights_all.view(1, -1)).sum(dim=1) / (M * (M - 1))
+        pair_all = (gaps_all * weights_all.view(1, -1, 1)).sum(dim=1) / (M * (M - 1))
 
         crps_all = (abs_all - pair_all).mean()  # scalar
         crps_dict["crps"] = crps_all.item()
@@ -206,7 +205,7 @@ class TianQuan(BasePredictor):
         mlp_ratio=4,
         drop_path=0.1,
         drop_rate=0.1,
-        const_chans=0,
+        const_chans=2,
         needed_ids=None,
         climate_zarr="/mnt/d/cla.zarr",
         *args,
@@ -286,18 +285,6 @@ class TianQuan(BasePredictor):
         pos = get_1d_sincos_pos_embed_from_grid(self.var_embed.shape[-1], np.arange(len(self.default_vars)))
         self.var_embed.data.copy_(torch.from_numpy(pos).float().unsqueeze(0))
         self.apply(vit_fill)
-
-    def load_constants(self, path):
-        """
-        Load static constant fields (land_mask, soil_type, orography).
-        Expects NetCDF files constants_1.40625.nc or constants_5.625.nc.
-        """
-        fname = "constants_1.40625.nc" if self.img_size == (128, 256) else "constants_5.625.nc"
-        ds = xr.open_dataset(os.path.join(path, fname))
-        lsm = torch.from_numpy(ds["lsm"].values.astype(np.float32))
-        slt = torch.from_numpy(ds["slt"].values.astype(np.float32))
-        orog = torch.from_numpy(ds["orography"].values.astype(np.float32))
-        return torch.stack([lsm, slt, orog], dim=0)
 
     def create_var_embedding(self, dim):
         """Create learnable embeddings for each variable."""

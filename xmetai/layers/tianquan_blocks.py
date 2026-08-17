@@ -660,10 +660,9 @@ class Diffusion(nn.Module):
 
     def forward(self, x):
         # 将形状从 [B, L, D] 转换为一维卷积需要的 [B, D, L]。
-        B, L, D = x.shape
-        y = x.view(B, D, L)
+        y = x.transpose(1, 2)
         y = self.net(y)
-        return y.view(B, L, D)
+        return y.transpose(1, 2)
 
 
 class Block(nn.Module):
