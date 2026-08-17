@@ -21,6 +21,8 @@ Typical usage::
 
 The output Zarr has one year of timestamps (e.g., 365 daily snapshots), each
 holding the multi-year mean for that calendar slot.
+
+Tianquan from 1979
 """
 
 from __future__ import annotations
