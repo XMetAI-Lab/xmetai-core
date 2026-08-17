@@ -479,7 +479,7 @@ class TianQuan(BasePredictor):
 
         hours = self._times_to_hours(times).to(self.device)
         lead_time = timedelta(hours=24)
-        lats = torch.linspace(-90, 90, H).view(-1, 1).repeat(1, W).to(self.device)
+        lats = torch.linspace(90, -90, H).view(-1, 1).repeat(1, W).to(self.device)
         lons = torch.linspace(0, 360, W).view(1, -1).repeat(H, 1).to(self.device)
         region_info = {"min_h": 0, "max_h": H - 1, "min_w": 0, "max_w": W - 1}
 
