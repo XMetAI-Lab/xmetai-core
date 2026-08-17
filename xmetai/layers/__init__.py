@@ -5,6 +5,7 @@ from typing import Any
 from .activation import GEGLU, SquaredReLU, SwiGLU, trunc_exp
 from .afnonet_blocks import Block as AFNOBlock
 from .afnonet_blocks import PatchEmbed as AfnoPatchEmbed
+from .attention import Attention
 from .darknet_unet import DarknetConvUNet2D
 from .drop import DropPath, MCDropout
 from .earth_conv import EarthConv2d, EarthConvTranspose2d
@@ -12,12 +13,15 @@ from .embed import CubeEmbed, TimestepEmbed
 from .encoding import StepEncoding
 from .gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer, GatedDeltaNet2Mixer
 from .graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
-from .helpers import kaming_init, to_1tuple
+from .helpers import kaming_init, to_1tuple, to_2tuple
 from .lora import apply_lora_to_model, merge_lora_weights, set_lora_step
+from .mlp import Mlp
 from .norm import AdaptiveLN, LayerNorm
 from .puyun_blocks import ConvLayerNorm, PuYunBlock
 from .rotary_attention import precompute_freqs_cis
 from .swin import SwinLayer
+from .tianquan_blocks import PerceiverAttention, PerceiverResampler
+from .weight_init import vit_fill
 
 HAS_MAMBA = find_spec("mamba_ssm") is not None
 HAS_TORCH_HARMONICS = find_spec("torch_harmonics") is not None
@@ -37,6 +41,7 @@ __all__ = [
     "AFNOBlock",
     "AdaptiveLN",
     "AfnoPatchEmbed",
+    "Attention",
     "CubeEmbed",
     "ConvLayerNorm",
     "DarknetConvUNet2D",
@@ -57,6 +62,9 @@ __all__ = [
     "LayerNorm",
     "MCDropout",
     "MambaVisionLayer",
+    "Mlp",
+    "PerceiverAttention",
+    "PerceiverResampler",
     "PuYunBlock",
     "StepEncoding",
     "SquaredReLU",
@@ -69,7 +77,9 @@ __all__ = [
     "precompute_freqs_cis",
     "set_lora_step",
     "to_1tuple",
+    "to_2tuple",
     "trunc_exp",
+    "vit_fill",
 ]
 
 del import_module, find_spec
