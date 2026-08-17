@@ -43,8 +43,11 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 from torch.nn.init import trunc_normal_
 
-from xmetai.layers import Attention as FrameworkAttention
-from xmetai.layers import Mlp, PerceiverResampler, to_2tuple, vit_fill
+from xmetai.layers.attention import Attention as FrameworkAttention
+from xmetai.layers.helpers import to_2tuple
+from xmetai.layers.mlp import Mlp
+from xmetai.layers import PerceiverResampler
+from xmetai.layers.weight_init import vit_fill
 
 # ==============================================================================
 # 4. xmetai 框架
