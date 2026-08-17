@@ -66,163 +66,43 @@ train.output_dir = output_dir
 ######################################################################
 # Model settings
 ######################################################################
-freq = 24  # 24 hours for 1 day
+freq = 24  # 预报时间步长（小时）
 
-# TianQuan 模型专属超参数设置
-img_size = (8, 16)  # 降低分辨率，token 数减少 4 倍，防止 OOM
-patch_size = 4
-embed_dim = 12
-num_heads = 1
-decoder_depth = 1  # 从 2 降到 1
-mlp_ratio = 4.0
-drop_path = 0.1
-drop_rate = 0.1
+# TianQuan 模型专属超参数
+img_size = (8, 16)  # 输入重采样尺寸(H, W)
+patch_size = 4  # patch 大小
+embed_dim = 12  # 隐藏维度
+num_heads = 1  # 注意力头数
+decoder_depth = 1  # 主干深度
+mlp_ratio = 4.0  # FFN 扩展倍数
+drop_path = 0.1  # 随机深度
+drop_rate = 0.1  # dropout
 
+# 统一维护高空层级（与数据通道命名保持一致）
+pressure_levels = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+
+# TianQuan 默认变量命名（模型内部语义名）：
+# 2 个地表变量 + 5 组高空变量（每组 13 层）。
 tianquan_vars = [
     "2m_temperature",
     "wind_speed_10m",
-    "geopotential_50",
-    "geopotential_100",
-    "geopotential_150",
-    "geopotential_200",
-    "geopotential_250",
-    "geopotential_300",
-    "geopotential_400",
-    "geopotential_500",
-    "geopotential_600",
-    "geopotential_700",
-    "geopotential_850",
-    "geopotential_925",
-    "geopotential_1000",
-    "wind_speed_50",
-    "wind_speed_100",
-    "wind_speed_150",
-    "wind_speed_200",
-    "wind_speed_250",
-    "wind_speed_300",
-    "wind_speed_400",
-    "wind_speed_500",
-    "wind_speed_600",
-    "wind_speed_700",
-    "wind_speed_850",
-    "wind_speed_925",
-    "wind_speed_1000",
-    "temperature_50",
-    "temperature_100",
-    "temperature_150",
-    "temperature_200",
-    "temperature_250",
-    "temperature_300",
-    "temperature_400",
-    "temperature_500",
-    "temperature_600",
-    "temperature_700",
-    "temperature_850",
-    "temperature_925",
-    "temperature_1000",
-    "relative_humidity_50",
-    "relative_humidity_100",
-    "relative_humidity_150",
-    "relative_humidity_200",
-    "relative_humidity_250",
-    "relative_humidity_300",
-    "relative_humidity_400",
-    "relative_humidity_500",
-    "relative_humidity_600",
-    "relative_humidity_700",
-    "relative_humidity_850",
-    "relative_humidity_925",
-    "relative_humidity_1000",
-    "specific_humidity_50",
-    "specific_humidity_100",
-    "specific_humidity_150",
-    "specific_humidity_200",
-    "specific_humidity_250",
-    "specific_humidity_300",
-    "specific_humidity_400",
-    "specific_humidity_500",
-    "specific_humidity_600",
-    "specific_humidity_700",
-    "specific_humidity_850",
-    "specific_humidity_925",
-    "specific_humidity_1000",
+    *[f"geopotential_{lvl}" for lvl in pressure_levels],
+    *[f"wind_speed_{lvl}" for lvl in pressure_levels],
+    *[f"temperature_{lvl}" for lvl in pressure_levels],
+    *[f"relative_humidity_{lvl}" for lvl in pressure_levels],
+    *[f"specific_humidity_{lvl}" for lvl in pressure_levels],
 ]
 
-# 严格匹配 TianQuan 模型的 67 个气象变量（已转换为标准库存短命名）
+# 严格匹配数据集中的 67 通道短命名：
+# 2 个地表变量 + z/u/t/v/q 各 13 层。
 tianquan_vars_2 = [
-    # ---- 2 个地表变量 ----
     "t2m",
-    "10u",  # 用 10u 代替 10m风速 (库存无标量风速)
-    # ---- 13 层位势高度 (geopotential -> z) ----
-    "z50",
-    "z100",
-    "z150",
-    "z200",
-    "z250",
-    "z300",
-    "z400",
-    "z500",
-    "z600",
-    "z700",
-    "z850",
-    "z925",
-    "z1000",
-    # ---- 13 层 U 侧风 (u，代替原本的 wind_speed) ----
-    "u50",
-    "u100",
-    "u150",
-    "u200",
-    "u250",
-    "u300",
-    "u400",
-    "u500",
-    "u600",
-    "u700",
-    "u850",
-    "u925",
-    "u1000",
-    # ---- 13 层温度 (temperature -> t) ----
-    "t50",
-    "t100",
-    "t150",
-    "t200",
-    "t250",
-    "t300",
-    "t400",
-    "t500",
-    "t600",
-    "t700",
-    "t850",
-    "t925",
-    "t1000",
-    # ---- 13 层 V 侧风 (v，代替原本的 relative_humidity) ----
-    "v50",
-    "v100",
-    "v150",
-    "v200",
-    "v250",
-    "v300",
-    "v400",
-    "v500",
-    "v600",
-    "v700",
-    "v850",
-    "v925",
-    "v1000",
-    # ---- 13 层比湿 (specific_humidity -> q) ----
-    "q50",
-    "q100",
-    "q150",
-    "q200",
-    "q250",
-    "q300",
-    "q400",
-    "q500",
-    "q600",
-    "q700",
-    "q850",
-    "q925",
-    "q1000",
+    "10u",  # 数据集中无标量 10m 风速，使用 10u 作为近地风代表。
+    *[f"z{lvl}" for lvl in pressure_levels],
+    *[f"u{lvl}" for lvl in pressure_levels],
+    *[f"t{lvl}" for lvl in pressure_levels],
+    *[f"v{lvl}" for lvl in pressure_levels],
+    *[f"q{lvl}" for lvl in pressure_levels],
 ]
 
 needed_ids = [in_names.index(var) for var in tianquan_vars_2]
@@ -234,6 +114,7 @@ in_names = tianquan_vars_2
 idx = [in_names.index("tp")] if "tp" in in_names else []
 logid, accumid = idx, idx
 
+# 评估时重点关注的变量
 test_names = ["z500", "u200", "u850", "t2m", "t850"]
 out_chans = len(tianquan_vars_2)
 test_chans = [tianquan_vars_2.index(n) for n in test_names]
@@ -273,7 +154,7 @@ model = L(MODELS.get(model_name))(
     pinn_use_denorm=True,
     # whether to denormalize the inputs before computing PINN losses; typically improves PINN performance
     # use_pertub=True,
-    climate_zarr="/mnt/d/cla.zarr",
+    climate_zarr="/mnt/d/cla.zarr",  # 气候态 zarr 路径
 )
 
 model.buffers = buffers
@@ -282,12 +163,12 @@ model.precision = "bf16"  # 开启 BFloat16 半精度训练，防止 384 维度�
 ######################################################################
 # Data settings
 ######################################################################
-data_dir = os.environ.get("DATA_DIR", "/mnt/d/s2s.1950-2024.c76")
+data_dir = os.environ.get("DATA_DIR", "/mnt/d/s2s.1950-2024.c76")  # 训练数据路径
 dataloader = OmegaConf.create()
-total_batch_size = 1
+total_batch_size = 1  # 总 batch（会按 world_size 均分）
 
-train_times = ("19500101", "20230228")
-test_times = ("20231001", "20241231")
+train_times = ("19500101", "20230228")  # 训练时间范围
+test_times = ("20231001", "20241231")  # 测试时间范围
 # test_times = ("20050101", "20250202")
 eval_times = [int(t * freq) for t in test_frames]
 # 配置测评哪些参数
@@ -303,7 +184,7 @@ dataloader.train = L(build_train_loader)(
         data_name=data_dir, hist_frames=in_frames, fcst_frames=2, interval=1, freq=freq, training=True, years=train_times, in_names=tianquan_vars_2
     ),
     total_batch_size=total_batch_size,
-    num_workers=1,
+    num_workers=1,  # 训练集 DataLoader 进程数
     pin_memory=True,
 )
 
@@ -320,7 +201,7 @@ dataloader.test = L(build_test_loader)(
         in_names=tianquan_vars_2,
     ),
     total_batch_size=total_batch_size,
-    num_workers=1,
+    num_workers=1,  # 测试集 DataLoader 进程数
     pin_memory=True,
 )
 
