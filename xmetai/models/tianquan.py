@@ -74,8 +74,9 @@ class FourierExpansion(nn.Module):
 
     def forward(self, x: torch.Tensor, d: int) -> torch.Tensor:
         if self.assert_range:
-            in_range = torch.logical_and(self.lower <= x.abs(), torch.all(x.abs() <= self.upper))
-            in_range_or_zero = torch.all(torch.logical_or(in_range, x == 0))
+            abs_x = x.abs()
+            in_range = (abs_x >= self.lower) & (abs_x <= self.upper)
+            in_range_or_zero = torch.all(in_range | (x == 0))
             if not in_range_or_zero:
                 raise AssertionError(f"Input values must lie within [{self.lower}, {self.upper}].")
         if d % 2 != 0:
@@ -499,7 +500,7 @@ class Perceiver3DEncoder(nn.Module):
     def forward(
         self,
         x_surf: torch.Tensor,
-        x_static: torch.Tensor,
+        x_static: Optional[torch.Tensor],
         x_atmos: torch.Tensor,
         lead_time: timedelta,
         lat: torch.Tensor,
@@ -521,12 +522,25 @@ class Perceiver3DEncoder(nn.Module):
             B,
             T,
         ), f"Expected shape {(B, T)}, got {x_surf.shape[:2]}."
+        surf_vars = self.surf_vars
 
         if self.static_vars is None:
             assert x_static is None, "Static variables given, but not configured."
         else:
             assert x_static is not None, "Static variables not given."
-            x_static = x_static.expand((B, T, -1, -1, -1))
+            # Accept x_static as (C,H,W), (B,C,H,W), or (B,T,C,H,W), then broadcast to (B,T,C,H,W).
+            if x_static.dim() == 3:
+                x_static = x_static.unsqueeze(0).unsqueeze(0).expand(B, T, -1, -1, -1)
+            elif x_static.dim() == 4:
+                x_static = x_static.unsqueeze(1).expand(B, T, -1, -1, -1)
+            elif x_static.dim() == 5:
+                if x_static.size(0) not in (1, B):
+                    raise ValueError(f"x_static batch dim must be 1 or {B}, got {x_static.size(0)}.")
+                if x_static.size(1) not in (1, T):
+                    raise ValueError(f"x_static time dim must be 1 or {T}, got {x_static.size(1)}.")
+                x_static = x_static.expand(B, T, -1, -1, -1)
+            else:
+                raise ValueError(f"x_static must be 3D, 4D, or 5D, got {x_static.dim()}D.")
             x_surf = torch.cat((x_surf, x_static), dim=2)  # (B, T, V_S + V_Static, H, W)
             surf_vars = self.surf_vars + self.static_vars
 
@@ -1048,7 +1062,7 @@ class Perceiver3DDecoder(nn.Module):
         x = x.flatten(0, 1)  # (BxL, C', D)
         _msg = f"Batch size mismatch. Found {level_embed.size(0)} and {x.size(0)}."
         assert level_embed.size(0) == x.size(0), _msg
-        assert len(level_embed.shape) == 3, f"Expected 3 dims, found {level_embed.dims()}."
+        assert level_embed.dim() == 3, f"Expected 3 dims, found {level_embed.dim()}."
         assert x.dim() == 3, f"Expected 3 dims, found {x.dim()}."
 
         x = self.level_decoder(level_embed, x)  # (BxL, C, D)
@@ -1820,27 +1834,6 @@ class TianQuan(BasePredictor):
 
     @torch.no_grad()
     def export_onnx(self, inputs, step, hour, doy):
-        normed_input = self.normalize(inputs)
-        normed_input = normed_input.to(dtype=self.dtype)
-        step = step.to(dtype=self.dtype)
-        hour = hour.to(dtype=self.dtype)
-        doy = doy.to(dtype=self.dtype)
-
-        self.reset_input(normed_input)
-        batch_size = inputs.shape[0]
-        timestamp = {
-            "step": step.repeat(batch_size),
-            "hour": hour.repeat(batch_size),
-            "doy": doy.repeat(batch_size),
-        }
-
-        height = normed_input.shape[-2]
-        width = normed_input.shape[-1]
-        graph = self._build_graph_from_shape(height, width, normed_input.device)
-        if self.use_multiscale:
-            factors = self.coarse_factors or [2]
-            ms_graph = [self._build_multiscale_from_shape(height, width, factor, normed_input.device) for factor in factors]
-            graph = (*graph, ms_graph)
-        output = self.forward_step(normed_input, None, graph, step=0, timestamp=timestamp)
-        output = self.inv_normalize(output)
-        return output
+        raise NotImplementedError(
+            "TianQuan ONNX export is not supported yet. " "The current forward path depends on climatology tensors and datetime-aligned inputs."
+        )
