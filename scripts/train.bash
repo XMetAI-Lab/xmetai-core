@@ -114,7 +114,7 @@ function setup_environment() {
     export OUTPUT_DIR="${ROOT_DIR}/output/${temp_list}-${config_file_name}-${LR}/"
 
     # Set data directory and base config based on model type
-    data_dir="/mnt/d/"
+    data_dir="/workspace/data/"
     # check os mac or linux
     if [[ "$OSTYPE" == "darwin"* ]]; then
         echo "Running on macOS"
@@ -135,7 +135,7 @@ function setup_environment() {
         elif [[ "$config_file_name" == *"p25"* ]]; then
             export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/era5.1959_2023.c87.p25.h24/"
         else
-            export DATA_DIR="${data_dir}/s2s_data/s2s.1950-2024.c76/"
+            export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/s2s.1950-2026.c76/"
         fi
         # check if string s2s_base exist in ${CONFIG_FILE_TMP}
         if grep -q "s2s_base" "${CONFIG_FILE_TMP}"; then

@@ -41,14 +41,14 @@ train.output_dir = output_dir
 # Model settings
 ######################################################################
 freq = 24
-embed_dim = 32
+embed_dim = 768
 img_size = (120, 240)
-patch_size = (10, 10)
-depth = 6
+patch_size = (5, 5)
+depth = 12
 mlp_ratio = 4.0
 drop_rate = 0.1
 drop_path_rate = 0.0
-num_blocks = 1
+num_blocks = 16
 sparsity_threshold = 0.01
 hard_thresholding_fraction = 1.0
 
