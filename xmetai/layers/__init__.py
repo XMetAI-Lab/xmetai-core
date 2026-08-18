@@ -18,6 +18,14 @@ from .norm import AdaptiveLN, LayerNorm
 from .puyun_blocks import ConvLayerNorm, PuYunBlock
 from .rotary_attention import precompute_freqs_cis
 from .swin import SwinLayer
+from .tianquan_blocks import (
+    FGA,
+    SCA,
+    DEConv,
+    PEDadd_UViT,
+    Perceiver3DDecoder,
+    Perceiver3DEncoder,
+)
 
 HAS_MAMBA = find_spec("mamba_ssm") is not None
 HAS_TORCH_HARMONICS = find_spec("torch_harmonics") is not None
@@ -63,6 +71,12 @@ __all__ = [
     "SwinLayer",
     "SwiGLU",
     "TimestepEmbed",
+    "Perceiver3DEncoder",
+    "Perceiver3DDecoder",
+    "PEDadd_UViT",
+    "SCA",
+    "DEConv",
+    "FGA",
     "apply_lora_to_model",
     "kaming_init",
     "merge_lora_weights",
