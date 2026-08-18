@@ -12,13 +12,16 @@ import logging
 from s2s_base import (  # noqa: F401
     buffers,
     dataloader,
-    freq,
     in_chans,
+    in_frames,
     in_names,
     load_from_pretrain,
     logid,
+    maskid,
+    optimizer,
     out_chans,
     output_dir,
+    pinn_coeffs,
     scheduler,
     step_range,
     test_chans,
@@ -30,34 +33,24 @@ from s2s_base import (  # noqa: F401
 from xmetai import MODELS
 from xmetai import LazyCall as L
 
-in_frames = 1
-dataloader.train.dataset.hist_frames = in_frames
-dataloader.test.dataset.hist_frames = in_frames
+logging.basicConfig(level=logging.INFO)
 
-if load_from_pretrain:
-    train.teacher_forcing.teach_iters = 100
-    train.teacher_forcing.teach_steps = 20  # teach for 20 steps with 80GB GPU memory
-    scheduler.scheduler.end_value = 1e-2
-
-train.output_dir = output_dir
 model_name = "AFNONet"
-
+train.output_dir = output_dir
 ######################################################################
 # Model settings
 ######################################################################
-embed_dim = 768
+freq = 24
+embed_dim = 32
 img_size = (120, 240)
-patch_size = (5, 5)
-depth = 12
+patch_size = (10, 10)
+depth = 6
 mlp_ratio = 4.0
 drop_rate = 0.1
 drop_path_rate = 0.0
-num_blocks = 16
+num_blocks = 1
 sparsity_threshold = 0.01
 hard_thresholding_fraction = 1.0
-
-# set logging to debug level if needed
-logging.basicConfig(level=logging.INFO)
 
 model = L(MODELS.get(model_name))(
     embed_dim=embed_dim,
@@ -97,24 +90,3 @@ model.precision = "bf16"
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
     model.alpha = 0.9  # Start with some noise regularization even during fine-tuning, can be tuned based on validation performance.
-
-export_onnx = False
-if export_onnx:
-    from xmetai.data import make_onnx
-
-    train.use_ddp = False
-    train.use_fsdp = False
-    train.activation_checkpointing = False
-    dataloader.test.total_batch_size = 1
-    make_onnx(
-        model=train,
-        dataloader_cfg=dataloader.test,
-        mean=buffers.get("mean", None),
-        std=buffers.get("std", None),
-        in_names=in_names,
-        output_dir=output_dir,
-        # embed_types=["step"],
-        embed_types=["step", "hour", "doy"],
-        model_name="s2s_pred.onnx",
-        device=train.device_type,
-    )
