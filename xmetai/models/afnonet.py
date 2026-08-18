@@ -153,7 +153,7 @@ class AFNONet(BasePredictor):
 
         input = input[:, -self.in_frames :]  # bxTxcxhxw
         B = input.shape[0]
-        resized_input = self.resize_input(input)  # (b,t,c,h,w)
+        resized_input = self.resize_input(input)  # (b*t, c, h, w)
         resized_input = rearrange(resized_input, "(n t) c h w -> n (t c) h w", n=B)
         x = self.patch_embed(resized_input)
         x = x + self.pos_embed
