@@ -9,11 +9,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from xmetai.builder import MODELS
 from xmetai.layers import DropPath
 from xmetai.loss import afcrps_loss_lite, charbonnier_loss
+from xmetai.registries import MODELS
 
 from .vit import ViTModel
+
+__all__ = [
+    "get_exponential_weights",
+    "spread_skill_loss",
+    "magnitude_penalty",
+    "EnsNoiseMLP",
+    "ViTModelEns",
+]
 
 
 def get_exponential_weights(steps: int, alpha: float) -> torch.Tensor:

@@ -8,7 +8,7 @@ from tabulate import tabulate  # type: ignore[import-untyped]
 in config files) to callable objects.
 """
 
-__all__ = ["Registry", "locate"]
+__all__ = ["Registry", "locate", "convert_target_to_string"]
 
 
 class Registry(Iterable[Tuple[str, Any]]):
@@ -91,7 +91,7 @@ class Registry(Iterable[Tuple[str, Any]]):
     __str__ = __repr__
 
 
-def _convert_target_to_string(t: Any) -> str:
+def convert_target_to_string(t: Any) -> str:
     """
     Inverse of ``locate()``.
 

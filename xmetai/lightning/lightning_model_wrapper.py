@@ -6,7 +6,7 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import math
-from typing import Iterable, Mapping
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 import pytorch_lightning as pl
@@ -15,7 +15,9 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 
 from xmetai.config import LazyConfig, instantiate
-from xmetai.core.evaluator import DatasetEvaluators
+from xmetai.core import DatasetEvaluators
+
+__all__ = ["Lightning_Model_Wrapper"]
 
 
 # results pattern: {key:{times:values, level1: values, ...}}
@@ -33,7 +35,7 @@ def flatten_results_dict(results):
         if isinstance(v, Mapping):
             v = flatten_results_dict(v)
             for kk, vv in v.items():
-                if isinstance(vv, Iterable):  # use mean for list
+                if isinstance(vv, (Sequence, np.ndarray)) and not isinstance(vv, (str, bytes)):
                     vv = np.mean(vv)
                 r[k + "_" + kk] = vv
         else:

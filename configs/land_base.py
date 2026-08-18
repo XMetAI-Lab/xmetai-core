@@ -6,19 +6,14 @@ This configuration file is designed to be used with the FanJiang framework.
 """
 
 import os
+from datetime import datetime
 
 import numpy as np
-from omegaconf import OmegaConf
 
 from xmetai import (
-    DATASETS,
-    METRICS,
     LazyConfig,
-    build_test_loader,
-    build_train_loader,
     get_data_info,
 )
-from xmetai import LazyCall as L
 
 ######################################################################
 # Global settings
@@ -30,6 +25,7 @@ CONFIG_PATH = os.path.dirname(__file__)
 ROOT_PATH = os.path.join(CONFIG_PATH, "../")
 data_dirs = [f for f in os.environ["DATA_DIR"].split(":") if f]  # support multiple output directories
 output_dir = os.environ.get("OUTPUT_DIR", os.path.join(ROOT_PATH, "output/", os.path.basename(CONFIG_PATH)))
+cur_date = datetime.now().strftime("%Y%m%d")
 
 #####################################################################
 # Training settings
@@ -52,7 +48,7 @@ if os.path.exists(f"{output_dir}/model_final.pth"):
     train.init_checkpoint = f"{output_dir}/model_best.pth"
     train.teacher_forcing.teach_iters = 100
     train.teacher_forcing.teach_steps = 20  # teach for 20 steps with 80GB GPU memory
-    output_dir += "/mstep/"
+    output_dir += f"/mstep-{cur_date}/"
     lr = 1.28e-5
     max_iter = max_iter // 3
     load_from_pretrain = True
@@ -92,52 +88,20 @@ depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 ######################################################################
 # Data settings
 ######################################################################
-dataloader = OmegaConf.create()
+
 
 test_times = ("20230101", "20241231")
 # test_times = ("20050101", "20250202")
-dataloader.train = L(build_train_loader)(
-    dataset=L(DATASETS.get("MultiZarrDataset"))(
-        data_paths=data_dirs,
-        hist_frames=in_frames,
-        fcst_frames=1,
-        interval=1,
-        freq=freq,
-        training=True,
-        years=train_times,
-    ),
-    total_batch_size=total_batch_size,
-    num_workers=8,
-    pin_memory=True,
-)
 
-dataloader.test = L(build_test_loader)(
-    dataset=L(DATASETS.get("MultiZarrDataset"))(
-        data_paths=data_dirs,
-        hist_frames=in_frames,
-        fcst_frames=test_frames,
-        interval=-1,
-        freq=freq,
-        training=False,
-        inference_only=False,
-        years=test_times,
-    ),
+dataloader = LazyConfig.load(os.path.join(ROOT_PATH, "common/dataloader.py"), "zarr_dataloader")(
+    data_paths=data_dirs,
+    train_times=train_times,
+    test_times=test_times,
+    eval_test_names=test_names,
     total_batch_size=total_batch_size,
-    num_workers=4,
-    pin_memory=True,
 )
-
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
-
-# for evaluation with mse.
-eval_times = [int(t * freq) for t in test_frames]
-dataloader.evaluator = [
-    L(METRICS.get("MSE"))(
-        test_names=test_names,
-        test_times=eval_times,
-    ),
-]
 
 export_onnx = False
 if export_onnx:

@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["EarthConv2d", "EarthConvTranspose2d", "EarthDeconv2d"]
+__all__ = ["EarthConv2d", "EarthConvTranspose2d"]
 
 
 def earth_pad(x, pad_lat, pad_lon):

@@ -1,6 +1,16 @@
 import torch
 import torch.distributed as dist
 
+__all__ = [
+    "zeropower_via_newtonschulz5",
+    "muon_update",
+    "Muon",
+    "SingleDeviceMuon",
+    "adam_update",
+    "MuonWithAuxAdam",
+    "SingleDeviceMuonWithAuxAdam",
+]
+
 
 def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int) -> torch.Tensor:
     """

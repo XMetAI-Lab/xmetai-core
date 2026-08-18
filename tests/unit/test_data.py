@@ -15,7 +15,7 @@ class TestDataUtils:
     def test_normalize_denormalize(self, sample_weather_data):
         """Test data normalization and denormalization."""
         try:
-            from xmetai.data.weather_util import denormalize, normalize
+            from xmetai.utils.reanalyse import denormalize, normalize
         except ImportError:
             pytest.skip("Weather utilities not available")
 
@@ -35,7 +35,7 @@ class TestDataUtils:
     def test_normalize_zero_std(self):
         """Test normalization handles zero standard deviation."""
         try:
-            from xmetai.data.weather_util import normalize
+            from xmetai.utils.reanalyse import normalize
         except ImportError:
             pytest.skip("Weather utilities not available")
 
@@ -52,7 +52,7 @@ class TestDataUtils:
     def test_data_range_validation(self):
         """Test data range validation."""
         try:
-            from xmetai.data.weather_util import validate_range
+            from xmetai.utils.reanalyse import validate_range
         except ImportError:
             pytest.skip("Weather utilities not available")
 
@@ -65,7 +65,7 @@ class TestDataUtils:
     def test_extreme_values_handling(self):
         """Test handling of extreme/NaN values in data."""
         try:
-            from xmetai.data.weather_util import remove_invalid
+            from xmetai.utils.reanalyse import remove_invalid
         except ImportError:
             pytest.skip("Weather utilities not available")
 
@@ -85,7 +85,7 @@ class TestWeatherDataset:
     def test_era5_dataset_structure(self):
         """Test ERA5 dataset basic structure."""
         try:
-            from xmetai.data.era5 import ERA5Dataset
+            from xmetai.data.weather.era5 import ERA5Dataset
         except ImportError:
             pytest.skip("ERA5 dataset not available")
 
@@ -96,12 +96,179 @@ class TestWeatherDataset:
     def test_multi_zarr_dataset_loading(self):
         """Test multi-dataset loading."""
         try:
-            from xmetai.data.multi_zarr_dataset import MultiZarrDataset
+            from xmetai.data.weather.multi_zarr_dataset import MultiZarrDataset
         except ImportError:
             pytest.skip("MultiZarr dataset not available")
 
         # This would require actual zarr files
         pytest.skip("Requires actual zarr files")
+
+    def test_zarr_dataloader_template_builds_multi_zarr_dataset(self, monkeypatch):
+        """Test the shared zarr_dataloader template without touching real zarr stores."""
+        import os
+
+        import pandas as pd
+        import xarray as xr
+
+        from xmetai.config import LazyConfig, instantiate
+
+        times = pd.date_range("2020-01-01", periods=8, freq="6h")
+        levels = ["a", "b", "c"]
+        values = np.arange(len(times) * len(levels) * 2 * 3, dtype=np.float32).reshape(len(times), len(levels), 2, 3)
+        fake_ds = xr.Dataset(
+            {"data": (("time", "level", "lat", "lon"), values)},
+            coords={"time": times, "level": levels, "lat": [0.0, 1.0], "lon": [100.0, 101.0, 102.0]},
+        )
+
+        def fake_open_zarr(path, consolidated=True, mask_and_scale=True):
+            assert path == "memory.zarr"
+            assert consolidated is True
+            assert mask_and_scale is True
+            return fake_ds.copy()
+
+        monkeypatch.setattr(xr, "open_zarr", fake_open_zarr)
+
+        zarr_dataloader = LazyConfig.load(os.path.join(os.path.dirname(__file__), "../../common/dataloader.py"), "zarr_dataloader")
+        dataloader_cfg = zarr_dataloader(
+            data_paths=["memory.zarr"],
+            in_frames=2,
+            test_frames=[1, 2],
+            freq=6,
+            train_times=("20200101-00", "20200102-18"),
+            test_times=("20200101-00", "20200102-18"),
+            total_batch_size=1,
+            train_workers=0,
+            test_workers=0,
+            test_interval=1,
+            in_names=["c", "a"],
+            test_target_names=["b"],
+            eval_test_names=["c"],
+        )
+        train_dataset = instantiate(dataloader_cfg.train.dataset)
+        test_dataset = instantiate(dataloader_cfg.test.dataset)
+
+        train_sample = train_dataset[0]
+        test_sample = test_dataset[0]
+
+        assert dataloader_cfg.train.dataset._target_.__name__ == "MultiZarrDataset"
+        assert dataloader_cfg.evaluator[0].test_times == [6, 12]
+        assert train_sample["inputs"].shape == (2, 2, 2, 3)
+        assert train_sample["targets"].shape == (1, 2, 2, 3)
+        assert test_sample["targets"].shape == (2, 1, 2, 3)
+        torch.testing.assert_close(test_sample["targets"], torch.from_numpy(values[[2, 3]][:, [1]]))
+
+    def test_multi_zarr_dataset_accepts_channel_dimension(self, monkeypatch):
+        """Test MultiZarrDataset accepts zarr stores using channel instead of level."""
+        import pandas as pd
+        import xarray as xr
+
+        from xmetai.data.weather.multi_zarr_dataset import MultiZarrDataset
+
+        times = pd.date_range("2020-01-01", periods=8, freq="6h")
+        channels = ["a", "b", "c"]
+        values = np.arange(len(times) * len(channels) * 2 * 3, dtype=np.float32).reshape(len(times), len(channels), 2, 3)
+        fake_ds = xr.Dataset(
+            {"data": (("time", "channel", "lat", "lon"), values)},
+            coords={"time": times, "channel": channels, "lat": [0.0, 1.0], "lon": [100.0, 101.0, 102.0]},
+        )
+
+        def fake_open_zarr(path, consolidated=True, mask_and_scale=True):
+            assert path == "memory.zarr"
+            assert consolidated is True
+            assert mask_and_scale is True
+            return fake_ds.copy()
+
+        monkeypatch.setattr(xr, "open_zarr", fake_open_zarr)
+
+        dataset = MultiZarrDataset(
+            data_paths=["memory.zarr"],
+            hist_frames=2,
+            fcst_frames=1,
+            freq=6,
+            years=("20200101-00", "20200102-18"),
+            in_names=["c", "a"],
+            bbox=(100.0, 0.0, 101.0, 1.0),
+        )
+        sample = dataset[0]
+
+        assert sample["inputs"].shape == (2, 2, 2, 2)
+        assert sample["targets"].shape == (1, 2, 2, 2)
+
+    def test_multi_zarr_dataset_decodes_scaled_integer_minutes(self, tmp_path):
+        """Test MultiZarrDataset handles radar-style int16 dbz10 stores at minute frequency."""
+        import pandas as pd
+        import torch
+        import xarray as xr
+
+        from xmetai.data.weather.multi_zarr_dataset import MultiZarrDataset
+
+        times = pd.date_range("2020-01-01 08:40", periods=8, freq="6min")
+        values_a = np.zeros((len(times), 1, 1, 2), dtype=np.int16)
+        values_a[0, 0, 0, 0] = 123
+        values_a[0, 0, 0, 1] = -32768
+        values_b = np.zeros((len(times), 1, 1, 2), dtype=np.int16)
+        values_b[0, 0, 0, 0] = 100
+        fake_ds_a = xr.Dataset(
+            {"data": (("time", "level", "lat", "lon"), values_a)},
+            coords={"time": times, "level": ["cr"], "lat": [0.0], "lon": [100.0, 100.01]},
+        )
+        fake_ds_a["data"].attrs.update({"_FillValue": -32768, "scale_factor": 0.1, "add_offset": 0.0})
+        fake_ds_b = xr.Dataset(
+            {"data": (("time", "level", "lat", "lon"), values_b)},
+            coords={"time": times, "level": ["cr"], "lat": [0.0], "lon": [100.0, 100.01]},
+        )
+        fake_ds_b["data"].attrs.update({"_FillValue": -32768, "scale_factor": 0.2, "add_offset": 0.0})
+        path_a = tmp_path / "radar_a.zarr"
+        path_b = tmp_path / "radar_b.zarr"
+        fake_ds_a.to_zarr(path_a, consolidated=True, zarr_format=2)
+        fake_ds_b.to_zarr(path_b, consolidated=True, zarr_format=2)
+
+        dataset = MultiZarrDataset(
+            data_paths=[path_a, path_b],
+            hist_frames=2,
+            fcst_frames=1,
+            freq=6,
+            freq_unit="minutes",
+            years=("20200101", "20200102"),
+        )
+        sample = dataset[0]
+
+        assert sample["inputs"].shape == (2, 2, 1, 2)
+        assert torch.isclose(sample["inputs"][0, 0, 0, 0], torch.tensor(12.3), atol=1e-5)
+        assert sample["inputs"][0, 0, 0, 1] == 0.0
+        assert torch.isclose(sample["inputs"][0, 1, 0, 0], torch.tensor(20.0), atol=1e-5)
+
+    def test_multi_zarr_dataset_masks_float_fill_values(self, tmp_path):
+        """Test xarray CF decoding clears fill values in floating-point stores."""
+        import pandas as pd
+        import xarray as xr
+
+        from xmetai.data.weather.multi_zarr_dataset import MultiZarrDataset
+
+        times = pd.date_range("2020-01-01", periods=8, freq="6h")
+        values = np.ones((len(times), 1, 1, 1), dtype=np.float32)
+        values[0, 0, 0, 0] = -9999.0
+        values[2, 0, 0, 0] = -9999.0
+        fake_ds = xr.Dataset(
+            {"data": (("time", "level", "lat", "lon"), values)},
+            coords={"time": times, "level": ["temperature"], "lat": [0.0], "lon": [100.0]},
+        )
+        fake_ds["data"].attrs["_FillValue"] = -9999.0
+        path = tmp_path / "weather.zarr"
+        fake_ds.to_zarr(path, consolidated=True, zarr_format=2)
+
+        dataset = MultiZarrDataset(
+            data_paths=[path],
+            hist_frames=2,
+            fcst_frames=1,
+            freq=6,
+            years=("20200101", "20200102"),
+        )
+        sample = dataset[0]
+
+        assert sample["inputs"][0, 0, 0, 0] == 0.0
+        assert sample["inputs"][1, 0, 0, 0] == 1.0
+        assert sample["targets"][0, 0, 0, 0] == 0.0
 
 
 class TestDataSampler:
@@ -209,7 +376,7 @@ class TestNormalizationConstants:
     def test_compute_dataset_stats(self):
         """Test computing mean/std from data."""
         try:
-            from xmetai.data.weather_util import compute_statistics
+            from xmetai.utils.reanalyse import compute_statistics
         except ImportError:
             pytest.skip("compute_statistics not available")
 
@@ -240,7 +407,7 @@ class TestWeatherUtilXarray:
     def test_update_dims_and_coords(self):
         """Ensure coords are renamed and level dimension is added."""
         xr = pytest.importorskip("xarray")
-        from xmetai.data.weather.weather_util import update_coords, update_dims
+        from xmetai.utils.reanalyse import update_coords, update_dims
 
         data = xr.DataArray(
             np.zeros((3, 3), dtype=np.float32),
@@ -261,7 +428,7 @@ class TestWeatherUtilXarray:
         """Normalize then invert with log channel handling."""
         xr = pytest.importorskip("xarray")
         pytest.importorskip("dask")
-        from xmetai.data.weather.weather_util import inv_normalize, normalize
+        from xmetai.utils.reanalyse import inv_normalize, normalize
 
         base = xr.DataArray(
             np.array([[[1.0]], [[2.0]]], dtype=np.float32),
@@ -284,7 +451,7 @@ class TestWeatherUtilXarray:
     def test_land_to_nan_masks_ocean_channel(self):
         """Mask ocean-specific channels without altering others."""
         xr = pytest.importorskip("xarray")
-        from xmetai.data.weather.weather_util import land_to_nan
+        from xmetai.utils.reanalyse import land_to_nan
 
         data = xr.DataArray(
             np.ones((1, 2, 2, 2), dtype=np.float32),
@@ -308,7 +475,7 @@ class TestWeatherUtilXarray:
 
     def test_compute_level_weight_properties(self):
         """Level weights should be positive and sum to one."""
-        from xmetai.data.weather.weather_util import LEVELS_13, compute_level_weight
+        from xmetai.utils.reanalyse import LEVELS_13, compute_level_weight
 
         weights = compute_level_weight()
 

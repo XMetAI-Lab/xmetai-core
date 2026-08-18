@@ -1,31 +1,39 @@
-"""
-Unit tests for vision layers: SwinLayer, MambaVisionLayer, Block.
-Tests windowed attention, rotary embeddings, and mamba blocks.
-"""
+"""Unit tests for vision layers: SwinLayer, MambaVisionLayer, Block."""
+
+import sys
+import types
+from importlib.util import find_spec
 
 import pytest
 import torch
+import torch.nn as nn
 
-# Prefer package exports; otherwise import directly from modules.
-try:
-    from xmetai.layers import (
-        HAS_MAMBA,
-        MambaVisionLayer,
-        SwinLayer,
-        precompute_freqs_cis,
-    )
-except Exception:
-    HAS_MAMBA = False
-    from xmetai.layers.swin import SwinLayer
+from xmetai.layers.gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer, GatedDeltaNet2Mixer
+from xmetai.layers.rotary_attention import precompute_freqs_cis
+from xmetai.layers.swin import SwinBlock, SwinLayer
 
-    try:
-        from xmetai.layers.mamba_vision import MambaVisionLayer
+HAS_MAMBA = find_spec("mamba_ssm") is not None
+if HAS_MAMBA:
+    from xmetai.layers.mamba_vision import MambaVisionLayer
+else:
+    MambaVisionLayer = None
 
-        HAS_MAMBA = True
-    except Exception:
-        # leave MambaVisionLayer undefined; tests that require it should handle ImportError/skip
-        MambaVisionLayer = None
-    from xmetai.layers.rotary_attention import precompute_freqs_cis
+
+class FakeGatedDeltaNet2(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.kwargs = kwargs
+
+    def forward(self, hidden_states, **kwargs):
+        return hidden_states, None, None
+
+
+def install_fake_fla_gdn2(monkeypatch):
+    fla_module = types.ModuleType("fla")
+    layers_module = types.ModuleType("fla.layers")
+    layers_module.GatedDeltaNet2 = FakeGatedDeltaNet2
+    monkeypatch.setitem(sys.modules, "fla", fla_module)
+    monkeypatch.setitem(sys.modules, "fla.layers", layers_module)
 
 
 class TestSwinLayer:
@@ -96,6 +104,67 @@ class TestSwinLayer:
             assert output.shape == x.shape
 
 
+class TestGatedDeltaNet2Layer:
+    def test_gdn2_mixer_forward_shape(self, torch_seed, monkeypatch):
+        install_fake_fla_gdn2(monkeypatch)
+        x = torch.randn(2, 16, 32)
+        mixer = GatedDeltaNet2Mixer(hidden_size=32, num_heads=4, use_short_conv=True, conv_size=3)
+
+        output = mixer(x)
+
+        assert output.shape == x.shape
+        assert mixer.mixer.kwargs["hidden_size"] == 32
+        assert mixer.mixer.kwargs["num_heads"] == 4
+
+    def test_gdn2_layer_forward_with_embedding_and_grad(self, torch_seed, monkeypatch):
+        install_fake_fla_gdn2(monkeypatch)
+        x = torch.randn(2, 16, 32, requires_grad=True)
+        time_embedding = torch.randn(2, 32)
+        layer = GatedDeltaNet2Layer(
+            dim=32,
+            depth=2,
+            num_heads=4,
+            mlp_ratio=2,
+            with_embedding=True,
+            use_short_conv=True,
+            conv_size=3,
+        )
+
+        output = layer(x, time_embedding=time_embedding)
+        loss = output.sum()
+        loss.backward()
+
+        assert output.shape == x.shape
+        assert x.grad is not None
+        assert x.grad.abs().sum() > 0
+
+    def test_gdn2_invalid_head_config_fails_fast(self):
+        with pytest.raises(ValueError, match="must be divisible"):
+            GatedDeltaNet2Mixer(hidden_size=30, num_heads=8)
+
+    def test_gdn2_swin_hybrid_alternates_blocks(self, torch_seed, monkeypatch):
+        install_fake_fla_gdn2(monkeypatch)
+        x = torch.randn(2, 16, 32, requires_grad=True)
+        time_embedding = torch.randn(2, 32)
+        layer = GatedDeltaNet2HybridLayer(
+            dim=32,
+            depth=4,
+            num_heads=4,
+            input_size=(4, 4),
+            window_size=2,
+            mlp_ratio=2,
+            with_embedding=True,
+        )
+
+        output = layer(x, time_embedding=time_embedding)
+        output.sum().backward()
+
+        assert isinstance(layer.blocks[0], GatedDeltaNet2Block)
+        assert isinstance(layer.blocks[1], SwinBlock)
+        assert output.shape == x.shape
+        assert x.grad is not None
+
+
 class TestBlock:
     """Test Block (Vision Transformer block with optional Mamba/Attention)."""
 
@@ -153,7 +222,7 @@ class TestBlock:
         window_size = (8, 8)
         input_size = (H, W)
         head_dim = C // 8
-        seq_len = window_size[0] * window_size[1]
+        seq_len = H * W
         freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, seq_len)
 
         block = Block(
@@ -194,6 +263,19 @@ class TestBlock:
 
         output = block(x)
         assert output.shape == x.shape
+
+    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    def test_mamba_mixer_conv_bias_flag(self, torch_seed):
+        """Test Mamba mixer honors the conv bias flag."""
+        from xmetai.layers.mamba_vision import MambaVisionMixer
+
+        mixer_with_bias = MambaVisionMixer(d_model=64, conv_bias=True)
+        mixer_without_bias = MambaVisionMixer(d_model=64, conv_bias=False)
+
+        assert mixer_with_bias.conv1d_x.bias is not None
+        assert mixer_with_bias.conv1d_z.bias is not None
+        assert mixer_without_bias.conv1d_x.bias is None
+        assert mixer_without_bias.conv1d_z.bias is None
 
 
 class TestMambaVisionLayer:
@@ -246,7 +328,7 @@ class TestMambaVisionLayer:
         window_size = (8, 8)
         input_size = (H, W)
         head_dim = C // 8
-        seq_len = window_size[0] * window_size[1]
+        seq_len = H * W
         freqs_cos, freqs_sin = precompute_freqs_cis(head_dim, seq_len)
 
         layer = MambaVisionLayer(
@@ -259,11 +341,33 @@ class TestMambaVisionLayer:
             input_size=input_size,
         )
 
-        try:
-            output = layer(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
-            assert output.shape == x.shape
-        except AssertionError:
-            pytest.skip("RotaryAttention requires matching precompute layout; skipping if incompatible")
+        assert isinstance(layer.blocks[0].mixer, nn.Module)
+        assert layer.blocks[0].mixer.max_seq_len == seq_len
+
+        output = layer(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
+        assert output.shape == x.shape
+
+    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    def test_mamba_vision_layer_preserves_mamba_init(self, torch_seed):
+        """Test layer construction does not clobber Mamba mixer initialization."""
+        from xmetai.layers.mamba_vision import MambaVisionMixer
+
+        torch.manual_seed(1234)
+        expected_mixer = MambaVisionMixer(d_model=64, d_state=8, d_conv=3, expand=1)
+        expected_dt_proj_weight = expected_mixer.dt_proj.weight.detach().clone()
+        expected_out_proj_weight = expected_mixer.out_proj.weight.detach().clone()
+
+        torch.manual_seed(1234)
+        layer = MambaVisionLayer(
+            dim=64,
+            depth=1,
+            num_heads=8,
+            transformer_blocks=[],
+        )
+        mixer = layer.blocks[0].mixer
+
+        assert torch.allclose(mixer.dt_proj.weight, expected_dt_proj_weight)
+        assert torch.allclose(mixer.out_proj.weight, expected_out_proj_weight)
 
     @pytest.mark.gpu
     def test_mamba_vision_layer_mixed_blocks(self, torch_seed):

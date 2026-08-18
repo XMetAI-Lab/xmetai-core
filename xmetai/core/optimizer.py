@@ -19,11 +19,14 @@ from .scheduler import (
 )
 
 __all__ = [
+    "GradientClipType",
+    "maybe_add_gradient_clipping",
     "build_lr_scheduler",
     "build_optimizer",
     "get_default_optimizer_params",
     "gradient_clipping",
     "get_muon_params_group",
+    "reduce_param_groups",
 ]
 
 
@@ -166,6 +169,15 @@ def build_optimizer(cfg: CfgNode, model: torch.nn.Module) -> torch.optim.Optimiz
             betas=cfg.SOLVER.BETAS,
             weight_decay=cfg.SOLVER.WEIGHT_DECAY,
         )
+    elif optimizer_type == "LION":
+        from xmetai.core.lion import Lion
+
+        return maybe_add_gradient_clipping(cfg, Lion)(  # type: ignore[call-arg]
+            params,
+            lr=cfg.SOLVER.BASE_LR,
+            betas=cfg.SOLVER.BETAS,
+            weight_decay=cfg.SOLVER.WEIGHT_DECAY,
+        )
     else:
         raise NotImplementedError(f"no optimizer type {optimizer_type}")
 
@@ -194,7 +206,6 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
     base_lr: Optional[float] = None,
     weight_decay: Optional[float] = None,
     weight_decay_norm: Optional[float] = None,
-    lr_factor_func: Optional[Callable] = None,
     overrides: Optional[Dict[str, Dict[str, float]]] = None,
 ):
     """
@@ -207,9 +218,11 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
             in optimizer.
         weight_decay_norm: override weight decay for params in normalization layers
         overrides: if not `None`, provides values for optimizer hyperparameters
-            (LR, weight decay) for module parameters with a given name; e.g.
-            ``{"embedding": {"lr": 0.01, "weight_decay": 0.1}}`` will set the LR and
-            weight decay values for all module parameters named `embedding`.
+            (LR, weight decay) for parameters whose full name or module path matches
+            a prefix; e.g. ``{"backbone": {"lr": 0.01, "weight_decay": 0.1}}`` will
+            set the LR and weight decay values for all parameters under ``backbone``.
+            Transparent DDP, FSDP, and activation-checkpoint wrapper names are ignored
+            when matching prefixes.
 
     For common detection models, ``weight_decay_norm`` is the only option
     needed to be set.
@@ -230,6 +243,30 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
     if weight_decay is not None:
         defaults["weight_decay"] = weight_decay
 
+    def find_override(full_param_name: str, module_name: str, param_name: str) -> Dict[str, float]:
+        matched_key = None
+        for key in overrides:
+            if key in (full_param_name, module_name, param_name) or full_param_name.startswith(f"{key}.") or module_name.startswith(f"{key}."):
+                if matched_key is None or len(key) > len(matched_key):
+                    matched_key = key
+        return {} if matched_key is None else overrides[matched_key]
+
+    def apply_override(hyperparams: Dict[str, float], override: Dict[str, float]) -> None:
+        override = copy.copy(override)
+        lr_factor = override.pop("lr_factor", None)
+        if lr_factor is not None and "lr" in hyperparams:
+            hyperparams["lr"] = hyperparams["lr"] * lr_factor
+        weight_decay_factor = override.pop("weight_decay_factor", None)
+        if weight_decay_factor is not None:
+            if "weight_decay" in hyperparams:
+                hyperparams["weight_decay"] = hyperparams["weight_decay"] * weight_decay_factor
+            elif "weight_decay" not in override:
+                logger.error(
+                    "weight_decay_factor override requires get_default_optimizer_params(weight_decay=...) "
+                    "or an explicit weight_decay override; ignoring weight_decay_factor."
+                )
+        hyperparams.update(override)
+
     norm_module_types = (
         torch.nn.BatchNorm1d,
         torch.nn.BatchNorm2d,
@@ -243,15 +280,25 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
         torch.nn.LayerNorm,
         torch.nn.LocalResponseNorm,
     )
+    model_is_data_parallel = isinstance(model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel))
+    transparent_wrapper_names = {"_checkpoint_wrapped_module", "_fsdp_wrapped_module"}
+
+    def normalize_module_name(module_name: str) -> str:
+        parts = [part for part in module_name.split(".") if part not in transparent_wrapper_names]
+        if model_is_data_parallel and parts and parts[0] == "module":
+            parts = parts[1:]
+        return ".".join(parts)
+
     params: List[Dict[str, Any]] = []
     memo: Set[torch.nn.parameter.Parameter] = set()
     for module_name, module in model.named_modules():
-        module_name = module_name.replace("_checkpoint_wrapped_module.", "")
+        module_name = normalize_module_name(module_name)
 
         for param_name, value in module.named_parameters(recurse=False):
+            full_param_name = f"{module_name}.{param_name}" if module_name else param_name
 
             if not value.requires_grad:
-                logger.info(f"freeze {module_name}.{param_name}")
+                logger.info(f"freeze {full_param_name}")
                 continue
 
             # Avoid duplicating parameters
@@ -283,6 +330,11 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
             elif hasattr(module, "weight") and param_name == "weight" and "norm" in module.__class__.__name__.lower() and weight_decay_norm is not None:
                 hyperparams["weight_decay"] = weight_decay_norm
 
+            override = find_override(full_param_name, module_name, param_name)
+            if override:
+                before_override = copy.copy(hyperparams)
+                apply_override(hyperparams, override)
+                logger.info(f"override {full_param_name}: override={override}, before={before_override}, after={hyperparams}")
             params.append({"params": [value], **hyperparams})
 
     return params

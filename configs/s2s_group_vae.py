@@ -21,6 +21,8 @@ from s2s_base import (  # noqa: F401
     buffers,
     dataloader,
     depths,
+    export_onnx,
+    freq,
     in_chans,
     in_names,
     load_from_pretrain,
@@ -42,21 +44,26 @@ from xmetai import LazyCall as L
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
 
-loss_weight = (0.2, 0.2, 1.0, 0.01, 0.3)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
+vae_type = "index"
+if os.path.exists(f"{output_dir}/model_best.pth"):
+    train.init_checkpoint = f"{output_dir}/model_best.pth"
+loss_weight = (0.2, 0.2, 1.0, 0.002, 0.8)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
+
+in_frames = 2
+out_frames = 1
+dataloader.train.dataset.hist_frames = in_frames
+dataloader.test.dataset.hist_frames = in_frames
+
 if load_from_pretrain:
     # freeze upper-level VAE to preserve pretrained dynamics, only fine-tune lower-level VAE and main predictor.
     train.teacher_forcing.teach_start = 2
-    train.teacher_forcing.teach_steps = 10
+    train.teacher_forcing.teach_steps = 20
     train.freeze = (
+        "posterior_encoder_group.1",
         "posterior_encoder_group.2",
+        "vae_encoder_group.1",
         "vae_encoder_group.2",
     )
-    # train.teacher_forcing.teach_start = 10
-    # train.teacher_forcing.teach_steps = 20
-    # train.freeze = (
-    #    "posterior_encoder_group.1",
-    #    "vae_encoder_group.1",
-    # )
     rollout_steps = train.teacher_forcing.teach_steps - train.teacher_forcing.teach_start + 1
     train.teacher_forcing.teach_iters = train.max_iter // rollout_steps
     train.eval_period = train.teacher_forcing.teach_iters
@@ -64,6 +71,16 @@ if load_from_pretrain:
     scheduler.end_value = 1e-2
     scheduler.period = 1.0 / rollout_steps
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
+else:
+    train.teacher_forcing.teach_iters = -1
+    train.teacher_forcing.teach_steps = 1
+    test_frames = [i for i in range(1, out_frames + 2)]
+    dataloader.test.dataset.fcst_frames = test_frames
+    dataloader.evaluator[0].test_times = [t * freq for t in test_frames]
+    if os.path.exists(f"{output_dir}/../pretrain/s2s_group_vae/model_final.pth"):
+        train.init_checkpoint = f"{output_dir}/../pretrain/s2s_group_vae/model_final.pth"
+        train.freeze = ("posterior_encoder_group",)
+
 
 ######################################################################
 # Model settings
@@ -81,22 +98,23 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     decoder_depths=depths[-2:-1],
     num_heads=16,
     drop_mcmc=0.05,
-    attn_type="rotary_flash",
+    attn_type="v2",
     mask_type="h",
     head_type="2fc",
     norm_type="adaln",
     ffn_type="gegluffn",
     # VAE settings
-    vae_type="index",
+    vae_type=vae_type,
+    vae_residual_indices=["sst", "t2m"],
     level_groups=[[0], [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
     split_surface=False,
     # Vertical transformer settings for VAE latent prediction
     vt_num_heads=24,
     vt_num_layers=depths[-1],
-    vt_layer_type="mamba_met",
-    vt_window_size=None,
-    vt_attn_type="std",
+    vt_layer_type="mamba3_met_embed",
     vt_use_proj=True,
+    vt_window_size=10,
+    vt_attn_type="rotary_flash",
     # Overall model settings
     alpha=0.9,
     loss_weight=loss_weight,
@@ -105,8 +123,8 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     in_chans=in_chans,
     out_chans=out_chans,
     const_chans=2,
-    in_frames=2,
-    out_frames=1,
+    in_frames=in_frames,
+    out_frames=out_frames,
     logid=logid,
     maskid=[],  # maskid,
     accumid=accumid,
@@ -119,9 +137,31 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     # pinn_coeffs=pinn_coeffs,
     # pinn_use_denorm=True,
     save_dir=output_dir + "/pred/",
+    rollout_max=10,
 )
 
 model.members = members
 model.step_range = step_range
 model.buffers = buffers
 model.precision = "bf16"
+
+if export_onnx:
+    from xmetai.data import make_onnx
+
+    train.use_ddp = False
+    train.use_fsdp = False
+    train.use_fsdp2 = False
+    train.activation_checkpointing = True
+    dataloader.test.total_batch_size = 1
+    model.precision = "fp16"
+    make_onnx(
+        model=train,
+        dataloader_cfg=dataloader.test,
+        mean=buffers.get("mean", None),
+        std=buffers.get("std", None),
+        in_names=in_names,
+        output_dir=output_dir,
+        embed_types=["step", "hour", "doy"],
+        model_name="s2s_group_vae.onnx",
+        device=train.device_type,
+    )

@@ -6,48 +6,31 @@ Tests: Attention, RotaryAttention, Embeddings, Activations, Normalizations
 import pytest
 import torch
 
-# Import helpers: prefer package exports, fall back to module-level imports
-try:
-    from xmetai.layers import (
-        Attention,
-        CubeEmbed,
-        LayerNorm,
-        RotaryAttention,
-        TimestepEmbed,
-        precompute_freqs_cis,
-        precompute_freqs_cis_2d,
-    )
-except Exception:
-    # Some projects expose fewer symbols from package __init__.
-    # Fallback to direct module imports and provide small adapters where needed.
-    try:
-        from xmetai.layers.attention import AttentionBlock as _AttentionBlock
+from xmetai.layers.attention import Attention
+from xmetai.layers.embed import CubeEmbed, TimestepEmbed
+from xmetai.layers.mlp import GeGLUFFN, Mlp
+from xmetai.layers.norm import LayerNorm
+from xmetai.layers.rotary_attention import RotaryAttention, precompute_freqs_cis, precompute_freqs_cis_2d
 
-        class Attention:
-            def __init__(self, dim, num_heads=8, **kwargs):
-                dim_head = max(1, dim // max(1, num_heads))
-                self._inst = _AttentionBlock(dim, dim_head, n_heads=num_heads, **kwargs)
 
-            def __call__(self, *args, **kwargs):
-                return self._inst(*args, **kwargs)
+class TestMlp:
+    """Test reusable MLP layers."""
 
-            def to(self, *args, **kwargs):
-                return self._inst.to(*args, **kwargs)
+    def test_mlp_forward_shape(self, torch_seed):
+        x = torch.randn(2, 16, 32)
+        mlp = Mlp(in_features=32, hidden_features=64, out_features=48)
 
-            def __getattr__(self, name):
-                return getattr(self._inst, name)
+        output = mlp(x)
 
-    except Exception:
-        # Last resort: try to import a named symbol if available
-        from xmetai.layers.attention import AttentionBlock as Attention
+        assert output.shape == (2, 16, 48)
 
-    from xmetai.layers.embed import CubeEmbed, TimestepEmbed
-    from xmetai.layers.norm import LayerNorm
-    from xmetai.layers.rotary_attention import (
-        RotaryAttention,
-        precompute_freqs_cis,
-        precompute_freqs_cis_2d,
-    )
+    def test_geglu_ffn_forward_shape(self, torch_seed):
+        x = torch.randn(2, 16, 32)
+        mlp = GeGLUFFN(in_features=32, hidden_features=64, out_features=48)
+
+        output = mlp(x)
+
+        assert output.shape == (2, 16, 48)
 
 
 class TestAttention:

@@ -15,7 +15,7 @@ class TestCRPSLoss:
     def test_crps_basic(self):
         """Test basic CRPS computation."""
         try:
-            from xmetai.loss import CRPSLoss
+            from xmetai.loss.crps_loss import CRPSLoss
         except ImportError:
             pytest.skip("CRPS loss not available")
 
@@ -33,7 +33,7 @@ class TestCRPSLoss:
     def test_crps_numerical_stability(self):
         """Test CRPS with extreme values."""
         try:
-            from xmetai.loss import CRPSLoss
+            from xmetai.loss.crps_loss import CRPSLoss
         except ImportError:
             pytest.skip("CRPS loss not available")
 
@@ -51,7 +51,7 @@ class TestCRPSLoss:
     def test_crps_gradient_flow(self):
         """Test gradients through CRPS."""
         try:
-            from xmetai.loss import CRPSLoss
+            from xmetai.loss.crps_loss import CRPSLoss
         except ImportError:
             pytest.skip("CRPS loss not available")
 
@@ -119,6 +119,36 @@ class TestMSEMetric:
         expected = torch.tensor(2.5)
         assert torch.allclose(mse, expected, atol=1e-5)
 
+    def test_mse_evaluate_handles_suffix_overlapping_names(self):
+        """Test metric names like 10u and max_10u do not collide during evaluate."""
+        try:
+            from xmetai.metrics import MSE
+        except ImportError:
+            pytest.skip("MSE metric not available")
+
+        mse_fn = MSE(test_names=["10u", "max_10u"], test_times=[1, 2])
+        mse_fn.rmse = {
+            "10u @ 001h": [1.0],
+            "10u @ 002h": [2.0],
+            "max_10u @ 001h": [3.0],
+            "max_10u @ 002h": [4.0],
+            "mean/10u @ 001h": [5.0],
+            "mean/10u @ 002h": [6.0],
+            "mean/max_10u @ 001h": [7.0],
+            "mean/max_10u @ 002h": [8.0],
+        }
+
+        result = mse_fn.evaluate()
+
+        assert result is not None
+        rmse = result["RMSE"]
+        assert rmse["10u"] == [1.0, 2.0]
+        assert rmse["max_10u"] == [3.0, 4.0]
+        assert rmse["mean/10u"] == [5.0, 6.0]
+        assert rmse["mean/max_10u"] == [7.0, 8.0]
+        assert "max_/10u" not in rmse
+        assert "mean/max_/10u" not in rmse
+
 
 class TestTCCMetric:
     """Test Temporal Correlation Coefficient metric."""
@@ -184,7 +214,7 @@ class TestCharbonnierLoss:
     def test_charbonnier_basic(self):
         """Test basic Charbonnier loss."""
         try:
-            from xmetai.loss import CharbonnierLoss
+            from xmetai.loss.charbonnier_loss import CharbonnierLoss
         except ImportError:
             pytest.skip("Charbonnier loss not available")
 
@@ -200,7 +230,7 @@ class TestCharbonnierLoss:
     def test_charbonnier_gradient_flow(self):
         """Test gradients through Charbonnier loss."""
         try:
-            from xmetai.loss import CharbonnierLoss
+            from xmetai.loss.charbonnier_loss import CharbonnierLoss
         except ImportError:
             pytest.skip("Charbonnier loss not available")
 
@@ -219,7 +249,7 @@ class TestCharbonnierLoss:
     def test_charbonnier_numerical_stability(self):
         """Test Charbonnier with large errors."""
         try:
-            from xmetai.loss import CharbonnierLoss
+            from xmetai.loss.charbonnier_loss import CharbonnierLoss
         except ImportError:
             pytest.skip("Charbonnier loss not available")
 
@@ -240,7 +270,7 @@ class TestKLLoss:
     def test_kl_loss_basic(self):
         """Test basic KL loss for ensemble."""
         try:
-            from xmetai.loss import KLLoss
+            from xmetai.loss.kl_loss import KLLoss
         except ImportError:
             pytest.skip("KL loss not available")
 
@@ -255,7 +285,7 @@ class TestKLLoss:
     def test_kl_loss_non_negative(self):
         """Test that KL loss is always non-negative."""
         try:
-            from xmetai.loss import KLLoss
+            from xmetai.loss.kl_loss import KLLoss
         except ImportError:
             pytest.skip("KL loss not available")
 

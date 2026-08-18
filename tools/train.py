@@ -33,8 +33,20 @@ try:
         inference_on_dataset,
         launch,
     )
-    from xmetai.layers import HAS_MAMBA, SwinLayer, apply_lora_to_model, merge_lora_weights
-    from xmetai.layers.graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
+    from xmetai.layers import (
+        HAS_MAMBA,
+        GatedDeltaNet2Block,
+        GatedDeltaNet2HybridLayer,
+        GatedDeltaNet2Layer,
+        GraphCastDecoder,
+        GraphCastEncoder,
+        GraphCastLayer,
+        SwinLayer,
+        apply_lora_to_model,
+        merge_lora_weights,
+    )
+    from xmetai.layers.darknet_unet import DarknetBlock, DarknetConv
+    from xmetai.layers.swin import SwinBlock
 
     if HAS_MAMBA:
         from xmetai.layers import MambaVisionLayer
@@ -46,31 +58,81 @@ except ImportError as e:
 logger = logging.getLogger("xmetai")
 
 
+def _normalize_cli_flags(args):
+    if not getattr(args, "opts", None):
+        return
+
+    cleaned_opts = []
+    for opt in args.opts:
+        if opt == "--resume":
+            args.resume = True
+            continue
+        if opt == "--eval":
+            args.eval = True
+            continue
+        if opt == "--export":
+            args.export = True
+            continue
+        cleaned_opts.append(opt)
+    args.opts = cleaned_opts
+
+
 def build_model(cfg):
     model = instantiate(cfg.model)
     if comm.is_main_process():
         logger.info("Model parameters: {:.3f}M".format(model.params() / 1e6))
     model.freeze(cfg.train.freeze)
     model.to(cfg.train.device_type)
-    mods = [SwinLayer, torch.nn.TransformerEncoderLayer, GraphCastLayer, GraphCastEncoder, GraphCastDecoder]
+    checkpoint_mods = [
+        DarknetBlock,
+        DarknetConv,
+        SwinLayer,
+        GatedDeltaNet2Layer,
+        GatedDeltaNet2HybridLayer,
+        torch.nn.TransformerEncoderLayer,
+        GraphCastLayer,
+        GraphCastEncoder,
+        GraphCastDecoder,
+    ]
+    fsdp_mods = list(checkpoint_mods)
+    if cfg.train.use_fsdp2:
+        # Keep activation checkpointing at layer granularity, but shard the
+        # large hybrid layers block-by-block to reduce FSDP2 all-gather peaks.
+        fsdp_mods = [
+            DarknetBlock,
+            DarknetConv,
+            SwinBlock,
+            GatedDeltaNet2Block,
+            torch.nn.TransformerEncoderLayer,
+            GraphCastLayer,
+            GraphCastEncoder,
+            GraphCastDecoder,
+        ]
+    # checkpoint_mods += [WindowAttention, WindowAttentionV2, RotaryAttention, Attention]
     if HAS_MAMBA:
-        mods.append(MambaVisionLayer)
-    mods = tuple(mods)
-    cfg.train.fsdp.mods = mods
+        checkpoint_mods.append(MambaVisionLayer)
+        fsdp_mods.append(MambaVisionLayer)
+    checkpoint_mods = tuple(checkpoint_mods)
+    cfg.train.fsdp.mods = tuple(fsdp_mods)
     # Apply activation checkpointing
     if cfg.train.activation_checkpointing:
-        # Determine if we are using Mamba3 to set the proper checkpoint implementation
-        checkpoint_info = CheckpointImpl.REENTRANT if "mamba3" in str(cfg.model) else CheckpointImpl.NO_REENTRANT
+
+        def uses_mamba3_checkpoint(module):
+            return HAS_MAMBA and isinstance(module, MambaVisionLayer) and getattr(module, "mamba_type", "").startswith("mamba3")
 
         def wrap_f1(module):
+            checkpoint_impl = CheckpointImpl.REENTRANT if uses_mamba3_checkpoint(module) else CheckpointImpl.NO_REENTRANT
             return checkpoint_wrapper(
                 module,
-                checkpoint_impl=checkpoint_info,
-                preserve_rng_state=False,
+                checkpoint_impl=checkpoint_impl,
+                preserve_rng_state=True,
             )
 
+        def has_trainable_params(module):
+            return any(p.requires_grad for p in module.parameters())
+
         def check_fn(submodule):
-            return isinstance(submodule, mods)
+            return isinstance(submodule, checkpoint_mods) and has_trainable_params(submodule)
 
         apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap_f1, check_fn=check_fn)
 
@@ -183,10 +245,11 @@ def do_train(args, cfg):
         [
             hooks.IterationTimer(),
             hooks.LRScheduler(scheduler=lr_scheduler),
-            hooks.PeriodicCheckpointer(checkpointer, **cfg.train.checkpointer),
-            hooks.EvalHook(cfg.train.eval_period, lambda: do_test(cfg, model)),
+            hooks.PeriodicCheckpointerHook(checkpointer, **cfg.train.checkpointer),
+            hooks.EvalHook(cfg.train.eval_period, lambda: do_test(cfg, model), eval_after_train=cfg.train.eval_after_train),
             hooks.GradientClipHook(),
             hooks.BestCheckpointer(eval_period=cfg.train.eval_period, checkpointer=checkpointer, val_metric=cfg.train.val_metric, mode="min"),
+            (hooks.CPUMemoryStats(period=cfg.train.log_period) if cfg.train.memory_trace and comm.is_main_process() else None),
             (hooks.PeriodicWriter(default_writers(cfg.train.output_dir, cfg.train.max_iter), period=cfg.train.log_period) if comm.is_main_process() else None),
             (hooks.TorchMemoryStats(cfg.train.log_period, 20) if comm.is_main_process() else None),
             # hooks.TorchProfiler(lambda trainer: 10 < trainer.iter < 20, cfg.train.output_dir, save_tensorboard=False),
@@ -245,6 +308,7 @@ def do_export(
         output_names=["pred"],
         opset_version=opset_version,
         do_constant_folding=False,
+        custom_opsets={"xmetai_plugins": 1},
     )
     logger.info(f"Exported model to {save_name}")
 
@@ -268,6 +332,7 @@ def do_export(
 
 
 def main(args):
+    _normalize_cli_flags(args)
     cfg = LazyConfig.load(args.config_file)
     cfg = LazyConfig.apply_overrides(cfg, args.opts)
     default_setup(cfg, args)

@@ -7,9 +7,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from xmetai.builder import MODELS
-from xmetai.layers.afnonet_blocks import Block, PatchEmbed
+from xmetai.layers import AFNOBlock, AfnoPatchEmbed
 from xmetai.loss import charbonnier_loss
+from xmetai.registries import MODELS
 
 from .base_predictor import BasePredictor
 
@@ -53,7 +53,7 @@ class AFNONet(BasePredictor):
 
         self.blocks = nn.ModuleList(
             [
-                Block(
+                AFNOBlock(
                     dim=embed_dim,
                     mlp_ratio=mlp_ratio,
                     drop=drop_rate,

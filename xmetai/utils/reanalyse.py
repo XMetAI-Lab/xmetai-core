@@ -6,41 +6,24 @@ import time
 
 import numpy as np
 import pandas as pd
+import torch
 import xarray as xr
 import zarr
 from dask.diagnostics import ProgressBar
 
 __all__ = [
-    "load_grib",
+    "LEVELS_13",
+    "LEVELS_37",
     "update_dims",
     "update_coords",
-    "update_units",
-    "update_coords_zarr",
-    "chunk",
     "compute_level_weight",
-    "select_data",
-    "compute_prob",
-    "compute_climate",
-    "compute_trend",
-    "compute_edge",
-    "get_doy",
-    "sel_like",
-    "get_anomaly",
     "normalize",
+    "denormalize",
     "inv_normalize",
+    "validate_range",
+    "remove_invalid",
+    "compute_statistics",
     "land_to_nan",
-    "resize_dataarray",
-    "spatial_interp",
-    "cumsum_to_accum",
-    "filter_complete_hours",
-    "resample_dataarray",
-    "crop_dataarray",
-    "aggregate",
-    "area_mean",
-    "weekly_mean",
-    "season_mean",
-    "detrend_single",
-    "remove_annual_cycle",
 ]
 
 KELVIN = -273.15
@@ -50,78 +33,10 @@ EARTH_RADIUS_M = 1000 * (6357 + 6378) / 2
 # LEVELS_0 = np.array([0], dtype=np.int32)
 LEVELS_6 = [100, 200, 500, 700, 850, 925]
 LEVELS_13 = [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+LEVELS_18 = [150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000]
 LEVELS_20 = [1, 2, 3, 5, 10, 20, 30] + LEVELS_13
-LEVELS_37 = [
-    1,
-    2,
-    3,
-    5,
-    7,
-    10,
-    20,
-    30,
-    50,
-    70,
-    100,
-    125,
-    150,
-    175,
-    200,
-    225,
-    250,
-    300,
-    350,
-    400,
-    450,
-    500,
-    550,
-    600,
-    650,
-    700,
-    750,
-    775,
-    800,
-    825,
-    850,
-    875,
-    900,
-    925,
-    950,
-    975,
-    1000,
-]
-LEVELS_30 = [
-    1,
-    5,
-    10,
-    20,
-    30,
-    50,
-    100,
-    150,
-    200,
-    250,
-    300,
-    350,
-    400,
-    450,
-    500,
-    550,
-    600,
-    650,
-    700,
-    750,
-    775,
-    800,
-    825,
-    850,
-    875,
-    900,
-    925,
-    950,
-    975,
-    1000,
-]
+LEVELS_37 = [1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000]  # fmt: skip
+LEVELS_30 = [1, 5, 10, 20, 30, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000]  # fmt: skip
 
 
 SHORT_NAME_MAPPING = dict(
@@ -417,7 +332,16 @@ def hasnan(ds, num=10):
     return res > 0
 
 
+def _safe_std(std):
+    if torch.is_tensor(std):
+        return torch.where(std == 0, torch.ones_like(std), std)
+    return np.where(std == 0, 1, std)
+
+
 def normalize(ds, mean, std, log_names=["tp"]):
+    if not hasattr(ds, "sel"):
+        return (ds - mean) / _safe_std(std)
+
     for channel in log_names:
         print(f"applying log transformation to {channel}")
         v = ds.sel(channel=channel)
@@ -425,6 +349,31 @@ def normalize(ds, mean, std, log_names=["tp"]):
         ds.loc[dict(channel=channel)] = v
     ds = (ds - mean) / std
     return ds
+
+
+def denormalize(ds, mean, std):
+    return ds * _safe_std(std) + mean
+
+
+def validate_range(data):
+    if torch.is_tensor(data):
+        if not torch.isfinite(data).all():
+            raise ValueError("Data contains NaN or Inf values.")
+        return
+    if not np.isfinite(data).all():
+        raise ValueError("Data contains NaN or Inf values.")
+
+
+def remove_invalid(data, fill_value=0.0):
+    if torch.is_tensor(data):
+        return torch.nan_to_num(data, nan=fill_value, posinf=fill_value, neginf=fill_value)
+    return np.nan_to_num(data, nan=fill_value, posinf=fill_value, neginf=fill_value)
+
+
+def compute_statistics(data):
+    if torch.is_tensor(data):
+        return data.mean(dim=(0, 1, 3, 4), keepdim=True), data.std(dim=(0, 1, 3, 4), keepdim=True)
+    return np.mean(data, axis=(0, 1, 3, 4), keepdims=True), np.std(data, axis=(0, 1, 3, 4), keepdims=True)
 
 
 def inv_normalize(ds, mean, std, dim="level", log_names=["tp"]):

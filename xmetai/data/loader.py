@@ -2,10 +2,17 @@ import numpy as np
 import torch
 import torch.utils.data as torchdata
 
-from xmetai.utils.comm import get_world_size
-from xmetai.utils.env import seed_all_rng
+from xmetai.utils import get_world_size, seed_all_rng
 
 from .sampler import InferenceSampler, TrainingSampler
+
+__all__ = [
+    "trivial_batch_collator",
+    "augment_batch_collator",
+    "worker_init_reset_seed",
+    "build_train_loader",
+    "build_test_loader",
+]
 
 
 def trivial_batch_collator(batch):

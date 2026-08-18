@@ -9,6 +9,8 @@ from einops import rearrange
 from xmetai.layers import (
     HAS_MAMBA,
     CubeEmbed,
+    GatedDeltaNet2HybridLayer,
+    GatedDeltaNet2Layer,
     LayerNorm,
     MCDropout,
     StepEncoding,
@@ -68,9 +70,10 @@ class UTransformer(nn.Module):
         self,
         in_chans,
         out_chans,
-        in_frames,
         embed_dim,
         image_size,
+        in_frames,
+        out_frames=1,
         const_chans=0,
         window_size=8,
         patch_size=4,
@@ -97,9 +100,10 @@ class UTransformer(nn.Module):
             norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
         self.in_chans = in_chans
-        self.in_frames = in_frames
         self.out_chans = out_chans
         self.const_chans = const_chans
+        self.in_frames = in_frames
+        self.out_frames = out_frames
         self.embed_dim = embed_dim
         self.image_size = tuple(image_size)
         self.patch_size = patch_size
@@ -160,10 +164,41 @@ class UTransformer(nn.Module):
         layers = []
         for i in range(self.num_layers):
             current_layer_type = self.layer_types[i]
-            if current_layer_type.lower().find("mamba") > -1:
+            layer_lower = current_layer_type.lower()
+            if layer_lower.startswith("gdn2"):
+                if layer_lower not in {"gdn2", "gdn2_embed", "gdn2_swin", "gdn2_swin_embed"}:
+                    raise ValueError(
+                        f"Unsupported GatedDeltaNet-2 layer_type={current_layer_type!r}; " "use 'gdn2', 'gdn2_embed', 'gdn2_swin', or 'gdn2_swin_embed'."
+                    )
+                with_embedding = "embed" in layer_lower
+                if "swin" in layer_lower:
+                    self.logger.info(f"Using hybrid GatedDeltaNet-2 + Swin blocks with embedding={with_embedding}.")
+                    layer = GatedDeltaNet2HybridLayer(
+                        dim=embed_dim,
+                        depth=depths[i],
+                        num_heads=num_heads,
+                        input_size=tuple(input_size),
+                        window_size=window_size,
+                        mlp_ratio=mlp_ratio,
+                        drop=drop_mcmc,
+                        with_embedding=with_embedding,
+                        attn_type=attn_type,
+                        mask_type=mask_type,
+                        ffn_type=ffn_type,
+                    )
+                else:
+                    self.logger.info(f"Using GatedDeltaNet-2 style transformer blocks with embedding={with_embedding}.")
+                    layer = GatedDeltaNet2Layer(
+                        dim=embed_dim,
+                        depth=depths[i],
+                        num_heads=num_heads,
+                        mlp_ratio=mlp_ratio,
+                        drop=drop_mcmc,
+                        with_embedding=with_embedding,
+                    )
+            elif layer_lower.find("mamba") > -1:
                 if not HAS_MAMBA:
                     raise ImportError("MambaVisionLayer requires mamba-ssm. " "Install it with: pip install '.[gpu]' or pip install mamba-ssm")
-                layer_lower = current_layer_type.lower()
                 with_embedding = "embed" in layer_lower
                 mamba_version = "mamba3" if "mamba3" in layer_lower else ("mamba2" if "mamba2" in layer_lower else "mamba")
                 mamba_type = f"{mamba_version}_met" if "_met" in layer_lower else mamba_version
@@ -184,7 +219,7 @@ class UTransformer(nn.Module):
                     window_size=((window_size, window_size) if isinstance(window_size, int) else window_size),
                     input_size=(tuple(input_size) if isinstance(input_size, (list, tuple)) else input_size),
                 )
-            elif current_layer_type.lower().find("deltanet") > -1:
+            elif layer_lower.find("deltanet") > -1:
                 self.logger.info("Using DeltaNet style transformer blocks.")
                 layer = DeltaNetLayer(
                     mode="chunk",
@@ -218,7 +253,7 @@ class UTransformer(nn.Module):
 
         self.layers = nn.ModuleList(layers)
 
-        if norm_type == "adaln":
+        if norm_type == "adaln" or self.num_layers == 0:
             self.fpn = None
         else:
             self.fpn = nn.Sequential(
@@ -228,13 +263,13 @@ class UTransformer(nn.Module):
 
         if head_type == "1fc":
             self.logger.info(f"Using 1fc head with embed_dim: {embed_dim}, out_chans: {out_chans}, patch_size: {patch_size}")
-            self.head = nn.Linear(embed_dim, out_chans * patch_size * patch_size)
+            self.head = nn.Linear(embed_dim, out_chans * out_frames * patch_size * patch_size)
         elif head_type == "2fc":
             self.logger.info(f"Using 2fc head with embed_dim: {embed_dim}, out_chans: {out_chans}, patch_size: {patch_size}")
             self.head = nn.Sequential(
                 nn.Linear(embed_dim, embed_dim),
                 nn.GELU(),
-                nn.Linear(embed_dim, out_chans * patch_size * patch_size),
+                nn.Linear(embed_dim, out_chans * out_frames * patch_size * patch_size),
             )
         elif head_type == "plsf":
             pl_chans = 65
@@ -253,7 +288,7 @@ class UTransformer(nn.Module):
         self.logger.info(
             f"Initialized {self.__class__.__name__} with args: "
             # Data dimensions
-            f"in_chans={in_chans}, out_chans={out_chans}, const_chans={const_chans}, in_frames={in_frames}, "
+            f"in_chans={in_chans}, out_chans={out_chans}, const_chans={const_chans}, in_frames={in_frames}, out_frames={out_frames}, "
             # Spatial and patch configurations
             f"image_size={image_size}, patch_size={patch_size}, window_size={window_size}, stride_size={stride_size}, down_times={down_times}, "
             # Architecture and layers
@@ -270,7 +305,7 @@ class UTransformer(nn.Module):
             x = F.interpolate(x.float(), size=self.image_size, mode="bilinear", align_corners=False).to(input)
         return x
 
-    def resize_output(self, output, input):
+    def resize_output(self, output, input, unsqueeze=False):
         output = rearrange(
             output,
             "n (h w) (p1 p2 c) -> n c (h p1) (w p2)",
@@ -287,6 +322,8 @@ class UTransformer(nn.Module):
                 align_corners=False,
             ).to(input)
 
+        if unsqueeze:
+            output = rearrange(output, "n (t c) h w -> n t c h w", t=self.out_frames)
         return output
 
     def get_embed(self, timestamp):

@@ -8,17 +8,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from xmetai.builder import MODELS
-from xmetai.data.weather.graphcast_grid import (
+from xmetai.data import (
     build_coarse_mapping,
     build_edge_attr,
     build_grid_edges,
     build_node_static,
     downsample_lat_lon,
 )
-from xmetai.layers import TimestepEmbed
-from xmetai.layers.graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
+from xmetai.layers import GraphCastDecoder, GraphCastEncoder, GraphCastLayer, TimestepEmbed
 from xmetai.loss import charbonnier_loss
+from xmetai.registries import MODELS
 
 from .base_predictor import BasePredictor
 

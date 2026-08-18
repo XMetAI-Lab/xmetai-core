@@ -1,4 +1,5 @@
 import logging
+import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
@@ -6,11 +7,29 @@ import torch
 import xarray as xr
 from torch.utils.data import Dataset
 
-from xmetai.builder import DATASETS
+from xmetai.registries import DATASETS
 
 from .data_util import make_seq, make_seq_inference
 
 __all__ = ["MultiZarrDataset"]
+
+
+def _select_bbox(ds: xr.Dataset, bbox: tuple[float, float, float, float] | None) -> xr.Dataset:
+    if bbox is None:
+        return ds
+    if len(bbox) != 4:
+        raise ValueError(f"bbox must be (lon_min, lat_min, lon_max, lat_max), got {bbox}")
+
+    lon_min, lat_min, lon_max, lat_max = [float(v) for v in bbox]
+    if lon_min > lon_max or lat_min > lat_max:
+        raise ValueError(f"Invalid bbox bounds: {bbox}")
+
+    lat_slice = slice(lat_min, lat_max) if ds.lat.values[0] <= ds.lat.values[-1] else slice(lat_max, lat_min)
+    lon_slice = slice(lon_min, lon_max) if ds.lon.values[0] <= ds.lon.values[-1] else slice(lon_max, lon_min)
+    ds = ds.sel(lat=lat_slice, lon=lon_slice)
+    if ds.sizes["lat"] == 0 or ds.sizes["lon"] == 0:
+        raise ValueError(f"bbox {bbox} does not overlap zarr grid")
+    return ds
 
 
 @DATASETS.register()
@@ -27,46 +46,69 @@ class MultiZarrDataset(Dataset):
         inference_only: bool = False,
         years: tuple = ("19790101", "20161231"),
         in_names: list[str] = [],  # list of variable names to use, if empty, use all variables in the dataset
+        target_names: list[str] | None = None,
         lat_flip: bool = False,  # whether to flip latitude axis
+        freq_unit: str = "hours",
+        bbox: tuple[float, float, float, float] | None = None,
     ):
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Loading data from: {data_paths}")
         self.start_frames = start_frames
         self.hist_frames = hist_frames
         self.fcst_frames = np.array(fcst_frames)
+        self.max_train_fcst_frames = int(np.max(np.atleast_1d(self.fcst_frames)))
+        self.runtime_train_fcst_frames = mp.Value("i", self.max_train_fcst_frames) if training and not inference_only else None
         self.training = training
         self.inference_only = inference_only
         self.lat_flip = lat_flip
+        self.freq_unit = freq_unit
 
         # 1. 加载并筛选时间范围
         datasets = []
-        times_list = []
+        times_list: list[pd.DatetimeIndex] = []
 
         for path in data_paths:
             ds = xr.open_zarr(path, consolidated=True)  # single dataset
-            self.logger.info(f"Loaded dataset from {path}, shape: {ds.data.shape} (time, level, lat, lon)")
+            self.logger.info(f"Loaded dataset from {path}, shape: {ds.data.shape} (time, channel, lat, lon)")
             ds = ds.sel(time=slice(*years))
+            ds = _select_bbox(ds, bbox)
             datasets.append(ds)
-            times_list.append(pd.to_datetime(ds.time.values))
+            times_list.append(pd.DatetimeIndex(ds.time.values))
 
         # 2. 取时间交集
         common_times = times_list[0]
         for t in times_list[1:]:
-            common_times = np.intersect1d(common_times, t)
+            common_times = common_times.intersection(t)
 
         # 3. 只取 freq 对齐的时间点（如每6小时）
-        common_times = pd.to_datetime(common_times)
-        common_times = sorted([t for t in common_times if t.hour % freq == 0])
+        if freq_unit == "hours":
+            common_times = common_times[common_times.hour % freq == 0]
+        else:
+            freq_step = pd.Timedelta(**{freq_unit: freq})
+            if freq_step <= pd.Timedelta(0):
+                raise ValueError(f"freq must define a positive time step, got {freq_step}")
+            time_offsets = common_times - common_times[0]
+            common_times = common_times[time_offsets % freq_step == pd.Timedelta(0)]
 
         if len(common_times) == 0:
             raise ValueError("No overlapping time steps among zarr files with desired freq.")
 
-        # 4. 对所有 ds 按时间交集切片
-        datasets = [ds.sel(time=common_times) for ds in datasets]
+        # 4. 对所有 ds 按时间交集切片。常见的单 zarr 连续时间轴无需回选，避免构造超大的高级索引。
+        aligned_datasets = []
+        for ds, times in zip(datasets, times_list):
+            if common_times.equals(times):
+                aligned_datasets.append(ds)
+                continue
+            positions = times.get_indexer(common_times)
+            if np.any(positions < 0):
+                raise ValueError("Could not align zarr time coordinates to common_times.")
+            aligned_datasets.append(ds.isel(time=positions))
+        datasets = aligned_datasets
 
-        # 5. 在 level 维度上拼接
-        self.ds = xr.concat([ds.data for ds in datasets], dim="level")
-        self.logger.info(f"Combined dataset shape: {self.ds.shape} with coords: {self.ds.coords}")
+        # 5. 在 channel 维度上拼接
+        data_arrays = [ds.data.rename(level="channel") if "level" in ds.data.dims else ds.data for ds in datasets]
+        self.ds = data_arrays[0] if len(data_arrays) == 1 else xr.concat(data_arrays, dim="channel")
+        self.logger.info(f"Combined dataset shape: {self.ds.shape}, sizes: {dict(self.ds.sizes)}")
 
         # 6. 构造时间索引
         self.fcst_frames += self.start_frames
@@ -74,9 +116,11 @@ class MultiZarrDataset(Dataset):
 
         # 用第一个 ds 来生成索引
         if interval < 0:
-            self.inds = make_seq_inference(common_times, self.total_frames, freq=freq)
+            self.inds = make_seq_inference(common_times, self.total_frames, freq=freq, freq_unit=freq_unit)
         else:
-            self.inds = make_seq(common_times, self.total_frames, freq=freq, interval=interval)
+            self.inds = make_seq(common_times, self.total_frames, freq=freq, interval=interval, freq_unit=freq_unit)
+        if len(self.inds) == 0:
+            raise ValueError(f"No regular zarr sequences found with total_frames={self.total_frames}, freq={freq} {freq_unit}")
 
         self.id_to_time = {i: common_times[i + self.hist_frames - 1] for i in self.inds}
 
@@ -86,19 +130,37 @@ class MultiZarrDataset(Dataset):
         stage = "train" if self.training else "test"
         self.logger.info(f"{stage}_times: {self.start_time} ~ {self.end_time} = {len(self.inds)} samples")
         self.select_vars: list[int] | None = None
+        self.target_select_vars: list[int] | None = None
+        channel_values = self.ds.channel.values.tolist()
         if len(in_names) > 0:
-            level_values = self.ds.level.values.tolist()
-            self.select_vars = [level_values.index(v) for v in in_names if v in level_values]
-            missing = [v for v in in_names if v not in level_values]
+            self.select_vars = [channel_values.index(v) for v in in_names if v in channel_values]
+            missing = [v for v in in_names if v not in channel_values]
             if len(missing) > 0:
-                self.logger.warning(f"Variables not found in 'level': {missing}")
+                self.logger.warning(f"Variables not found in 'channel': {missing}")
             self.logger.info(f"Selected variables: {self.select_vars}, total {len(self.select_vars)} variables.")
+        if target_names is not None and len(target_names) > 0:
+            self.target_select_vars = [channel_values.index(v) for v in target_names if v in channel_values]
+            missing = [v for v in target_names if v not in channel_values]
+            if len(missing) > 0:
+                raise ValueError(f"Target variables not found in 'channel': {missing}")
+            self.logger.info(f"Selected target variables: {self.target_select_vars}, total {len(self.target_select_vars)} variables.")
 
     def __len__(self):
         return len(self.inds)
 
     def _rand_another(self):
         return np.random.randint(len(self))
+
+    def _read_frames(self, time_inds, channel_inds=None):
+        indexers = {"time": time_inds}
+        if channel_inds is not None:
+            indexers["channel"] = channel_inds
+        frames_np = self.ds.isel(**indexers).values.astype(np.float32, copy=False)
+        frames = torch.from_numpy(frames_np)
+        frames.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+        if self.lat_flip:
+            frames = torch.flip(frames, dims=[2])
+        return frames
 
     def __getitem__(self, idx):
         while True:
@@ -110,7 +172,11 @@ class MultiZarrDataset(Dataset):
 
     def prepare_data(self, i):
         idx = self.inds[i]
-        inds = np.arange(idx, idx + self.total_frames)
+        total_frames = self.total_frames
+        if self.training:
+            train_fcst_frames = self.max_train_fcst_frames if self.runtime_train_fcst_frames is None else int(self.runtime_train_fcst_frames.value)
+            total_frames = self.hist_frames + self.start_frames + train_fcst_frames
+        inds = np.arange(idx, idx + total_frames)
         init_time = pd.to_datetime(self.id_to_time[idx])
         # convert time to tensor
         time_tensor = torch.tensor(init_time.value)
@@ -125,13 +191,13 @@ class MultiZarrDataset(Dataset):
         else:
             rht_inds = rht_inds[self.fcst_frames - 1]
 
+        if not self.training and not self.inference_only and self.target_select_vars is not None:
+            inputs = self._read_frames(lft_inds, self.select_vars)
+            targets = self._read_frames(rht_inds, self.target_select_vars)
+            return dict(times=time_tensor, inputs=inputs, targets=targets)
+
         inds = np.concatenate([lft_inds, rht_inds])
-        imgs = torch.from_numpy(self.ds.isel(time=inds).values)
-        imgs = torch.nan_to_num(imgs, nan=0.0, posinf=0.0, neginf=0.0)
-        if self.select_vars is not None:
-            imgs = imgs[:, self.select_vars, ...]
-        if self.lat_flip:  # flip latitude axis
-            imgs = torch.flip(imgs, dims=[2])
+        imgs = self._read_frames(inds, self.select_vars)
         inputs = imgs[: self.hist_frames]
         if self.inference_only:
             return dict(times=time_tensor, inputs=inputs)

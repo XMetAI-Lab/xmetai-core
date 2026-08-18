@@ -1,6 +1,12 @@
-from matplotlib.colors import BoundaryNorm, ListedColormap
+from __future__ import annotations
 
-__all__ = ["radar_cmap", "radar_norm"]
+from typing import Any, Sequence
+
+import numpy as np
+
+__all__ = ["radar_cmap", "radar_norm", "radar_colors", "radar_norms"]
+
+ArrayLike = Any
 
 
 precip_colors = [
@@ -105,5 +111,52 @@ hail_colors = [
 ]
 
 
-radar_cmap = ListedColormap(radar_colors)
-radar_norm = BoundaryNorm(radar_norms, ncolors=len(radar_colors), clip=True)
+def _hex_to_rgba(color: str) -> tuple[int, int, int, int]:
+    text = color.lstrip("#")
+    if len(text) != 6:
+        raise ValueError(f"Expected #RRGGBB color, got {color!r}")
+    return int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16), 255
+
+
+class _RadarNorm:
+    """Discrete bin mapper for radar display."""
+
+    def __init__(self, boundaries: Sequence[float], ncolors: int, clip: bool = True) -> None:
+        if len(boundaries) < 2:
+            raise ValueError("Radar norm expects at least two boundaries.")
+        if ncolors <= 0:
+            raise ValueError(f"ncolors must be positive, got {ncolors}")
+        self.boundaries = np.asarray(boundaries, dtype=np.float32)
+        self.ncolors = int(ncolors)
+        self.clip = bool(clip)
+
+    def __call__(self, data: ArrayLike) -> np.ndarray:
+        values = np.asarray(data, dtype=np.float32)
+        indices = np.searchsorted(self.boundaries, values, side="right") - 1
+        if self.clip:
+            indices = np.clip(indices, 0, self.ncolors - 1)
+        return indices.astype(np.int16, copy=False)
+
+
+class _RadarColorMap:
+    """Map radar bin indices to RGB/RGBA arrays."""
+
+    def __init__(self, colors: Sequence[str]) -> None:
+        if len(colors) == 0:
+            raise ValueError("Radar color map expects at least one color.")
+        self.colors = colors
+        self._rgba = np.asarray([_hex_to_rgba(color) for color in colors], dtype=np.uint8)
+
+    def __call__(self, values: ArrayLike, bytes: bool = False) -> np.ndarray:
+        indices = np.asarray(values)
+        if not np.issubdtype(indices.dtype, np.integer):
+            indices = np.floor(indices.astype(np.float32) * len(self._rgba)).astype(np.int16)
+        indices = np.clip(indices, 0, len(self._rgba) - 1)
+        rgba = self._rgba[indices]
+        if bytes:
+            return rgba
+        return rgba.astype(np.float32) / 255.0
+
+
+radar_cmap = _RadarColorMap(radar_colors)
+radar_norm = _RadarNorm(radar_norms, ncolors=len(radar_colors), clip=True)

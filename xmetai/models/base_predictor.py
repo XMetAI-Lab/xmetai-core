@@ -6,6 +6,7 @@ Copyright (c) 2025 by XMetAI/douzsheng, All Rights Reserved.
 """
 
 import logging
+import math
 import os
 from typing import Any
 
@@ -14,7 +15,8 @@ import pandas as pd
 import torch
 import xarray as xr
 
-from xmetai.loss.pinn_loss import ChannelRegistry, pinn_loss
+from xmetai.loss import ChannelRegistry, pinn_loss, precip_loss
+from xmetai.utils.events import get_event_storage, has_event_storage
 
 from .meta import Meta
 
@@ -85,6 +87,12 @@ class BasePredictor(Meta):
         self.pinn_enable = kwargs.pop("pinn_enable", False)
         self.pinn_coeffs = kwargs.pop("pinn_coeffs", None)
         self.in_names = kwargs.pop("in_names", None)
+        self.precip_loss_enable = kwargs.pop("precip_loss_enable", False)
+        self.precip_loss_coeffs = kwargs.pop("precip_loss_coeffs", None)
+        precip_names = kwargs.pop("precip_names", ("tp", "ncpcp"))
+        precip_names = (precip_names,) if isinstance(precip_names, str) else tuple(precip_names)
+        precip_threshold_mm = float(kwargs.pop("precip_threshold_mm", 0.1))
+        self.precip_occurrence_scale = float(kwargs.pop("precip_occurrence_scale", 10.0))
 
         # If True, convert normalized model outputs/targets back to physical
         # units before evaluating PINN losses. This preserves gradients
@@ -146,6 +154,11 @@ class BasePredictor(Meta):
         else:
             self.logger.info("PINN losses are disabled.")
 
+        if self.precip_loss_enable:
+            self._init_precip_loss(precip_names, precip_threshold_mm)
+        else:
+            self.logger.info("Precipitation auxiliary losses are disabled.")
+
     def train(self, mode: bool = True) -> "BasePredictor":
         super().train(mode=mode)
         return self
@@ -162,7 +175,12 @@ class BasePredictor(Meta):
         return dict(step=step, hour=hour, doy=doy)
 
     def build_loss_steps_and_weights(self, future_step: int, alpha: float, rollout_max: int) -> tuple:
-        """Build selected loss steps and normalized rolling weights."""
+        """Build per-iteration loss steps and normalized rolling weights.
+
+        The training iteration is part of the local RNG seed, so every DDP rank
+        selects the same steps for a batch while the selection changes between
+        iterations. Calls outside a training EventStorage use iteration zero.
+        """
         device = next(self.parameters()).device
         exponents = torch.arange(future_step, dtype=torch.float32, device=device)
         rolling_weights = torch.pow(alpha, exponents)
@@ -177,7 +195,8 @@ class BasePredictor(Meta):
                 if num_additional > 0 and len(middle_steps) > 0:
                     num_to_sample = min(num_additional, len(middle_steps))
                     gen = torch.Generator(device=rolling_weights.device)
-                    gen.manual_seed(future_step * 1070001 + rollout_max)
+                    current_iter = get_event_storage().iter if has_event_storage() else 0
+                    gen.manual_seed(future_step * 1070001 + rollout_max + current_iter)
                     selected = torch.randperm(len(middle_steps), generator=gen, device=device)[:num_to_sample].tolist()
                     loss_steps.update(middle_steps[i] for i in selected)
 
@@ -190,7 +209,6 @@ class BasePredictor(Meta):
         rolling_weights = rolling_weights / rolling_weights.sum().clamp_min(torch.finfo(rolling_weights.dtype).eps)
         return valid_steps, rolling_weights
 
-    @torch.no_grad()
     def inv_normalize(self, input, test_chans=[]):
         assert input.ndim == 5
 
@@ -242,32 +260,25 @@ class BasePredictor(Meta):
             mean = self.mean.to(x)
             std = self.std.to(x)
 
-        x = (x - mean) / std
-
         if len(logids) > 0:
-            # for tp should be log(1+tp).
-            tp = torch.clamp(x[:, :, logids], min=0, max=7)
-            x[:, :, logids] = torch.log1p(tp)
+            x[:, :, logids] = torch.log1p(x[:, :, logids].clamp_min(0.0)).clamp_max(7.0)
+        x = (x - mean) / std
         return x
 
     def reset_input(self, input):
         if len(self.accumid) > 0 and self.zero_accum:
-            self.logger.debug(f"Resetting accumulate channels: {self.accumid}")
             input[:, :, self.accumid] *= 0
         if len(self.maskid) > 0:
-            self.logger.debug(f"Applying mask to channels: {self.maskid}")
             if hasattr(self, "mask_shift"):
                 input[:, :, self.maskid] *= self.mask_shift
             else:
                 input[:, :, self.maskid] *= self.mask
         if len(self.landid) > 0:
-            self.logger.debug(f"Applying land mask to channels: {self.landid}")
             if hasattr(self, "land_mask_shift"):
                 input[:, :, self.landid] *= self.land_mask_shift
             else:
                 input[:, :, self.landid] *= self.land_mask
         if len(self.logid) > 0:
-            self.logger.debug(f"Applying clamp to log channels: {self.logid}")
             input[:, :, self.logid] = input[:, :, self.logid].clamp(min=0, max=7)
         return input
 
@@ -289,10 +300,10 @@ class BasePredictor(Meta):
 
         if "targets" in data:
             targets = data["targets"]
-            targets = targets.to(device=self.device, non_blocking=True)
             if self.training:
-                future_frames = data.get("future_frames", 1)
+                future_frames = data.get("future_frames", self.out_frames)
                 targets = targets[:, :future_frames]
+            targets = targets.to(input)
             batch["targets"] = targets
 
         # check if shift exist in data, do rolling for const
@@ -322,7 +333,7 @@ class BasePredictor(Meta):
         output = self.inv_normalize(output[:, :, : self.out_chans], self.test_chans)
         if target is not None:
             target = self.inv_normalize(target, self.test_chans)
-            assert output.shape == target.shape
+            assert output.shape == target.shape, f"output shape: {output.shape} not match target shape: {target.shape}"
 
         if len(self.test_rect) == 4:
             y1, y2, x1, x2 = self.test_rect
@@ -357,6 +368,49 @@ class BasePredictor(Meta):
         # itself does not implement forward; concrete subclasses should override.
         raise NotImplementedError
 
+    def _init_precip_loss(self, precip_names: tuple[str, ...], precip_threshold_mm: float) -> None:
+        if self.in_names is None:
+            raise ValueError("precip_loss_enable=True requires `in_names` to locate precipitation channels.")
+        name_to_index = {name: idx for idx, name in enumerate(self.in_names)}
+        indices = [name_to_index[name] for name in precip_names if name in name_to_index]
+        if len(indices) == 0:
+            raise ValueError(f"precip_loss_enable=True but none of precip_names={precip_names} were found in in_names.")
+        if len(indices) > 1:
+            matched_names = [self.in_names[idx] for idx in indices]
+            self.logger.warning(
+                "precip_loss_enable=True with a scalar precipitation threshold supports exactly one matched channel. "
+                f"Got channels={matched_names}; Use only {matched_names[0]} in precip_names."
+            )
+        channel_idx = indices[0]
+        mean = self.mean[channel_idx].detach().float()
+        std = self.std[channel_idx].detach().float()
+        threshold = precip_threshold_mm
+        logid = {int(idx) for idx in self.logid}
+        if channel_idx in logid:
+            threshold = math.log1p(threshold)
+        self.precip_threshold = float((threshold - mean.item()) / std.item())
+        self.precip_indices = tuple(indices[0:1])
+        self.logger.info(
+            f"enabling precipitation losses for channels={[self.in_names[idx] for idx in indices]}, coeffs={self.precip_loss_coeffs}, "
+            f"threshold_mm={precip_threshold_mm}, occurrence_scale={self.precip_occurrence_scale}"
+        )
+
+    def compute_precip_losses(self, output: torch.Tensor, target: torch.Tensor) -> dict:
+        """Compute precipitation auxiliary losses when enabled."""
+        if not self.precip_loss_enable:
+            return {}
+
+        loss_dict = precip_loss(
+            output,
+            target,
+            self.precip_indices,
+            self.precip_threshold,
+            coefficients=self.precip_loss_coeffs,
+            occurrence_scale=self.precip_occurrence_scale,
+            reduction="mean",
+        )
+        return {f"precip_{k}": v for k, v in loss_dict.items()}
+
     def compute_pinn_losses(self, output: torch.Tensor, target: torch.Tensor) -> dict:
         """Helper that computes PINN losses when enabled.
 
@@ -367,16 +421,11 @@ class BasePredictor(Meta):
         if not self.pinn_enable:
             return {}
 
-        # Optionally evaluate PINN losses in denormalized (physical) units.
-        # We avoid calling `inv_normalize` here because that helper is
-        # decorated with `@torch.no_grad()` and would break gradient flow.
         weight = getattr(self, "weight", None)
 
         if self.pinn_use_denorm:
-            # Enable gradients for denormalization to preserve gradient flow
-            with torch.enable_grad():
-                out_for_pinn = self.inv_normalize(output)
-                tgt_for_pinn = self.inv_normalize(target)
+            out_for_pinn = self.inv_normalize(output)
+            tgt_for_pinn = self.inv_normalize(target)
         else:
             out_for_pinn = output
             tgt_for_pinn = target

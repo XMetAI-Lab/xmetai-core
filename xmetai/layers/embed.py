@@ -6,7 +6,7 @@ from torch import nn as nn
 
 from .helpers import to_2tuple
 
-__all__ = ["PatchEmbed", "CubeEmbed", "FieldEmbed", "TimestepEmbed", "GeoEmbed"]
+__all__ = ["CubeEmbed", "TimestepEmbed"]
 
 
 def sincos_embedding(x, embed_dim, max_period=10000, is_periodic=False):

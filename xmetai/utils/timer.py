@@ -3,6 +3,8 @@ from typing import Optional
 
 import pandas as pd
 
+__all__ = ["convert_time", "Timer"]
+
 
 def convert_time(time, zone="utc2bj", fmt="%Y%m%d%H"):
     time = pd.to_datetime(str(time), format=fmt)
