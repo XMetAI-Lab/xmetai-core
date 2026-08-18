@@ -194,5 +194,19 @@ class AFNONet(BasePredictor):
         return outputs
 
     @torch.no_grad()
-    def export_onnx(self, inputs, step, hour, doy):
-        raise NotImplementedError("AFNONet ONNX export is not supported yet.")
+    def export_onnx(self, input):
+        # normalize input with float32 precision
+        normed_input = self.normalize(input)
+
+        # convert all inputs to model dtype
+        normed_input = normed_input.to(dtype=self.dtype)
+
+        # forward model
+        self.reset_input(normed_input)
+
+        output = self.forward_step(normed_input)
+
+        # inv normalize output with float32 precision
+        output = self.inv_normalize(output)
+        output = torch.concat([input[:, -1:], output], dim=1)  # add the first input frame for output
+        return output
