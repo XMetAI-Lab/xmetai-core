@@ -7,10 +7,23 @@ from typing import Any, Dict, Iterator, List, Union
 
 import torch
 from tabulate import tabulate  # type: ignore[import-untyped]
-from termcolor import colored
 
-from xmetai.utils.comm import get_world_size, is_main_process
-from xmetai.utils.logger import log_every_n_seconds
+from xmetai.utils import get_world_size, is_main_process, log_every_n_seconds
+
+try:
+    from termcolor import colored
+except ImportError:
+
+    def colored(text, *args, **kwargs):
+        return text
+
+
+__all__ = [
+    "DatasetEvaluator",
+    "DatasetEvaluators",
+    "inference_on_dataset",
+    "inference_context",
+]
 
 
 class DatasetEvaluator:
@@ -87,13 +100,6 @@ class DatasetEvaluators(DatasetEvaluator):
     def process(self, inputs, outputs):
         for evaluator in self._evaluators:
             evaluator.process(inputs, outputs)
-        # 完全释放 GPU 版本的 outputs（否则仍引用显存）
-        for k in list(outputs.keys()):
-            del outputs[k]
-        del outputs
-        for k in list(inputs.keys()):
-            del inputs[k]
-        del inputs
 
     def evaluate(self) -> OrderedDict:
         results = OrderedDict()
@@ -104,6 +110,13 @@ class DatasetEvaluators(DatasetEvaluator):
                     assert k not in results, "Different evaluators produce results with the same key {}".format(k)
                     results[k] = v
         return results
+
+
+def _clear_mapping_values(mapping: Any) -> None:
+    if not isinstance(mapping, dict):
+        return
+    for key in list(mapping.keys()):
+        del mapping[key]
 
 
 def inference_on_dataset(
@@ -168,19 +181,43 @@ def inference_on_dataset(
                 total_compute_time = 0
                 total_eval_time = 0
 
-            start_compute_time = time.perf_counter()
             dict.get(callbacks or {}, "before_inference", lambda: None)()
-            with torch.amp.autocast(device_type=model.device, dtype=model.dtype):
-                outputs = model(inputs)
-            dict.get(callbacks or {}, "after_inference", lambda: None)()
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            total_compute_time += time.perf_counter() - start_compute_time
+            stream_test = getattr(model, "stream_test", None)
+            if callable(stream_test):
+                output_iter = iter(stream_test(inputs))
+                while True:
+                    start_compute_time = time.perf_counter()
+                    with torch.amp.autocast(device_type=model.device, dtype=model.dtype):
+                        try:
+                            outputs = next(output_iter)
+                        except StopIteration:
+                            outputs = None
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    total_compute_time += time.perf_counter() - start_compute_time
+                    if outputs is None:
+                        break
 
-            start_eval_time = time.perf_counter()
-            if "targets" in inputs:
-                evaluator.process(inputs, outputs)
-            total_eval_time += time.perf_counter() - start_eval_time
+                    start_eval_time = time.perf_counter()
+                    if "targets" in inputs:
+                        evaluator.process(inputs, outputs)
+                    total_eval_time += time.perf_counter() - start_eval_time
+                    _clear_mapping_values(outputs)
+            else:
+                start_compute_time = time.perf_counter()
+                with torch.amp.autocast(device_type=model.device, dtype=model.dtype):
+                    outputs = model(inputs)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                total_compute_time += time.perf_counter() - start_compute_time
+
+                start_eval_time = time.perf_counter()
+                if "targets" in inputs:
+                    evaluator.process(inputs, outputs)
+                total_eval_time += time.perf_counter() - start_eval_time
+                _clear_mapping_values(outputs)
+            dict.get(callbacks or {}, "after_inference", lambda: None)()
+            _clear_mapping_values(inputs)
 
             iters_after_start = idx + 1 - num_warmup * int(idx >= num_warmup)
             data_seconds_per_iter = total_data_time / iters_after_start

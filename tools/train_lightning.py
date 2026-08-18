@@ -9,16 +9,7 @@ import os
 import sys
 from typing import Any
 
-import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks import (
-    Callback,
-    DeviceStatsMonitor,
-    LearningRateMonitor,
-    ModelCheckpoint,
-    TQDMProgressBar,
-)
-from pytorch_lightning.strategies import FSDPStrategy
 from torch.distributed.fsdp import MixedPrecision
 from typing_extensions import override
 
@@ -30,11 +21,28 @@ sys.path.append(CUR_PATH + "/../configs/")
 try:
     from xmetai.config import LazyConfig, instantiate
     from xmetai.core import default_argument_parser, default_setup
-    from xmetai.layers import MambaVisionLayer
+    from xmetai.layers import HAS_MAMBA, SwinLayer
+
+    if HAS_MAMBA:
+        from xmetai.layers import MambaVisionLayer
+    from xmetai.utils import ensure_torchvision_nms_schema
+
+    ensure_torchvision_nms_schema()
+
+    import pytorch_lightning as pl
+    from pytorch_lightning.callbacks import (
+        Callback,
+        DeviceStatsMonitor,
+        LearningRateMonitor,
+        ModelCheckpoint,
+        TQDMProgressBar,
+    )
+    from pytorch_lightning.strategies import DDPStrategy, FSDPStrategy
+
     from xmetai.lightning import Lightning_Model_Wrapper
-    from xmetai.models.transformer import SwinBlock
 except ImportError as e:
-    print(f"ImportError: {e}. You can do this by running `pip install -e .` in the root directory.")
+    print(f"Failed to import required modules: {e}")
+    print("Make sure you have installed the required dependencies and that your PYTHONPATH is set correctly.")
     sys.exit(1)
 
 
@@ -82,7 +90,13 @@ class AccumulateGradientCallback(Callback):
 
 
 class EMACallback(Callback):
-    def __init__(self, decay=0.999):
+    """
+    Custom EMA Callback that only copies parameters' tensor data.
+    This avoids deepcopying the entire model which could raise PicklingError
+    if the model contains unpicklable objects like Python loggers.
+    """
+
+    def __init__(self, decay=0.99):
         self.decay = decay
         self.ema_state = {}
 
@@ -115,6 +129,7 @@ class EMACallback(Callback):
 
 
 def main(args):
+    ensure_torchvision_nms_schema()
     torch.set_float32_matmul_precision("medium")
     cfg = LazyConfig.load(args.config_file)
     cfg = LazyConfig.apply_overrides(cfg, args.opts)
@@ -137,7 +152,7 @@ def main(args):
         save_last=True,
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
-    train_bar = TQDMProgressBar()
+    train_bar = TQDMProgressBar(refresh_rate=1, leave=True)
     accumulate_callback = AccumulateGradientCallback(scheduling={0: 1, 100: 2, 400: 4})
 
     # Configure trainer
@@ -157,16 +172,21 @@ def main(args):
         "devices": args.num_gpus,
         "num_nodes": args.num_machines,
         "use_distributed_sampler": False,
-        "strategy": "ddp" if args.num_machines > 1 else "auto",
+        "strategy": getattr(cfg.train, "strategy", "ddp" if args.num_machines > 1 else "auto"),
         "num_sanity_val_steps": 0,
         "limit_val_batches": 0.1,
         "precision": "bf16-mixed",
         "default_root_dir": cfg.train.output_dir,
     }
 
-    cfg.train.use_fsdp = True
-    # 启用 activation_checkpointing
-    if cfg.train.use_fsdp:
+    # 启用 activation_checkpointing 和 配置 strategy
+    mods = {SwinLayer, torch.nn.Conv2d, torch.nn.TransformerEncoderLayer, torch.nn.ConvTranspose2d, torch.nn.Linear}
+    if HAS_MAMBA:
+        mods.add(MambaVisionLayer)
+    ac_policy = mods if cfg.train.activation_checkpointing else None
+
+    current_strategy = trainer_args["strategy"]
+    if getattr(cfg.train, "use_fsdp", False):
         fsdp_mp = MixedPrecision(
             param_dtype=torch.bfloat16,
             reduce_dtype=torch.bfloat16,
@@ -175,18 +195,16 @@ def main(args):
         trainer_args["strategy"] = FSDPStrategy(
             cpu_offload=False,
             mixed_precision=fsdp_mp,
-            activation_checkpointing_policy={
-                MambaVisionLayer,
-                SwinBlock,
-                torch.nn.Conv2d,
-                torch.nn.TransformerEncoderLayer,
-                torch.nn.ConvTranspose2d,
-                torch.nn.Linear,
-            },
+            activation_checkpointing_policy=ac_policy,
         )
+    elif getattr(cfg.train, "use_fsdp2", False):
+        raise NotImplementedError("FSDP2 strategy is not yet implemented in this script.")
+    elif current_strategy == "ddp" or getattr(cfg.train, "use_ddp", False):
+        trainer_args["strategy"] = DDPStrategy(find_unused_parameters=getattr(cfg.train, "find_unused_parameters", False))
 
     # 添加 EMA 回调
-    if cfg.train.use_ema:
+    use_ema = getattr(cfg.train, "use_ema", False)
+    if use_ema:
         trainer_args["callbacks"].append(EMACallback(decay=0.99))
 
     trainer = pl.Trainer(**trainer_args)

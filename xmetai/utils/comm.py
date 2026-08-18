@@ -9,6 +9,23 @@ import functools
 import torch
 import torch.distributed as dist
 
+__all__ = [
+    "is_enabled",
+    "get_world_size",
+    "get_rank",
+    "create_local_process_group",
+    "get_local_process_group",
+    "get_local_rank",
+    "get_local_size",
+    "is_main_process",
+    "synchronize",
+    "all_gather",
+    "gather",
+    "shared_random_seed",
+    "reduce_dict",
+]
+
+
 _LOCAL_PROCESS_GROUP = None
 _MISSING_LOCAL_PG_ERROR = (
     "Local process group is not yet created! Please use detectron2's `launch()` "

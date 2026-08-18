@@ -5,6 +5,19 @@ import torch
 import torch.nn as nn
 from torch.nn.init import _calculate_fan_in_and_fan_out
 
+__all__ = [
+    "xavier_fill",
+    "c2_xavier_fill",
+    "c2_msra_fill",
+    "constant_fill",
+    "trunc_normal_",
+    "variance_scaling_",
+    "ddpm_fill",
+    "ddpm_copy",
+    "lecun_normal_",
+    "vit_fill",
+]
+
 
 def xavier_fill(module, gain=1, bias=0, distribution="normal"):
     assert distribution in ["uniform", "normal"]

@@ -12,14 +12,16 @@ from typing import Any, DefaultDict, Iterator, List, Optional, Tuple
 import numpy as np
 import torch
 
-from xmetai.utils.file_io import PathManager
+from .file_io import PathManager
 
 __all__ = [
+    "HistoryBuffer",
     "get_event_storage",
     "has_event_storage",
     "JSONWriter",
     "TensorboardXWriter",
     "CommonMetricPrinter",
+    "EventWriter",
     "EventStorage",
 ]
 

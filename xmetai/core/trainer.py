@@ -5,16 +5,80 @@ import logging
 import time
 import weakref
 from contextlib import contextmanager
-from typing import List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 import torch
+import torch.distributed as dist
 
 from xmetai.models import EMA
-from xmetai.utils.comm import gather, get_rank, is_main_process
-from xmetai.utils.events import EventStorage, get_event_storage
+from xmetai.utils import EventStorage, gather, get_event_storage, get_rank, is_main_process
 
 __all__ = ["HookBase", "TrainerBase", "SimpleTrainer", "ExpandTrainer"]
+
+
+def _to_device_tensor(value: Any, device: torch.device) -> torch.Tensor:
+    if torch.is_tensor(value):
+        return value.to(device, non_blocking=True)
+    if isinstance(value, np.ndarray):
+        return torch.from_numpy(value).to(device, non_blocking=True)
+    return torch.as_tensor(value, device=device)
+
+
+def _broadcast_batch_from_rank0(
+    batch: Optional[Dict[str, Any]],
+    *,
+    src: int = 0,
+) -> Dict[str, torch.Tensor]:
+    """Broadcast a training batch from ``src`` using NCCL tensor broadcasts.
+
+    Only lightweight key/shape/dtype metadata uses ``broadcast_object_list``.
+    Tensor payloads are broadcast in place to avoid pickling large weather batches.
+    """
+    if not dist.is_initialized():
+        if batch is None:
+            raise ValueError("src rank must provide batch when distributed is not initialized")
+        device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
+        return {k: _to_device_tensor(v, device) for k, v in batch.items()}
+
+    rank = dist.get_rank()
+    backend = dist.get_backend()
+    if backend == "nccl":
+        if not torch.cuda.is_available():
+            raise RuntimeError("NCCL backend requires CUDA for ensemble batch broadcast")
+        device = torch.device("cuda", torch.cuda.current_device())
+    else:
+        device = torch.device("cpu")
+    if rank == src:
+        if batch is None:
+            raise ValueError("src rank must provide batch")
+        batch_tensors = {k: _to_device_tensor(v, device) for k, v in batch.items()}
+        keys = sorted(batch_tensors.keys())
+        meta = {k: (batch_tensors[k].shape, batch_tensors[k].dtype) for k in keys}
+    else:
+        batch_tensors = {}
+        keys = None
+        meta = None
+
+    keys_payload: list[Optional[list[str]]] = [keys]
+    meta_payload: list[Optional[dict[str, tuple[Any, Any]]]] = [meta]
+    dist.broadcast_object_list(keys_payload, src=src)
+    dist.broadcast_object_list(meta_payload, src=src)
+    keys = keys_payload[0]
+    meta = meta_payload[0]
+    if keys is None or meta is None:
+        raise RuntimeError("failed to receive ensemble batch metadata from src rank")
+
+    synced: Dict[str, torch.Tensor] = {}
+    for key in keys:
+        shape, dtype = meta[key]
+        if rank == src:
+            tensor = batch_tensors[key]
+        else:
+            tensor = torch.empty(shape, dtype=dtype, device=device)
+        dist.broadcast(tensor, src=src)
+        synced[key] = tensor
+    return synced
 
 
 class HookBase:
@@ -78,6 +142,12 @@ class HookBase:
         """
         pass
 
+    def after_optimizer(self, data):
+        """
+        Called after the optimizer step while the current batch is still alive.
+        """
+        pass
+
     def after_step(self):
         """
         Called after each iteration.
@@ -118,6 +188,7 @@ class TrainerBase:
         self.max_iter: int
         self.storage: EventStorage
         self.logger = logging.getLogger(__name__)
+        self._early_stop_requested: bool = False
 
     def register_hooks(self, hooks: List[Optional[HookBase]]) -> None:
         """
@@ -154,6 +225,11 @@ class TrainerBase:
                     self.before_step()
                     self.run_step()
                     self.after_step()
+                    if self._early_stop_requested:
+                        self.logger.info("Early stopping requested at iteration %d.", self.iter)
+                        # Align iter so after_train hooks see a "finished" state.
+                        self.iter = self.max_iter - 1
+                        break
                 # self.iter == max_iter can be used by `after_train` to
                 # tell whether the training successfully finished or failed
                 # due to exceptions.
@@ -184,6 +260,10 @@ class TrainerBase:
     def after_backward(self):
         for h in self._hooks:
             h.after_backward()
+
+    def after_optimizer(self, data):
+        for h in self._hooks:
+            h.after_optimizer(data)
 
     def after_step(self):
         for h in self._hooks:
@@ -338,9 +418,6 @@ class SimpleTrainer(TrainerBase):
 
         self.after_backward()
 
-        if self.use_ema:
-            self.ema(self.model)
-
         if self.async_write_metrics:
             # write metrics asynchronically
             self.concurrent_executor.submit(self._write_metrics, loss_dict, data_time, iter=self.iter)
@@ -353,6 +430,9 @@ class SimpleTrainer(TrainerBase):
         suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
         """
         self.optimizer.step()
+        if self.use_ema:
+            self.ema(self.model)
+        self.after_optimizer(data)
 
     @property
     def _data_loader_iter(self):
@@ -483,21 +563,24 @@ class ExpandTrainer(SimpleTrainer):
     def run_step(self):
         assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
         start = time.perf_counter()
+        current_step = self.iter // self.teacher_forcing["teach_iters"] + self.teacher_forcing["teach_start"]
+        future_step = max(1, min(current_step, self.teacher_forcing.get("teach_steps", current_step)))
+        # Must update before fetching so DataLoader workers read only this horizon.
+        runtime_train_fcst_frames = getattr(getattr(self.data_loader, "dataset", None), "runtime_train_fcst_frames", None)
+        if runtime_train_fcst_frames is not None:
+            with runtime_train_fcst_frames.get_lock():
+                runtime_train_fcst_frames.value = future_step
         if self.ens_train:
-            # Broadcast same data batch (dict of tensors) from rank 0 to all ranks
-            if get_rank() == 0:
-                data = next(self._data_loader_iter)
-                data = {k: v.cuda() for k, v in data.items()}
-            else:
-                data = None
-            # Use broadcast_object_list to sync the entire dict across all ranks
-            data_list = [data]
-            torch.distributed.broadcast_object_list(data_list, src=0)
-            data = data_list[0]
+            raw_batch = next(self._data_loader_iter) if get_rank() == 0 else None
+            data = _broadcast_batch_from_rank0(raw_batch)
         else:
             data = next(self._data_loader_iter)
         # expand the data to the next step, we set future_frames for data here.
-        self.expand_data(data)
+        future_step = max(1, min(future_step, data["targets"].shape[1]))
+        if self.future_step != future_step:
+            self.logger.info(f"Expanding data to future step {future_step} from current step {self.future_step}")
+            self.future_step = future_step
+        data["future_frames"] = future_step
         data_time = time.perf_counter() - start
 
         if self.zero_grad_before_forward:
@@ -529,9 +612,6 @@ class ExpandTrainer(SimpleTrainer):
 
         self.after_backward()
 
-        if self.use_ema:
-            self.ema(self.model)
-
         if self.async_write_metrics:
             # write metrics asynchronically
             self.concurrent_executor.submit(self._write_metrics, loss_dict, data_time, iter=self.iter)
@@ -544,15 +624,6 @@ class ExpandTrainer(SimpleTrainer):
         suboptimal as explained in https://arxiv.org/abs/2006.15704 Sec 3.2.4
         """
         self.optimizer.step()
-
-    def expand_data(self, data):
-        assert "targets" in data, "The data must contain the targets"
-        current_step = self.iter // self.teacher_forcing["teach_iters"]
-        current_step = current_step + self.teacher_forcing["teach_start"]
-        future_step = max(1, min(current_step, data["targets"].shape[1]))
-        if self.future_step != future_step:
-            self.logger.info(f"Expanding data to future step {future_step} from current step {self.future_step}")
-            self.future_step = future_step
-
-        data["future_frames"] = future_step
-        pass
+        if self.use_ema:
+            self.ema(self.model)
+        self.after_optimizer(data)

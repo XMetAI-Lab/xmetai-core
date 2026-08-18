@@ -8,7 +8,7 @@ name = "xmetai-core"
 version = "0.1.0"
 description = "气象人工智能训练与推理基础框架"
 authors = [
-  { name = "XMetAI Lab", email = "contact@xmetai.org" }
+  { name = "XMetAI Lab", email = "douzsh@gmail.com" }
 ]
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
@@ -81,6 +81,9 @@ package-dir = {"" = "."}
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["xmetai*"]
+
+[tool.setuptools.package-data]
+"xmetai.utils" = ["assets/*.geojson"]
 
 [tool.black]
 line-length = 160

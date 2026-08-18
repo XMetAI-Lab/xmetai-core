@@ -50,10 +50,57 @@ Options:
 EOF
 }
 
+function setup_onnxruntime() {
+    echo "Setting up ONNX Runtime..."
+    local pkg_dir ort_dir ort_real_so ort_so
+
+    # Get installed onnxruntime package directory using python import (more reliable than pip show)
+    pkg_dir=$(python -c "import onnxruntime, os; print(os.path.dirname(onnxruntime.__file__))" 2>/dev/null || true)
+    if [[ -z "${pkg_dir}" ]]; then
+        echo "WARNING: onnxruntime package not found in current Python environment. Skipping optional ONNX Runtime setup."
+        return 0
+    fi
+    echo "Found onnxruntime package at: ${pkg_dir}"
+
+    ort_dir="${pkg_dir}/capi"
+    ort_so="${ort_dir}/libonnxruntime.so.1"
+
+    # Find the real SONAME file
+    ort_real_so=$(find "${ort_dir}" -maxdepth 1 -type f -name 'libonnxruntime.so.1.*' -print -quit 2>/dev/null || true)
+    if [[ -z "${ort_real_so}" ]]; then
+        echo "WARNING: libonnxruntime.so.1.* was not found under ${ort_dir}. Skipping optional ONNX Runtime setup."
+        return 0
+    fi
+    echo "Found ONNX Runtime library: ${ort_real_so}"
+
+    # Ensure symlink exists; create atomically from inside directory
+    if [[ ! -e "${ort_so}" ]]; then
+        if ! (cd "${ort_dir}" && ln -sf "$(basename "${ort_real_so}")" "$(basename "${ort_so}")"); then
+            echo "WARNING: failed to create symlink ${ort_so}. Skipping optional ONNX Runtime setup."
+            return 0
+        fi
+    fi
+    echo "Using ONNX Runtime library: ${ort_real_so} (symlink: ${ort_so})"
+
+    # Prepend ort_dir to LD_LIBRARY_PATH if not already present
+    case ":${LD_LIBRARY_PATH:-}:" in
+        *":${ort_dir}:"*) ;;
+        *) export LD_LIBRARY_PATH="${ort_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
+    esac
+
+    echo "Using ONNX Runtime library: ${ort_real_so} (symlink: ${ort_so})"
+}
+
 function setup_environment() {
-    # Create temporary config file
-    CONFIG_FILE_TMP="${ROOT_DIR}/configs/tmp_config.py"
+    # Keep the temporary config under xmetai-core/configs so __file__-relative paths resolve against xmetai-core.
+    local source_config_dir
+    source_config_dir=$(cd "$(dirname "${CONFIG_FILE}")" && pwd)
+    CONFIG_FILE_TMP=$(mktemp "${ROOT_DIR}/configs/.xmetai_tmp_config.XXXXXX")
+    mv "${CONFIG_FILE_TMP}" "${CONFIG_FILE_TMP}.py"
+    CONFIG_FILE_TMP="${CONFIG_FILE_TMP}.py"
+    trap 'rm -f "${CONFIG_FILE_TMP}"' EXIT
     cp "${CONFIG_FILE}" "${CONFIG_FILE_TMP}"
+    export PYTHONPATH="${ROOT_DIR}/..:${ROOT_DIR}/configs:${source_config_dir}:${PYTHONPATH:-}"
 
     # Format depth list for directory naming
     export DEPTH_LIST="${DEPTH_LIST}"
@@ -67,18 +114,16 @@ function setup_environment() {
     export OUTPUT_DIR="${ROOT_DIR}/output/${temp_list}-${config_file_name}-${LR}/"
 
     # Set data directory and base config based on model type
-    data_linux="/workspace/data/"
-    data_mac="/Users/douzsh/Desktop/workspace/data/"
+    data_dir="/workspace/data/"
     # check os mac or linux
     if [[ "$OSTYPE" == "darwin"* ]]; then
         echo "Running on macOS"
-        data_dir="$data_mac"
         additional_args+=("train.device_type='mps'")
         additional_args+=("train.use_ddp=False")
         additional_args+=("train.use_fsdp=False")
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         echo "Running on Linux"
-        data_dir="$data_linux"
+        setup_onnxruntime || exit $?
     else
         echo "Unsupported OS: $OSTYPE"
         exit 1
@@ -86,11 +131,11 @@ function setup_environment() {
 
     if [[ "$config_file_name" == *"s2s"* ]]; then # for s2s model tests
         if [[ "$config_file_name" == *"cra"* ]]; then
-            export DATA_DIR="${data_dir}/cra.1979_2024.c87.p25.h24/"
+            export DATA_DIR="${data_dir}/xmetai-data/CRA/zarr/cra.1979_2024.c87.p25.h24/"
         elif [[ "$config_file_name" == *"p25"* ]]; then
-            export DATA_DIR="${data_dir}/era5.1959_2023.c87.p25.h24/"
+            export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/era5.1959_2023.c87.p25.h24/"
         else
-            export DATA_DIR="${data_dir}/s2s.1950-2024.c76/"
+            export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/s2s.1950-2026.c76/"
         fi
         # check if string s2s_base exist in ${CONFIG_FILE_TMP}
         if grep -q "s2s_base" "${CONFIG_FILE_TMP}"; then
@@ -100,7 +145,7 @@ function setup_environment() {
         fi
     elif [[ "$config_file_name" == *"land"* ]]; then # for s2s model with land
         # Data dir is a dataset array, separated by colon
-        export DATA_DIR="${data_dir}/s2s.1950-2024.c76:${data_dir}/land.1950-2024.c8/"
+        export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/s2s.1950-2024.c76:${data_dir}/xmetai-data/ERA5-Land/zarr/land.1950-2024.c8/"
         if grep -q "land_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/land_base.py"
         else
@@ -108,9 +153,9 @@ function setup_environment() {
         fi
     elif [[ "$config_file_name" == *"ens"* || "$config_file_name" == *"iwc"* ]]; then
         if [[ "$config_file_name" == *"cra"* ]]; then
-            export DATA_DIR="${data_dir}/cra.1979-2025.c71.p25.h6/"
+            export DATA_DIR="${data_dir}/xmetai-data/CRA/zarr/cra.1979-2025.c71.p25.h6/"
         else
-            export DATA_DIR="${data_dir}/era5.1979-2024.c78.p25.h6/"
+            export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/era5.1979-2024.c78.p25.h6/"
         fi
         if grep -q "iwc_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/iwc_base.py"
@@ -118,8 +163,8 @@ function setup_environment() {
             export BASE_CONFIG="${CONFIG_FILE_TMP}"
         fi
     else
-        echo "Error: Unsupported model type in config file name: ${config_file_name}"
-        exit 1
+        echo "Error: Unknown dataset type for config file name: ${config_file_name}"
+        export BASE_CONFIG="${CONFIG_FILE_TMP}"
     fi
 
     # Set logging level based on verbose mode

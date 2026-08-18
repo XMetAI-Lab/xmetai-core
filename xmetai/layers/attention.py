@@ -3,7 +3,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-__all__ = ["Attention", "WindowAttention", "WindowAttentionV2", "GroupWindowAttention"]
+__all__ = [
+    "Attention",
+    "CrossAttention",
+    "DifferentialAttention",
+    "WindowAttention",
+    "WindowAttentionV2",
+    "GroupWindowAttention",
+]
 
 
 class Attention(nn.Module):
@@ -49,6 +56,189 @@ class Attention(nn.Module):
             attn = self.attn_drop(attn)
             x = attn @ v
 
+        x = x.transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class CrossAttention(nn.Module):
+    def __init__(
+        self,
+        dim,
+        context_dim=None,
+        num_heads=8,
+        qkv_bias=False,
+        qk_norm=False,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        norm_layer=nn.LayerNorm,
+        heads=None,
+        n_heads=None,
+    ):
+        super().__init__()
+        if heads is not None:
+            num_heads = heads
+        if n_heads is not None:
+            num_heads = n_heads
+        assert dim % num_heads == 0
+        context_dim = dim if context_dim is None else context_dim
+
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim**-0.5
+        self.fused_attn = True
+
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.kv = nn.Linear(context_dim, dim * 2, bias=qkv_bias)
+        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x, context=None, mask=None):
+        context = x if context is None else context
+        B, N, C = x.shape
+        M = context.shape[1]
+
+        q = self.q(x).reshape(B, N, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        kv = self.kv(context).reshape(B, M, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        k, v = kv.unbind(0)
+        q, k = self.q_norm(q).to(v), self.k_norm(k).to(v)
+
+        if self.fused_attn:
+            x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.attn_drop.p if self.training else 0.0)
+        else:
+            q = q * self.scale
+            attn = q @ k.transpose(-2, -1)
+            if mask is not None:
+                attn = attn + mask
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = attn @ v
+
+        x = x.transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class DifferentialAttention(nn.Module):
+    r"""Multi-head Differential Attention (DIFF Transformer).
+
+    Differential attention computes the attention scores as the difference of
+    two softmax attention maps, which cancels common-mode attention noise and
+    promotes sparse, focused attention patterns:
+
+        out = (softmax(Q1 K1^T) - lambda * softmax(Q2 K2^T)) @ V
+
+    Because ``(A - lambda * B) @ V == A @ V - lambda * (B @ V)``, the two maps
+    are realized with two fused ``scaled_dot_product_attention`` calls, so this
+    module keeps the same fast path as :class:`Attention`.
+
+    The per-head scalar ``lambda`` is re-parameterized as
+    ``exp(lambda_q1 . lambda_k1) - exp(lambda_q2 . lambda_k2) + lambda_init`` so
+    it stays differentiable and well-conditioned during training.
+
+    Reference: Ye et al., "Differential Transformer", 2024 (arXiv:2410.05258).
+
+    Args:
+        dim (int): Number of input channels.
+        num_heads (int): Number of differential heads. ``dim`` must be divisible
+            by ``2 * num_heads``.
+        qkv_bias (bool): If True, add a learnable bias to query/key/value.
+        qk_norm (bool): If True, apply ``norm_layer`` to query and key heads.
+        attn_drop (float): Dropout ratio of the attention weights.
+        proj_drop (float): Dropout ratio of the output projection.
+        depth (int): Block index (0-based), used to schedule ``lambda_init``.
+        lambda_init (float | None): Override the depth-dependent initial lambda.
+        norm_layer (nn.Module): Normalization used for the per-head sub-layer
+            norm and the optional qk-norm.
+    """
+
+    def __init__(
+        self,
+        dim,
+        num_heads=8,
+        qkv_bias=False,
+        qk_norm=False,
+        attn_drop=0.0,
+        proj_drop=0.0,
+        depth=0,
+        lambda_init=None,
+        norm_layer=nn.LayerNorm,
+    ):
+        super().__init__()
+        assert dim % (2 * num_heads) == 0, "dim must be divisible by 2 * num_heads"
+        self.num_heads = num_heads
+        # Each differential head splits its channels into two query/key groups,
+        # so the per-group head dimension is halved relative to vanilla MHSA.
+        self.head_dim = dim // num_heads // 2
+        self.scale = self.head_dim**-0.5
+        self.fused_attn = True
+
+        self.lambda_init = self.lambda_init_fn(depth) if lambda_init is None else lambda_init
+        # Per-head re-parameterization vectors (num_heads, head_dim) -> lambda per head.
+        self.lambda_q1 = nn.Parameter(torch.empty(self.num_heads, self.head_dim).normal_(mean=0.0, std=0.1))
+        self.lambda_k1 = nn.Parameter(torch.empty(self.num_heads, self.head_dim).normal_(mean=0.0, std=0.1))
+        self.lambda_q2 = nn.Parameter(torch.empty(self.num_heads, self.head_dim).normal_(mean=0.0, std=0.1))
+        self.lambda_k2 = nn.Parameter(torch.empty(self.num_heads, self.head_dim).normal_(mean=0.0, std=0.1))
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.attn_drop = nn.Dropout(attn_drop)
+        # Sub-layer norm applied independently to each head's 2*head_dim output.
+        self.subln = norm_layer(2 * self.head_dim)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    @staticmethod
+    def lambda_init_fn(depth):
+        return 0.8 - 0.6 * np.exp(-0.3 * depth)
+
+    def _lambda(self, dtype):
+        lambda_1 = torch.exp(torch.sum((self.lambda_q1 * self.lambda_k1).float(), dim=-1))
+        lambda_2 = torch.exp(torch.sum((self.lambda_q2 * self.lambda_k2).float(), dim=-1))
+        return (lambda_1 - lambda_2 + self.lambda_init).to(dtype)
+
+    def forward(self, x, mask=None):
+        B, N, C = x.shape
+        # qkv keeps the (B, N, ...) layout while splitting channels so that each
+        # differential head owns two query/key groups (head_dim each) and one
+        # value group of size 2 * head_dim, all contiguous in memory.
+        qkv = self.qkv(x).reshape(B, N, 3, 2 * self.num_heads, self.head_dim)
+        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+        q, k = self.q_norm(q).to(v), self.k_norm(k).to(v)
+
+        q = q.reshape(B, N, self.num_heads, 2, self.head_dim)
+        k = k.reshape(B, N, self.num_heads, 2, self.head_dim)
+        q1, q2 = q[:, :, :, 0].permute(0, 2, 1, 3), q[:, :, :, 1].permute(0, 2, 1, 3)
+        k1, k2 = k[:, :, :, 0].permute(0, 2, 1, 3), k[:, :, :, 1].permute(0, 2, 1, 3)
+        # Merge the two value groups into 2 * head_dim, then move heads forward.
+        v = v.reshape(B, N, self.num_heads, 2 * self.head_dim).permute(0, 2, 1, 3)
+
+        lambda_full = self._lambda(v.dtype).view(1, self.num_heads, 1, 1)
+
+        if self.fused_attn:
+            dropout_p = self.attn_drop.p if self.training else 0.0
+            out1 = F.scaled_dot_product_attention(q1, k1, v, attn_mask=mask, dropout_p=dropout_p)
+            out2 = F.scaled_dot_product_attention(q2, k2, v, attn_mask=mask, dropout_p=dropout_p)
+            x = out1 - lambda_full * out2
+        else:
+            attn1 = (q1 * self.scale) @ k1.transpose(-2, -1)
+            attn2 = (q2 * self.scale) @ k2.transpose(-2, -1)
+            if mask is not None:
+                attn1 = attn1 + mask
+                attn2 = attn2 + mask
+            attn1 = self.attn_drop(attn1.softmax(dim=-1))
+            attn2 = self.attn_drop(attn2.softmax(dim=-1))
+            x = (attn1 - lambda_full * attn2) @ v
+
+        x = self.subln(x)
+        # Compensate for the variance reduction introduced by the subtraction.
+        x = x * (1.0 - self.lambda_init)
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)

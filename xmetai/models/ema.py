@@ -11,18 +11,22 @@ from typing import ContextManager
 
 import torch
 from torch import nn
+from torch.distributed.fsdp import FSDPModule
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.tensor import DTensor
 
 __all__ = ["EMA"]
 
 
 def is_model_fsdp(model: torch.nn.Module) -> bool:
-    if isinstance(model, FSDP):
-        return True
-    for _, obj in model.named_children():
-        if isinstance(obj, FSDP):
-            return True
-    return False
+    return any(isinstance(module, FSDP) for module in model.modules())
+
+
+def _reshard_fsdp2(model: torch.nn.Module) -> None:
+    """Register persistent sharded DTensor parameters before EMA operations."""
+    for module in model.modules():
+        if isinstance(module, FSDPModule):
+            module.reshard()
 
 
 def _get_fsdp_context(model: torch.nn.Module) -> ContextManager[object]:
@@ -30,6 +34,42 @@ def _get_fsdp_context(model: torch.nn.Module) -> ContextManager[object]:
         return FSDP.summon_full_params(model)
     else:
         return contextlib.nullcontext()
+
+
+def _local_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    if isinstance(tensor, DTensor):
+        tensor = tensor.to_local()
+        if hasattr(tensor, "wait"):
+            tensor = tensor.wait()
+    return tensor
+
+
+def _clone_for_ema(param: torch.Tensor) -> torch.Tensor:
+    return _local_tensor(param).detach().clone()
+
+
+def _validate_local_tensor_pair(target: torch.Tensor, source: torch.Tensor, name: str) -> None:
+    if target.shape != source.shape:
+        raise ValueError(f"EMA local tensor shape mismatch for {name}: target={tuple(target.shape)}, source={tuple(source.shape)}")
+    if target.device != source.device:
+        raise ValueError(f"EMA local tensor device mismatch for {name}: target={target.device}, source={source.device}")
+
+
+def _copy_local_to_param(param: torch.Tensor, local_tensor: torch.Tensor, name: str) -> None:
+    if isinstance(param, DTensor):
+        param_local = _local_tensor(param)
+        _validate_local_tensor_pair(param_local, local_tensor, name)
+        dtensor = DTensor.from_local(
+            local_tensor,
+            device_mesh=param.device_mesh,
+            placements=param.placements,
+            shape=param.shape,
+            stride=param.stride(),
+        )
+        param.copy_(dtensor)
+        return
+    _validate_local_tensor_pair(param, local_tensor, name)
+    param.copy_(local_tensor)
 
 
 class EMA(nn.Module):
@@ -43,10 +83,11 @@ class EMA(nn.Module):
 
         self.ema_params: dict[str, torch.Tensor] = {}
         self.tmp_params: dict[str, torch.Tensor] = {}
+        _reshard_fsdp2(model)
         with _get_fsdp_context(model):
             for name, p in model.named_parameters():
                 if p.requires_grad:
-                    self.ema_params[name] = p.clone()
+                    self.ema_params[name] = _clone_for_ema(p)
 
     @torch.no_grad()
     def update_params(self, model: torch.nn.Module) -> None:
@@ -55,10 +96,13 @@ class EMA(nn.Module):
         This method should be called after load from checkpoint.
         """
         self.logger.info("Updating EMA parameters")
+        _reshard_fsdp2(model)
         with _get_fsdp_context(model):
             for name, param in model.named_parameters():
                 if name in self.ema_params:
-                    self.ema_params[name].copy_(param)
+                    current_param = _local_tensor(param).detach()
+                    _validate_local_tensor_pair(self.ema_params[name], current_param, name)
+                    self.ema_params[name].copy_(current_param)
                 else:
                     self.logger.warning(f"Parameter {name} not found in EMA parameters, skipping...")
         self.num_updates.fill_(0)  # type: ignore[operator]  # registered buffer
@@ -74,27 +118,31 @@ class EMA(nn.Module):
             num_updates_tensor.add_(1)
             n += 1
             decay_val = min(decay_val, (1.0 + n) / (10.0 + n))
+        _reshard_fsdp2(model)
         with _get_fsdp_context(model):
             for name, param in model.named_parameters():
                 if name in self.ema_params:
-                    full_param = param.clone()
-                    self.ema_params[name].mul_(decay_val).add_(full_param, alpha=(1.0 - decay_val))
+                    current_param = _local_tensor(param).detach()
+                    _validate_local_tensor_pair(self.ema_params[name], current_param, name)
+                    self.ema_params[name].mul_(decay_val).add_(current_param, alpha=(1.0 - decay_val))
 
     @torch.no_grad()
     def reverse(self, model: torch.nn.Module) -> None:
         self.logger.info("Reversing EMA parameters to model parameters")
         self.tmp_params = {}
+        _reshard_fsdp2(model)
         with _get_fsdp_context(model):
             for name, param in model.named_parameters():
                 if name in self.ema_params:
-                    self.tmp_params[name] = param.clone()
-                    param.data.copy_(self.ema_params[name])
+                    self.tmp_params[name] = _clone_for_ema(param)
+                    _copy_local_to_param(param, self.ema_params[name], name)
 
     @torch.no_grad()
     def restore(self, model: torch.nn.Module) -> None:
         self.logger.info("Restoring model parameters from EMA parameters")
+        _reshard_fsdp2(model)
         with _get_fsdp_context(model):
             for name, param in model.named_parameters():
                 if name in self.tmp_params:
-                    param.data.copy_(self.tmp_params[name])
+                    _copy_local_to_param(param, self.tmp_params[name], name)
         del self.tmp_params

@@ -14,7 +14,6 @@ __all__ = [
     "build_node_static",
     "build_coarse_mapping",
     "downsample_lat_lon",
-    "grid_latlon",
 ]
 
 

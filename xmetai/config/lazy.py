@@ -13,12 +13,10 @@ from copy import deepcopy
 from dataclasses import is_dataclass
 from typing import List, Tuple, Union
 
-import cloudpickle
 import yaml  # type: ignore[import-untyped]
 from omegaconf import DictConfig, ListConfig, OmegaConf, SCMode
 
-from xmetai.utils.file_io import PathManager
-from xmetai.utils.registry import _convert_target_to_string
+from xmetai.utils import PathManager, convert_target_to_string
 
 __all__ = ["LazyCall", "LazyConfig"]
 
@@ -49,7 +47,7 @@ class LazyCall:
         if is_dataclass(self._target):
             # omegaconf object cannot hold dataclass type
             # https://github.com/omry/omegaconf/issues/784
-            target = _convert_target_to_string(self._target)
+            target = convert_target_to_string(self._target)
         else:
             target = self._target
         kwargs["_target_"] = target
@@ -252,7 +250,7 @@ class LazyConfig:
             def _replace_type_by_name(x):
                 if "_target_" in x and callable(x._target_):
                     try:
-                        x._target_ = _convert_target_to_string(x._target_)
+                        x._target_ = convert_target_to_string(x._target_)
                     except AttributeError:
                         pass
 
@@ -286,10 +284,13 @@ class LazyConfig:
         if save_pkl:
             new_filename = filename + ".pkl"
             try:
-                # retry by pickle
+                import cloudpickle
+
                 with PathManager.open(new_filename, "wb") as f:
                     cloudpickle.dump(cfg, f)
                 logger.warning(f"Config is saved using cloudpickle at {new_filename}.")
+            except ImportError:
+                logger.warning(f"Config cannot be saved to {new_filename} because cloudpickle is not installed.")
             except Exception:
                 pass
 
@@ -357,7 +358,7 @@ class LazyConfig:
                 prefix = []
             if isinstance(obj, abc.Mapping) and "_target_" in obj:
                 # Dict representing a function call
-                target = _convert_target_to_string(obj.pop("_target_"))
+                target = convert_target_to_string(obj.pop("_target_"))
                 args = []
                 for k, v in sorted(obj.items()):
                     args.append(f"{k}={_to_str(v, inside_call=True)}")

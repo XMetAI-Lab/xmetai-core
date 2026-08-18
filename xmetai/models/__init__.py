@@ -1,8 +1,17 @@
-from .afnonet import AFNONet
-from .diffusion_forecast import DiffusionForecast
+from .base_predictor import BasePredictor
+from .diffusion_forecast import ConditionalGenerativeForecast, ODEGenerativeForecast
 from .ema import EMA
-from .graphcast import GraphCastPredictor
-from .group_vae import GroupVAEPredictor
-from .onnx_infer import OnnxInferModel
-from .vit import ViTModel
-from .vit_ens import ViTModelEns
+from .group_vae import FeatureGroupVAEPredictor, GroupVAEPredictor
+from .tianquan import TianQuan
+from .utransformer import UTransformer
+
+__all__ = [
+    "BasePredictor",
+    "ConditionalGenerativeForecast",
+    "EMA",
+    "FeatureGroupVAEPredictor",
+    "GroupVAEPredictor",
+    "ODEGenerativeForecast",
+    "TianQuan",
+    "UTransformer",
+]

@@ -1,203 +1,524 @@
-"""
-Detectron2 Diffusion Meta-Architecture + Custom Trainer
-Author: douzsh
-Date: 2025-09-01
+"""Shared conditional generative forecasts with interchangeable weather backbones."""
 
-Design goals:
-- Minimal external deps: pure PyTorch + Detectron2.
-- Inputs follow Detectron2's convention: a batch is a list[dict].
-  Required keys per sample:
-    - "input": Tensor of shape (T_in, C, H, W)  (conditioning frames)
-    - "target": Tensor of shape (T_out, C, H, W) (we train on the first future frame by default)
-  Optional: "times" (any metadata you need; not used here)
-- Conditioning: uses the *last* conditioning frame (T_in[-1]) concatenated to the noised target as model input.
-- Training objective: DDPM epsilon-prediction (can switch to x0 prediction via cfg).
-- Inference: DDIM sampler for speed; autoregressive over out_frames if >1.
-"""
-
-from typing import Any, Tuple
+from typing import Any, List, Mapping, cast
 
 import einops
 import numpy as np
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
+from torch import Tensor
 
-from xmetai.builder import MODELS
+from xmetai.layers import DarknetConvUNet2D
+from xmetai.loss import charbonnier_loss
+from xmetai.registries import MODELS
 
 from .base_predictor import BasePredictor
+from .utransformer import UTransformer
+
+__all__ = ["ConditionalGenerativeForecast", "DiffusionForecast", "FlowMatchingForecast", "JiTForecast", "ODEGenerativeForecast"]
 
 
-def pad_to_even(x):
-    H, W = x.shape[-2:]
-    pad_h = (4 - H % 4) % 4
-    pad_w = (4 - W % 4) % 4
-    return F.pad(x, (0, pad_w, 0, pad_h))
+class TimeConditionedUTransformer(UTransformer):
+    """Expose UTransformer through the same time-conditioned 2D interface as DarknetUNet."""
+
+    def __init__(self, in_channels: int, out_channels: int, **kwargs: Any):
+        kwargs.setdefault("in_frames", 1)
+        kwargs.setdefault("out_frames", 1)
+        kwargs.setdefault("const_chans", 0)
+        kwargs.setdefault("head_type", "2fc")
+        kwargs.setdefault("embed_type", "step")
+        if kwargs["in_frames"] != 1 or kwargs["out_frames"] != 1 or kwargs["const_chans"] != 0:
+            raise ValueError("The generative UTransformer backbone uses in_frames=1, out_frames=1, and const_chans=0 after channel flattening")
+        if kwargs["head_type"] not in {"1fc", "2fc"}:
+            raise ValueError("The generative UTransformer backbone requires head_type='1fc' or '2fc'")
+        if kwargs["embed_type"] == "all":
+            raise ValueError("The generative UTransformer backbone requires a scalar-time embed_type such as 'step'")
+        super().__init__(in_chans=in_channels, out_chans=out_channels, **kwargs)
+
+    def forward(self, x: Tensor, timesteps: Tensor | None = None, return_dict: bool = False) -> tuple[Tensor] | dict[str, Tensor]:
+        if timesteps is None:
+            raise ValueError("TimeConditionedUTransformer requires timesteps")
+        batch_size = x.shape[0]
+        source = x
+        resized = self.resize_input(x.unsqueeze(1)).unsqueeze(1)
+        h = self.patch_embed(resized, None)
+        time = timesteps.reshape(-1).to(x)
+        if time.shape[0] == 1 and batch_size > 1:
+            time = time.expand(batch_size)
+        if time.shape[0] != batch_size:
+            raise ValueError(f"timestep batch size {time.shape[0]} does not match input batch size {batch_size}")
+        embed = self.get_embed(time)
+
+        for index, block in enumerate(self.layers):
+            h = self._modules[f"drop{index}"](h, self.drop_mcmc)
+            if "rotary" in self.attn_type:
+                h = block(h, time_embedding=embed, freqs_cos=self.freqs_cos, freqs_sin=self.freqs_sin)
+            else:
+                h = block(h, time_embedding=embed)
+
+        if self.head is None:
+            raise RuntimeError("TimeConditionedUTransformer requires an output head")
+        output = self.resize_output(self.head(h), source)
+        return {"sample": output} if return_dict else (output,)
 
 
-@MODELS.register()
-class DiffusionForecast(BasePredictor):
-    """
-    Conditional diffusion forecasting meta-arch.
-    Training: predict noise eps from noised target x_t, conditioned on last input frame.
-    Inference: DDIM sampling; if OUT_FRAMES>1, autoregressively generate next frames.
-    """
+def build_generative_backbone(backbone: str, in_channels: int, out_channels: int, backbone_kwargs: Mapping[str, Any]) -> tuple[nn.Module, tuple[int, int]]:
+    """Build one of the supported backbones and return its required input multiple."""
+    name = backbone.lower().replace("-", "_")
+    options = dict(backbone_kwargs)
+    if name in {"darknet", "darknet_unet", "darknetunet"}:
+        name = "darknet_unet"
+        ch_mults = tuple(options.pop("ch_mults"))
+        if len(ch_mults) < 2:
+            raise ValueError("DarknetUNet expects at least two channel levels")
+        base_channels = int(options.pop("base_channels"))
+        options.setdefault("layers_per_block", 3)
+        options.setdefault("time_dim", base_channels * 4)
+        options.setdefault("dropout", 0.0)
+        network = DarknetConvUNet2D(in_channels=in_channels, out_channels=out_channels, base_channels=base_channels, ch_mults=ch_mults, **options)
+        multiple = 2 ** (len(ch_mults) - 1)
+        return network, (multiple, multiple)
+    if name in {"utransformer", "u_transformer"}:
+        return TimeConditionedUTransformer(in_channels=in_channels, out_channels=out_channels, **options), (1, 1)
+    raise ValueError(f"Unsupported generative backbone {backbone!r}; expected 'darknet_unet' or 'utransformer'")
+
+
+class ConditionalGenerativeForecast(BasePredictor):
+    """Shared data, conditioning, backbone, and autoregressive rollout contract."""
+
+    backbone_module = "backbone"
+    loss_name = "loss"
 
     def __init__(
         self,
-        base_channels: int,
-        ch_mults: Tuple[int, ...],
-        attn_res: Tuple[int, ...],
-        num_heads: int,
-        dropout: float = 0.0,
+        backbone: str,
+        backbone_kwargs: Mapping[str, Any],
+        sample_steps: int = 50,
+        sample_init: str = "noise",
+        noise_scale: float = 1.0,
+        predict_residual: bool = True,
+        const_chans: int = 0,
+        use_timestamp: bool = True,
+        train_chans: list[int] | None = None,
+        rollout_max: int = 0,
+        rollout_alpha: float = 1.0,
+        rollout_sample_steps: int = 1,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        if sample_steps <= 0:
+            raise ValueError(f"sample_steps must be positive, got {sample_steps}")
+        if sample_init not in {"noise", "zeros"}:
+            raise ValueError(f"sample_init must be 'noise' or 'zeros', got {sample_init}")
+        if noise_scale <= 0:
+            raise ValueError(f"noise_scale must be positive, got {noise_scale}")
+        if self.members <= 0:
+            raise ValueError(f"members must be positive, got {self.members}")
+        if rollout_max < 0:
+            raise ValueError(f"rollout_max must be non-negative, got {rollout_max}")
+        if not 0.0 < rollout_alpha <= 1.0:
+            raise ValueError(f"rollout_alpha must be in (0, 1], got {rollout_alpha}")
+        if rollout_sample_steps <= 0:
+            raise ValueError(f"rollout_sample_steps must be positive, got {rollout_sample_steps}")
+
+        self.sample_steps = sample_steps
+        self.sample_init = sample_init
+        self.noise_scale = noise_scale
+        self.predict_residual = predict_residual
+        self.const_chans = const_chans
+        self.use_timestamp = use_timestamp
+        self.rollout_max = rollout_max
+        self.rollout_alpha = rollout_alpha
+        self.rollout_sample_steps = rollout_sample_steps
+        self.train_chans = list(train_chans) if train_chans is not None else []
+        self.model_out_chans = len(self.train_chans) if self.train_chans else self.out_chans
+        self.condition_chans = self.in_chans * self.in_frames + self.const_chans + (3 if self.use_timestamp else 0)
+        self.model_input_chans = self.condition_chans + self.model_out_chans
+        network, self.backbone_multiple = build_generative_backbone(backbone, self.model_input_chans, self.model_out_chans, backbone_kwargs)
+        self.add_module(self.backbone_module, network)
+        self.backbone_name = backbone.lower().replace("-", "_")
+
+    @property
+    def generative_backbone(self) -> nn.Module:
+        return self._modules[self.backbone_module]
+
+    def predict_backbone(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor) -> Tensor:
+        """Run the selected backbone with identical conditioning and spatial handling."""
+        model_input = torch.cat([cond, extra, state], dim=1)
+        height, width = model_input.shape[-2:]
+        pad_h = (self.backbone_multiple[0] - height % self.backbone_multiple[0]) % self.backbone_multiple[0]
+        pad_w = (self.backbone_multiple[1] - width % self.backbone_multiple[1]) % self.backbone_multiple[1]
+        model_input = torch.nn.functional.pad(model_input, (0, pad_w, 0, pad_h))
+        prediction = self.generative_backbone(model_input, time.reshape(-1).to(model_input), return_dict=False)[0]
+        return cast(Tensor, prediction[:, :, :height, :width])
+
+    def prepare_condition(self, input: Tensor) -> Tensor:
+        return einops.rearrange(input, "B T C H W -> B (T C) H W")
+
+    def prepare_target(self, input: Tensor, targets: Tensor) -> Tensor:
+        if self.train_chans:
+            targets = targets[:, :, self.train_chans]
+            residual_base = input[:, -1:, self.train_chans]
+        else:
+            residual_base = input[:, -1:]
+        if self.predict_residual:
+            targets = targets - residual_base
+        return einops.rearrange(targets, "B T C H W -> B (T C) H W")
+
+    def condition_extra(self, data: dict[str, Any], input: Tensor, step: int = 0) -> Tensor:
+        extras = []
+        if self.const_chans > 0:
+            const = data["const"].to(input)
+            if const.ndim == 3:
+                const = const.unsqueeze(0).expand(input.shape[0], -1, -1, -1)
+            elif const.shape[0] != input.shape[0]:
+                if input.shape[0] % const.shape[0] != 0:
+                    raise ValueError(f"constant batch size {const.shape[0]} cannot broadcast to input batch size {input.shape[0]}")
+                const = const.repeat(input.shape[0] // const.shape[0], 1, 1, 1)
+            extras.append(const[:, : self.const_chans])
+        if self.use_timestamp:
+            height, width = input.shape[-2:]
+            timestamp = self.get_timestamp(input, data["times"], step)
+            for key in ("step", "hour", "doy"):
+                value = timestamp[key].to(input).reshape(-1)
+                if value.shape[0] != input.shape[0]:
+                    if input.shape[0] % value.shape[0] != 0:
+                        raise ValueError(f"timestamp batch size {value.shape[0]} cannot broadcast to input batch size {input.shape[0]}")
+                    value = value.repeat(input.shape[0] // value.shape[0])
+                extras.append(value.reshape(input.shape[0], 1, 1, 1).expand(-1, 1, height, width))
+        return torch.cat(extras, dim=1) if extras else input.new_empty(input.shape[0], 0, *input.shape[-2:])
+
+    def reconstruction_weight(self, target: Tensor) -> Tensor | None:
+        if "channel_weights" in self._buffers:
+            channel_weight = self.channel_weights[self.train_chans] if self.train_chans else self.channel_weights[: self.out_chans]
+            channel_weight = channel_weight.repeat(self.out_frames, 1, 1)
+            return (channel_weight * self.weight).reshape(1, self.out_frames * self.model_out_chans, *self.weight.shape[-2:]).to(target)
+        if "weight" in self._buffers:
+            return self.weight.reshape(1, 1, *self.weight.shape[-2:]).to(target)
+        return None
+
+    def merge_prediction(self, input: Tensor, pred: Tensor) -> Tensor:
+        if not self.train_chans:
+            output = pred.unsqueeze(1)
+            return output + input[:, -1:] if self.predict_residual else output
+
+        output = input[:, -1:].clone()
+        pred = pred.unsqueeze(1).to(output)
+        if self.predict_residual:
+            output[:, :, self.train_chans] = output[:, :, self.train_chans] + pred
+        else:
+            output[:, :, self.train_chans] = pred
+        return output
+
+    def training_objective(self, cond: Tensor, target: Tensor, extra: Tensor) -> Tensor:
+        raise NotImplementedError
+
+    def sample_residual(self, cond: Tensor, extra: Tensor, sample_steps: int | None = None, stochastic: bool | None = None) -> Tensor:
+        raise NotImplementedError
+
+    def forward(self, data: dict[str, Tensor]) -> dict[str, Tensor]:
+        if not self.training:
+            return self.test(data)  # type: ignore[return-value]
+        data = self.process_data(data)
+        input = data["input"]
+        targets = data["targets"]
+        future_steps = targets.shape[1]
+        if future_steps == 0:
+            raise ValueError(f"{type(self).__name__} rollout training requires at least one target frame")
+
+        loss_steps, rolling_weights = self.build_loss_steps_and_weights(future_steps, self.rollout_alpha, self.rollout_max)
+        loss_steps = set(loss_steps)
+        loss = targets.new_zeros((), dtype=torch.float32)
+        for step in range(future_steps):
+            input = self.reset_input(input)
+            cond = self.prepare_condition(input)
+            target = self.prepare_target(input, targets[:, step : step + 1])
+            extra = self.condition_extra(data, input, step=self.start_frames + step)
+            if step in loss_steps:
+                loss = loss + rolling_weights[step] * self.training_objective(cond, target, extra)
+            if step + 1 < future_steps:
+                with torch.no_grad():
+                    output = self.merge_prediction(input, self.sample_residual(cond, extra, self.rollout_sample_steps, stochastic=True))
+                    input = torch.cat([input, output], dim=1)[:, -self.in_frames :].detach()
+        return {self.loss_name: loss}
+
+    @torch.no_grad()
+    def test_cascade(self, data: dict[str, Tensor]) -> Tensor:
+        original_input = data["input"]
+        total_step = max(self.test_frames)
+        steps = np.array(self.test_frames) // self.out_frames
+        if sum(self.step_range) > total_step:
+            raise ValueError(f"sum(step_range)={sum(self.step_range)} exceeds max(test_frames)={total_step}")
+
+        channels, height, width = original_input.shape[-3:]
+        outputs = torch.zeros(original_input.shape[0], len(steps), channels, height, width, device=original_input.device, dtype=torch.float32)
+
+        self.logger.info(f"Start testing with {self.members} ensemble members and step_range {self.step_range} with time:{data.get('times', None)}.")
+        for member in range(self.members):
+            self.logger.debug(f"Inference with member {member + 1}/{self.members}.")
+            input = original_input.clone()
+            for num_step in self.step_range:
+                curr_step = 0
+                for step in range(num_step):
+                    input = self.reset_input(input)
+                    cond = self.prepare_condition(input)
+                    pred = self.sample_residual(cond, self.condition_extra(data, input, step=self.start_frames + step))
+                    output = self.merge_prediction(input, pred.detach())
+                    input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
+                    if step + 1 in steps:
+                        outputs[:, curr_step : curr_step + 1, : self.out_chans].add_(output.float())
+                        curr_step += 1
+        return (outputs / self.members).to(original_input)
+
+
+class ODEGenerativeForecast(ConditionalGenerativeForecast):
+    """Shared fixed-step Euler/Heun sampler for velocity-based objectives."""
+
+    def __init__(self, sampling_method: str = "heun", **kwargs: Any):
+        super().__init__(**kwargs)
+        if sampling_method not in {"euler", "heun"}:
+            raise ValueError(f"sampling_method must be 'euler' or 'heun', got {sampling_method}")
+        self.sampling_method = sampling_method
+
+    def predict_velocity(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor) -> Tensor:
+        raise NotImplementedError
+
+    def sample_residual(self, cond: Tensor, extra: Tensor, sample_steps: int | None = None, stochastic: bool | None = None) -> Tensor:
+        sample_steps = self.sample_steps if sample_steps is None else sample_steps
+        if sample_steps <= 0:
+            raise ValueError(f"sample_steps must be positive, got {sample_steps}")
+        if stochastic is None:
+            stochastic = self.sample_init == "noise" or self.members > 1
+        sample_shape = (cond.shape[0], self.model_out_chans, *cond.shape[-2:])
+        state = torch.randn(sample_shape, device=cond.device, dtype=cond.dtype) * self.noise_scale if stochastic else cond.new_zeros(sample_shape)
+        times = torch.linspace(0.0, 1.0, sample_steps + 1, device=cond.device, dtype=torch.float32)
+        for index in range(sample_steps):
+            time = times[index].expand(state.shape[0])
+            next_time = times[index + 1].expand(state.shape[0])
+            dt = (next_time[0] - time[0]).to(state)
+            velocity = self.predict_velocity(cond, state, time, extra).to(state)
+            euler_state = state + dt * velocity
+            if self.sampling_method == "heun":
+                correction = self.predict_velocity(cond, euler_state, next_time, extra).to(state)
+                state = state + 0.5 * dt * (velocity + correction)
+            else:
+                state = euler_state
+        return state
+
+
+@torch.jit.script
+def _extract_timestep_values(values: Tensor, timesteps: Tensor, sample: Tensor) -> Tensor:
+    coeff = values.index_select(0, timesteps.to(torch.long)).to(sample)
+    shape: List[int] = [sample.shape[0]]
+    for _ in range(sample.dim() - 1):
+        shape.append(1)
+    return coeff.reshape(shape)
+
+
+@torch.jit.script
+def _jit_ddim_step(
+    model_output: Tensor,
+    timestep: Tensor,
+    prev_timestep: Tensor,
+    sample: Tensor,
+    noise: Tensor,
+    alphas_cumprod: Tensor,
+    final_alpha_cumprod: Tensor,
+    eta: float,
+    predict_type: str,
+    clip_sample: bool,
+) -> Tensor:
+    alpha_prod_t = alphas_cumprod[timestep.to(torch.long)].to(sample)
+    alpha_prod_t_prev = alphas_cumprod[prev_timestep.to(torch.long)].to(sample) if prev_timestep.item() >= 0 else final_alpha_cumprod.to(sample)
+    beta_prod_t = 1.0 - alpha_prod_t
+    if predict_type == "epsilon":
+        pred_original_sample = (sample - beta_prod_t.sqrt() * model_output) / alpha_prod_t.sqrt()
+        pred_epsilon = model_output
+    elif predict_type == "sample":
+        pred_original_sample = model_output
+        pred_epsilon = (sample - alpha_prod_t.sqrt() * pred_original_sample) / beta_prod_t.clamp_min(1e-12).sqrt()
+    else:
+        pred_original_sample = alpha_prod_t.sqrt() * sample - beta_prod_t.sqrt() * model_output
+        pred_epsilon = alpha_prod_t.sqrt() * model_output + beta_prod_t.sqrt() * sample
+    if clip_sample:
+        pred_original_sample = pred_original_sample.clamp(-1.0, 1.0)
+    variance = (1.0 - alpha_prod_t_prev) / (1.0 - alpha_prod_t) * (1.0 - alpha_prod_t / alpha_prod_t_prev)
+    std_dev_t = eta * variance.clamp_min(0.0).sqrt()
+    direction = (1.0 - alpha_prod_t_prev - std_dev_t.square()).clamp_min(0.0).sqrt() * pred_epsilon
+    prev_sample = alpha_prod_t_prev.sqrt() * pred_original_sample + direction
+    return prev_sample + std_dev_t * noise if eta > 0.0 else prev_sample
+
+
+@MODELS.register()
+class DiffusionForecast(ConditionalGenerativeForecast):
+    """Predict a diffusion target during training and generate residuals with DDIM."""
+
+    backbone_module = "unet"
+    loss_name = "loss_rec"
+
+    def __init__(
+        self,
         num_steps: int = 1000,
         predict_type: str = "epsilon",
         sample_steps: int = 100,
-        ddim_eta: float = 0.0,  # for DDIM sampling
+        ddim_eta: float = 0.0,
         clip_x0: bool = True,
-        scheduler_type: str = "ddim",  # "ddpm" or "ddim"
-        *args: Any,
+        scheduler_type: str = "ddim",
+        beta_start: float = 0.0001,
+        beta_end: float = 0.02,
+        sample_timestep_max: int | None = None,
+        train_timestep_max: int | None = None,
+        zero_init_output: bool = False,
         **kwargs: Any,
     ):
-        super().__init__(*args, **kwargs)
-        from diffusers import DDIMScheduler, DDPMScheduler, UNet2DModel
-
+        super().__init__(sample_steps=sample_steps, **kwargs)
         self.logger.name = __name__
+        if predict_type not in {"epsilon", "sample", "v_prediction"}:
+            raise ValueError(f"Unknown predict_type {predict_type}")
+        if scheduler_type != "ddim":
+            raise ValueError("DiffusionForecast supports scheduler_type='ddim' only")
+        if sample_steps > num_steps:
+            raise ValueError(f"sample_steps must be in [1, {num_steps}], got {sample_steps}")
+
         self.predict_type = predict_type
-        self.noise_scheduler: Any
-        self.sample_steps = sample_steps
+        self.scheduler_type = scheduler_type
+        self.num_steps = num_steps
         self.clip_x0 = clip_x0
         self.ddim_eta = ddim_eta
+        self.sample_timestep_max = num_steps - 1 if sample_timestep_max is None else sample_timestep_max
+        self.train_timestep_max = num_steps - 1 if train_timestep_max is None else train_timestep_max
+        if not 0 <= self.sample_timestep_max < num_steps:
+            raise ValueError(f"sample_timestep_max must be in [0, {num_steps - 1}], got {self.sample_timestep_max}")
+        if not 0 <= self.train_timestep_max < num_steps:
+            raise ValueError(f"train_timestep_max must be in [0, {num_steps - 1}], got {self.train_timestep_max}")
+        if self.rollout_sample_steps > num_steps:
+            raise ValueError(f"rollout_sample_steps must be in [1, {num_steps}], got {self.rollout_sample_steps}")
 
-        # Cond + target are concatenated along channel dim
-        model_in_ch = self.in_chans * (self.in_frames + 1)  # input conditioning frame + noised target
+        if zero_init_output:
+            output_layer: nn.Linear | nn.Conv2d
+            if isinstance(self.generative_backbone, DarknetConvUNet2D):
+                output_layer = self.generative_backbone.out
+            elif isinstance(cast(TimeConditionedUTransformer, self.generative_backbone).head, nn.Sequential):
+                output_layer = cast(nn.Linear, cast(TimeConditionedUTransformer, self.generative_backbone).head[-1])
+            else:
+                output_layer = cast(nn.Linear, cast(TimeConditionedUTransformer, self.generative_backbone).head)
+            nn.init.zeros_(output_layer.weight)
+            if output_layer.bias is not None:
+                nn.init.zeros_(output_layer.bias)
 
-        t_emb_dim = base_channels * 4
-        self.unet = UNet2DModel(
-            sample_size=(124, 240),
-            in_channels=model_in_ch,
-            out_channels=self.in_chans,
-            layers_per_block=3,  # 每个 block 里多少个 resnet 层
-            block_out_channels=np.array(ch_mults) * base_channels,  # 每层的通道数
-            down_block_types=(
-                "DownBlock2D",  # 正常下采样
-                "DownBlock2D",
-                "AttnDownBlock2D",  # 可以混 attention
-            ),
-            up_block_types=("AttnUpBlock2D", "UpBlock2D", "UpBlock2D"),
-            time_embedding_dim=t_emb_dim,
-            attention_head_dim=num_heads,
-            dropout=dropout,
-        )
+        betas = torch.linspace(beta_start, beta_end, num_steps, dtype=torch.float32)
+        alphas_cumprod = torch.cumprod(1.0 - betas, dim=0)
+        self.register_buffer("alphas_cumprod", alphas_cumprod, persistent=False)
+        self.register_buffer("sqrt_alphas_cumprod", alphas_cumprod.sqrt(), persistent=False)
+        self.register_buffer("sqrt_one_minus_alphas_cumprod", (1.0 - alphas_cumprod).sqrt(), persistent=False)
+        self.register_buffer("final_alpha_cumprod", torch.tensor(1.0, dtype=torch.float32), persistent=False)
 
-        # 直接用 diffusers scheduler 管理 betas/alphas
-        if scheduler_type == "ddpm":
-            self.noise_scheduler = DDPMScheduler(
-                num_train_timesteps=num_steps,
-                prediction_type=predict_type,
-                beta_schedule="linear",
-            )
-        elif scheduler_type == "ddim":
-            self.noise_scheduler = DDIMScheduler(
-                num_train_timesteps=num_steps,
-                prediction_type=predict_type,
-                beta_schedule="linear",
-                clip_sample=clip_x0,
-            )
+        if sample_steps == 1:
+            sample_timesteps = torch.tensor([self.sample_timestep_max], dtype=torch.long)
+            sample_prev_timesteps = torch.tensor([-1], dtype=torch.long)
         else:
-            raise ValueError(f"Unknown scheduler_type {scheduler_type}")
+            sample_timesteps = torch.linspace(float(self.sample_timestep_max), 0.0, sample_steps).round().to(torch.long)
+            sample_prev_timesteps = torch.cat([sample_timesteps[1:], sample_timesteps.new_tensor([-1])])
+        self.register_buffer("sample_timesteps", sample_timesteps, persistent=False)
+        self.register_buffer("sample_prev_timesteps", sample_prev_timesteps, persistent=False)
 
-    # -------------- I/O helpers --------------
-    @staticmethod
-    def preprocess_batch(
-        batched_inputs: dict[str, torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Convert list[dict] to tensors.
-        Returns:
-            cond: (B, C, H, W) last conditioning frame
-            target: (B, C, H, W) first target frame (train step uses one frame)
-        """
-        conds = batched_inputs["input"]  # list of (B, in_frames, C, H, W)
-        targets = batched_inputs["targets"]  # list of (B, out_frames, C, H, W)
-        residual = targets - conds[:, -1:]  # (B, out_frames, C, H, W)
-        conds = einops.rearrange(conds, "B T C H W -> B (T C) H W")
-        targets = einops.rearrange(residual, "B T C H W -> B (T C) H W")  # learn residual
-        return conds, targets
-
-    # -------------- forward --------------
-    def forward(self, data: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        if not self.training:
-            return self.test(data, 24)  # type: ignore[call-arg]
-
-        data = self.process_data(data)
-        cond, target = self.preprocess_batch(data)
-        batch_size = target.shape[0]
-
-        # generate random time step for each sample in the batch
-        timesteps = torch.randint(
-            0,
-            self.noise_scheduler.config["num_train_timesteps"],
-            (batch_size,),
-            device=target.device,
-        )
-        # add noise to target
+    def training_objective(self, cond: Tensor, target: Tensor, extra: Tensor) -> Tensor:
+        timesteps = torch.randint(0, self.train_timestep_max + 1, (target.shape[0],), device=target.device)
         noise = torch.randn_like(target)
-        noisy_target = self.noise_scheduler.add_noise(target, noise, timesteps)
-        model_in = torch.cat([cond, noisy_target], dim=1)
-        _, _, H, W = model_in.shape
-        model_in = pad_to_even(model_in)
-        self.logger.debug(f"model input shape: {model_in.shape}, min: {model_in.min().item()}, max: {model_in.max().item()}")
-        pred = self.unet(model_in, timesteps, return_dict=False)[0][:, :, :H, :W]  # type: ignore
-        self.logger.debug(f"model output shape: {pred.shape}, min: {pred.min().item()}, max: {pred.max().item()}")
+        sqrt_alpha = _extract_timestep_values(self.sqrt_alphas_cumprod, timesteps, target)
+        sqrt_one_minus_alpha = _extract_timestep_values(self.sqrt_one_minus_alphas_cumprod, timesteps, target)
+        prediction = self.predict_backbone(cond, sqrt_alpha * target + sqrt_one_minus_alpha * noise, timesteps, extra)
+        loss_target = noise if self.predict_type == "epsilon" else target
+        if self.predict_type == "v_prediction":
+            loss_target = sqrt_alpha * noise - sqrt_one_minus_alpha * target
+        return charbonnier_loss(prediction, loss_target, self.reconstruction_weight(target))
 
-        if self.predict_type == "epsilon":
-            loss = F.mse_loss(pred, noise)
-        elif self.predict_type == "sample":
-            loss = F.mse_loss(pred, target)
+    def sample_residual(self, cond: Tensor, extra: Tensor, sample_steps: int | None = None, stochastic: bool | None = None) -> Tensor:
+        sample_steps = self.sample_steps if sample_steps is None else sample_steps
+        if not 1 <= sample_steps <= self.num_steps:
+            raise ValueError(f"sample_steps must be in [1, {self.num_steps}], got {sample_steps}")
+        if stochastic is None:
+            stochastic = self.sample_init == "noise" or self.members > 1
+        sample_shape = (cond.shape[0], self.model_out_chans, *cond.shape[-2:])
+        state = torch.randn(sample_shape, device=cond.device, dtype=cond.dtype) * self.noise_scale if stochastic else cond.new_zeros(sample_shape)
+        if sample_steps == self.sample_steps:
+            sample_timesteps = self.sample_timesteps
+            sample_prev_timesteps = self.sample_prev_timesteps
+        elif sample_steps == 1:
+            sample_timesteps = torch.tensor([self.sample_timestep_max], device=state.device, dtype=torch.long)
+            sample_prev_timesteps = torch.tensor([-1], device=state.device, dtype=torch.long)
         else:
-            raise ValueError(f"Unknown predict_type {self.predict_type}")
+            sample_timesteps = torch.linspace(float(self.sample_timestep_max), 0.0, sample_steps, device=state.device).round().to(torch.long)
+            sample_prev_timesteps = torch.cat([sample_timesteps[1:], sample_timesteps.new_tensor([-1])])
 
-        return {"loss_rec": loss}
+        for timestep, prev_timestep in zip(sample_timesteps, sample_prev_timesteps):
+            prediction = self.predict_backbone(cond, state, timestep, extra)
+            ddim_noise = torch.randn_like(state) if self.ddim_eta > 0.0 else torch.zeros_like(state)
+            state = _jit_ddim_step(
+                prediction,
+                timestep,
+                prev_timestep,
+                state,
+                ddim_noise,
+                self.alphas_cumprod,
+                self.final_alpha_cumprod,
+                self.ddim_eta,
+                self.predict_type,
+                self.clip_x0,
+            )
+        return state
 
-    # -------------- inference --------------
-    @torch.no_grad()
-    def test_cascade(self, data: dict[str, torch.Tensor]) -> torch.Tensor:
-        input = data["input"]
-        total_step = max(self.test_frames)
-        steps = np.array(self.test_frames) // self.out_frames
-        assert sum(self.step_range) <= total_step
 
-        chw = list(input.shape[-3:])
-        outputs = input.new_zeros(input.shape[0], len(steps), *chw)  # batch_size, saved_steps, c,h,w
-        self.logger.debug(f"output shape is {outputs.shape}")
+@MODELS.register()
+class FlowMatchingForecast(ODEGenerativeForecast):
+    """Learn the straight conditional flow from Gaussian noise to a forecast residual."""
 
-        for num_step in self.step_range:
-            curr_step = 0
-            for step in range(num_step):
-                self.reset_input(input)
-                last_frame = einops.rearrange(input, "B T C H W -> B (T C) H W")
-                x_t = torch.randn(input.shape[0], *chw, device=input.device)
-                # 设置 scheduler 的 sampling steps
-                self.noise_scheduler.set_timesteps(self.sample_steps, device=input.device)
-                for t in self.noise_scheduler.timesteps:
-                    model_in = torch.cat([last_frame, x_t], dim=1)
-                    _, _, H, W = model_in.shape
-                    model_in = pad_to_even(model_in)
-                    noise_pred = self.unet(model_in, t, return_dict=False)[0][:, :, :H, :W]  # type: ignore
+    backbone_module = "flow_net"
+    loss_name = "loss_flow"
 
-                    # 调用 scheduler 更新
-                    x_t = self.noise_scheduler.step(
-                        model_output=noise_pred,
-                        timestep=t,
-                        sample=x_t,
-                        eta=self.ddim_eta,
-                    ).prev_sample
+    def __init__(self, time_scale: float = 1000.0, **kwargs: Any):
+        super().__init__(**kwargs)
+        if time_scale <= 0:
+            raise ValueError(f"time_scale must be positive, got {time_scale}")
+        self.time_scale = time_scale
 
-                output = x_t.detach().unsqueeze(1) + input[:, -1:]  # x_t is the residual
-                input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
-                # save for output
-                if step + 1 in steps:
-                    self.logger.debug(f"Saving output for step {step} with curr_step {curr_step}")
-                    outputs[:, curr_step : curr_step + 1, : self.out_chans] += output
-                    curr_step += 1
+    def predict_velocity(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor) -> Tensor:
+        return self.predict_backbone(cond, state, time * self.time_scale, extra)
 
-        return outputs
+    def training_objective(self, cond: Tensor, target: Tensor, extra: Tensor) -> Tensor:
+        time = torch.rand(target.shape[0], device=target.device, dtype=torch.float32)
+        time_view = time.reshape(target.shape[0], *([1] * (target.ndim - 1)))
+        noise = torch.randn_like(target) * self.noise_scale
+        state = (1.0 - time_view) * noise + time_view * target
+        return charbonnier_loss(self.predict_velocity(cond, state, time, extra), target - noise, self.reconstruction_weight(target))
+
+
+@MODELS.register()
+class JiTForecast(ODEGenerativeForecast):
+    """Optimize the velocity induced by a clean-residual prediction backbone."""
+
+    backbone_module = "jit"
+    loss_name = "loss_jit"
+
+    def __init__(self, p_mean: float = -0.8, p_std: float = 0.8, t_eps: float = 0.05, **kwargs: Any):
+        super().__init__(**kwargs)
+        if p_std < 0:
+            raise ValueError(f"p_std must be non-negative, got {p_std}")
+        if not 0 < t_eps < 1:
+            raise ValueError(f"t_eps must be in (0, 1), got {t_eps}")
+        self.p_mean = p_mean
+        self.p_std = p_std
+        self.t_eps = t_eps
+
+    def predict_velocity(self, cond: Tensor, state: Tensor, time: Tensor, extra: Tensor) -> Tensor:
+        clean = self.predict_backbone(cond, state, time, extra)
+        denominator = (1.0 - time.to(state)).reshape(state.shape[0], 1, 1, 1).clamp_min(self.t_eps)
+        return (clean - state) / denominator
+
+    def training_objective(self, cond: Tensor, target: Tensor, extra: Tensor) -> Tensor:
+        time = torch.sigmoid(torch.randn(target.shape[0], device=target.device) * self.p_std + self.p_mean)
+        time_view = time.reshape(target.shape[0], *([1] * (target.ndim - 1))).to(target)
+        noise = torch.randn_like(target) * self.noise_scale
+        state = time_view * target + (1.0 - time_view) * noise
+        target_velocity = (target - state) / (1.0 - time_view).clamp_min(self.t_eps)
+        return charbonnier_loss(self.predict_velocity(cond, state, time, extra), target_velocity, self.reconstruction_weight(target))

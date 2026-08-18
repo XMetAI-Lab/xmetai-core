@@ -4,9 +4,7 @@ import torch
 import torch.distributed as dist
 
 __all__ = [
-    "fcrps_loss_lite",
     "afcrps_loss_lite",
-    "afcrps_loss",
 ]
 
 

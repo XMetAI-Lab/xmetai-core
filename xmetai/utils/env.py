@@ -6,11 +6,18 @@ import random
 import sys
 from datetime import datetime
 from types import ModuleType
+from typing import Any
 
 import numpy as np
 import torch
 
-__all__ = ["seed_all_rng"]
+__all__ = [
+    "seed_all_rng",
+    "ensure_torchvision_nms_schema",
+    "setup_environment",
+    "setup_custom_environment",
+    "fixup_module_metadata",
+]
 
 
 TORCH_VERSION = tuple(int(x) for x in torch.__version__.split(".")[:2])
@@ -23,6 +30,20 @@ DOC_BUILDING = os.getenv("_DOC_BUILDING", False)  # set in docs/conf.py
 """
 Whether we're building documentation.
 """
+
+
+_TORCHVISION_COMPAT_LIB: Any = None
+
+
+def ensure_torchvision_nms_schema() -> None:
+    global _TORCHVISION_COMPAT_LIB
+    if _TORCHVISION_COMPAT_LIB is not None:
+        return
+    try:
+        _TORCHVISION_COMPAT_LIB = torch.library.Library("torchvision", "DEF")
+        _TORCHVISION_COMPAT_LIB.define("nms(Tensor dets, Tensor scores, float iou_threshold) -> Tensor")
+    except Exception:
+        pass
 
 
 def seed_all_rng(seed=None):

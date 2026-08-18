@@ -15,17 +15,36 @@ import torch
 import xarray as xr
 
 from xmetai.config import instantiate
+from xmetai.utils.reanalyse import LEVELS_13
 
 __all__ = [
     "make_seq",
     "make_seq_inference",
+    "unnormalize",
+    "make_input",
     "make_onnx",
+    "get_ids_and_buffer",
     "get_data_info",
     "get_cra_data_info",
 ]
 
 
-def make_seq(times, total_frames, freq=1, interval=1):
+def _load_zarr_sidecar_variable(data_dir, key):
+    try:
+        ds = xr.open_zarr(data_dir, consolidated=True)
+    except (KeyError, ValueError):
+        ds = xr.open_zarr(data_dir, consolidated=False)
+
+    try:
+        if key not in ds:
+            return None
+        return ds[key].values
+    finally:
+        ds.close()
+
+
+def make_seq(times, total_frames, freq=1, interval=1, freq_unit="hours"):
+    step = pd.Timedelta(**{freq_unit: freq})
     i = 0
     inds = []
 
@@ -33,7 +52,7 @@ def make_seq(times, total_frames, freq=1, interval=1):
 
         cur_sequence = [0]
         for j in range(i, i + total_frames - 1):
-            if times[j + 1] - times[j] == pd.Timedelta(hours=freq):
+            if times[j + 1] - times[j] == step:
                 cur_sequence.append(j)
 
         if len(cur_sequence) >= total_frames - 1:
@@ -44,7 +63,7 @@ def make_seq(times, total_frames, freq=1, interval=1):
     return np.array(inds, dtype=np.int32)
 
 
-def make_seq_inference(times, total_frames, freq=24):
+def make_seq_inference(times, total_frames, freq=24, freq_unit="hours"):
     """
     Generate sequence indices starting with specific dates in the year.
 
@@ -56,112 +75,22 @@ def make_seq_inference(times, total_frames, freq=24):
         numpy.ndarray: Array of indices where sequences can start
     """
     # Define the specific days in the year for inference
+    # fmt: off
     specific_dates = [
-        "01-03",
-        "01-06",
-        "01-10",
-        "01-13",
-        "01-17",
-        "01-20",
-        "01-24",
-        "01-27",
-        "01-31",
-        "02-03",
-        "02-07",
-        "02-10",
-        "02-14",
-        "02-17",
-        "02-21",
-        "02-24",
-        "02-28",
-        "03-03",
-        "03-07",
-        "03-10",
-        "03-14",
-        "03-17",
-        "03-21",
-        "03-24",
-        "03-28",
-        "03-31",
-        "04-04",
-        "04-07",
-        "04-11",
-        "04-14",
-        "04-18",
-        "04-21",
-        "04-25",
-        "04-28",
-        "05-02",
-        "05-05",
-        "05-09",
-        "05-12",
-        "05-16",
-        "05-19",
-        "05-23",
-        "05-26",
-        "05-30",
-        "06-02",
-        "06-06",
-        "06-09",
-        "06-13",
-        "06-16",
-        "06-20",
-        "06-23",
-        "06-27",
-        "06-30",
-        "07-04",
-        "07-07",
-        "07-11",
-        "07-14",
-        "07-18",
-        "07-21",
-        "07-25",
-        "07-28",
-        "08-01",
-        "08-04",
-        "08-08",
-        "08-11",
-        "08-15",
-        "08-18",
-        "08-22",
-        "08-25",
-        "08-29",
-        "09-01",
-        "09-05",
-        "09-08",
-        "09-12",
-        "09-15",
-        "09-19",
-        "09-22",
-        "09-26",
-        "09-29",
-        "10-03",
-        "10-06",
-        "10-10",
-        "10-13",
-        "10-17",
-        "10-20",
-        "10-24",
-        "10-27",
-        "10-31",
-        "11-03",
-        "11-07",
-        "11-10",
-        "11-14",
-        "11-17",
-        "11-21",
-        "11-24",
-        "11-28",
-        "12-01",
-        "12-05",
-        "12-08",
-        "12-12",
-        "12-15",
-        "12-19",
-        "12-22",
-        "12-26",
-        "12-29",
+        "01-03", "01-06", "01-10", "01-13", "01-17", "01-20", "01-24", "01-27", "01-31",
+        "02-03", "02-07", "02-10", "02-14", "02-17", "02-21", "02-24", "02-28",
+        "03-03", "03-07", "03-10", "03-14", "03-17", "03-21", "03-24", "03-28", "03-31",
+        "04-04", "04-07", "04-11", "04-14", "04-18", "04-21", "04-25", "04-28",
+        "05-02", "05-05", "05-09", "05-12", "05-16", "05-19", "05-23", "05-26", "05-30",
+        "06-02", "06-06", "06-09", "06-13", "06-16", "06-20", "06-23", "06-27", "06-30",
+        "07-04", "07-07", "07-11", "07-14", "07-18", "07-21", "07-25", "07-28",
+        "08-01", "08-04", "08-08", "08-11", "08-15", "08-18", "08-22", "08-25", "08-29",
+        "09-01", "09-05", "09-08", "09-12", "09-15", "09-19", "09-22", "09-26", "09-29",
+        "10-03", "10-06", "10-10", "10-13", "10-17", "10-20", "10-24", "10-27", "10-31",
+        "11-03", "11-07", "11-10", "11-14", "11-17", "11-21", "11-24", "11-28",
+        "12-01", "12-05", "12-08", "12-12", "12-15", "12-19", "12-22", "12-26", "12-29",
     ]
+    # fmt: on
 
     inds = []
 
@@ -174,13 +103,13 @@ def make_seq_inference(times, total_frames, freq=24):
 
         # If the current date is one of our specific dates, check if we have enough consecutive frames
         if month_day in specific_dates:
-            if freq == 6 and hour != 18:  # with 12+18 input frames, predict next 00:00 hours start.
+            if freq_unit == "hours" and freq == 6 and hour != 18:  # with 12+18 input frames, predict next 00:00 hours start.
                 continue
             # Check if we have enough consecutive frames
             valid_sequence = True
             for j in range(1, total_frames):
                 # Check if next frame is sequential (1 day = 24 hours typically for weather data)
-                if i + j < len(times) and times[i + j] - times[i + j - 1] != pd.Timedelta(hours=freq):
+                if i + j < len(times) and times[i + j] - times[i + j - 1] != pd.Timedelta(**{freq_unit: freq}):
                     valid_sequence = False
                     break
 
@@ -232,6 +161,7 @@ def make_onnx(
     device="cuda",
     forward_name="export_onnx",
     embed_types=["step", "hour", "doy"],
+    extra_inputs=None,
 ):
     dataloader = instantiate(dataloader_cfg)
     input_data = make_input(dataloader, in_names, mean, std)
@@ -248,6 +178,8 @@ def make_onnx(
 
     for embed_type in embed_types:
         data[embed_type] = np.random.rand(batch_size).astype(np.float32)
+    if extra_inputs is not None:
+        data.update(extra_inputs)
 
     model.export_kwargs = dict(
         data=data,
@@ -258,7 +190,6 @@ def make_onnx(
 
     # set environment variable for torch cpu mode
     torch.set_num_threads(os.cpu_count())
-    torch.set_num_interop_threads(os.cpu_count())
     # set environment variable for numpy cpu mode
     os.environ["OMP_NUM_THREADS"] = str(os.cpu_count())
     os.environ["MKL_NUM_THREADS"] = str(os.cpu_count())
@@ -269,46 +200,6 @@ def make_onnx(
 
 
 def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
-    LEVELS_13 = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
-    _LEVELS_37 = [
-        1,
-        2,
-        3,
-        5,
-        7,
-        10,
-        20,
-        30,
-        50,
-        70,
-        100,
-        125,
-        150,
-        175,
-        200,
-        225,
-        250,
-        300,
-        350,
-        400,
-        450,
-        500,
-        550,
-        600,
-        650,
-        700,
-        750,
-        775,
-        800,
-        825,
-        850,
-        875,
-        900,
-        925,
-        950,
-        975,
-        1000,
-    ]
     # z: geopotential
     # t: temperature
     # u: zonal wind
@@ -337,14 +228,15 @@ def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
 
     # Calculate channel weights
     channel_weights = np.ones(len(in_names), dtype=np.float32)
+    level_names = {str(level) for level in LEVELS_13}
     for name in in_names:
-        if any(pl in name for pl in pl_names):
-            if any(level in name for level in map(str, LEVELS_13)):
-                # for 10u/10v/100u/100v/u10m/v10m, assign weight 1.0
-                if name[-1] != "0":
-                    continue
-                level = int(name[1:])
-                channel_weights[in_names.index(name)] = max(0.2, level / 1000)  # min weight 0.2 for upper-air variables
+        match = re.match(r"^([A-Za-z]+)_?(\d+)$", name)
+        if match is None:
+            continue
+        var_name, level_name = match.groups()
+        if var_name in pl_names and level_name in level_names:
+            level = int(level_name)
+            channel_weights[in_names.index(name)] = max(0.2, level / 1000)  # min weight 0.2 for upper-air variables
     channel_weights[landid] *= 0.33  # reduce land variables' weight
     channel_weights[maskid] *= 0.67  # reduce ocean variables' weight
     channel_weights /= channel_weights.max()  # normalize to [0, 1]
@@ -360,8 +252,10 @@ def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
             elif os.path.exists(os.path.join(data_dir, f"{k}.npy")):
                 v = np.load(os.path.join(data_dir, f"{k}.npy"))
             else:
-                print(f"File {file_name} not found, using default value for {k}.")
-                continue
+                v = _load_zarr_sidecar_variable(data_dir, k)
+                if v is None:
+                    print(f"File {file_name} or Zarr variable '{k}' not found, using default value for {k}.")
+                    continue
             if k == "weight":
                 v = v.reshape(1, -1, 1)
             elif k in ["mean", "std"]:

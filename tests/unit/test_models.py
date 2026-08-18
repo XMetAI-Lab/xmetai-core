@@ -3,29 +3,42 @@ Unit tests for models in xmetai.models module.
 Tests: UTransformer, ViT, base predictor, and model utilities.
 """
 
+import sys
+import types
+
 import pytest
 import torch
 import torch.nn as nn
 
-# Load the module file directly to avoid importing package __init__ (which has heavy side-effects).
-try:
-    # Prefer package-level export if available
-    from xmetai.models import UTransformer
-except Exception:
-    try:
-        # Fall back to importing the concrete module
-        from xmetai.models.utransformer import UTransformer
-    except Exception as e:
-        import pytest as _pytest
+from xmetai.layers.gated_deltanet2 import GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer
 
-        _pytest.skip(
-            f"UTransformer import failed; skipping model tests: {e}",
-            allow_module_level=True,
-        )
+try:
+    from xmetai.models.utransformer import UTransformer
+except Exception as e:
+    pytest.skip(
+        f"UTransformer import failed; skipping model tests: {e}",
+        allow_module_level=True,
+    )
 
 
 class TestUTransformer:
     """Test UTransformer weather prediction model."""
+
+    @staticmethod
+    def install_fake_fla_gdn2(monkeypatch):
+        class FakeGatedDeltaNet2(nn.Module):
+            def __init__(self, **kwargs):
+                super().__init__()
+                self.kwargs = kwargs
+
+            def forward(self, hidden_states, **kwargs):
+                return hidden_states, None, None
+
+        fla_module = types.ModuleType("fla")
+        layers_module = types.ModuleType("fla.layers")
+        layers_module.GatedDeltaNet2 = FakeGatedDeltaNet2
+        monkeypatch.setitem(sys.modules, "fla", fla_module)
+        monkeypatch.setitem(sys.modules, "fla.layers", layers_module)
 
     @pytest.mark.gpu
     def test_utransformer_initialization(self, torch_seed):
@@ -114,6 +127,8 @@ class TestUTransformer:
         assert hasattr(model, "freqs_sin")
         assert model.freqs_cos is not None
         assert model.freqs_sin is not None
+        assert model.freqs_cos.shape[0] == (32 // 4) * (64 // 4)
+        assert model.freqs_sin.shape[0] == (32 // 4) * (64 // 4)
 
     @pytest.mark.gpu
     def test_utransformer_dropout(self, torch_seed):
@@ -177,6 +192,74 @@ class TestUTransformer:
             except ImportError:
                 # Some layers may not be available
                 pytest.skip(f"{layer_type} layer not available")
+
+    def test_utransformer_with_gdn2_layer(self, torch_seed, monkeypatch):
+        """Test UTransformer selects and runs GatedDeltaNet-2 layers."""
+        self.install_fake_fla_gdn2(monkeypatch)
+        model = UTransformer(
+            in_chans=4,
+            out_chans=4,
+            in_frames=2,
+            embed_dim=32,
+            image_size=(8, 8),
+            window_size=4,
+            patch_size=2,
+            depths=[1],
+            num_heads=4,
+            head_type="1fc",
+            layer_type="gdn2_embed",
+        )
+        x = torch.randn(2, 2, 4, 8, 8)
+        timestamp = {"step": torch.zeros(2), "hour": torch.zeros(2), "doy": torch.zeros(2)}
+
+        h = model.patch_embed(x)
+        h = model.layers[0](h, time_embedding=model.get_embed(timestamp))
+        output = model.resize_output(model.head(h), x, unsqueeze=True)
+
+        assert isinstance(model.layers[0], GatedDeltaNet2Layer)
+        assert output.shape == (2, 1, 4, 8, 8)
+
+    def test_utransformer_with_gdn2_swin_layer(self, torch_seed, monkeypatch):
+        """Test UTransformer selects hybrid GDN2 + Swin window-attention layers."""
+        self.install_fake_fla_gdn2(monkeypatch)
+        model = UTransformer(
+            in_chans=4,
+            out_chans=4,
+            in_frames=2,
+            embed_dim=32,
+            image_size=(8, 8),
+            window_size=2,
+            patch_size=2,
+            depths=[2],
+            num_heads=4,
+            head_type="1fc",
+            layer_type="gdn2_swin_embed",
+        )
+        x = torch.randn(2, 2, 4, 8, 8)
+        timestamp = {"step": torch.zeros(2), "hour": torch.zeros(2), "doy": torch.zeros(2)}
+
+        h = model.patch_embed(x)
+        h = model.layers[0](h, time_embedding=model.get_embed(timestamp))
+        output = model.resize_output(model.head(h), x, unsqueeze=True)
+
+        assert isinstance(model.layers[0], GatedDeltaNet2HybridLayer)
+        assert output.shape == (2, 1, 4, 8, 8)
+
+    def test_utransformer_rejects_gdn2_met_layer_type(self, torch_seed):
+        """GDN2 intentionally exposes only the standard unidirectional layer."""
+        with pytest.raises(ValueError, match="gdn2_swin"):
+            UTransformer(
+                in_chans=4,
+                out_chans=4,
+                in_frames=2,
+                embed_dim=32,
+                image_size=(8, 8),
+                window_size=4,
+                patch_size=2,
+                depths=[1],
+                num_heads=4,
+                layer_type="gdn2_met",
+            )
 
     @pytest.mark.gpu
     def test_utransformer_different_input_sizes(self, torch_seed):

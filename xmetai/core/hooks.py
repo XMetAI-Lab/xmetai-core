@@ -11,38 +11,41 @@ import tempfile
 import time
 import warnings
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 from torch.nn.modules.batchnorm import _BatchNorm
 from torch.nn.utils import clip_grad_norm_
 
-from xmetai.utils.comm import get_rank, synchronize
-from xmetai.utils.events import EventStorage, EventWriter
-from xmetai.utils.file_io import PathManager
-from xmetai.utils.timer import Timer
+from xmetai.utils import EventStorage, EventWriter, PathManager, Timer, get_rank, synchronize
+from xmetai.utils.memory import bytes_to_mb, model_cpu_memory_bytes, object_cpu_memory_bytes, optimizer_cpu_memory_bytes, process_memory_bytes
 
-from .checkpoint import Checkpointer
-from .checkpoint import PeriodicCheckpointer as _PeriodicCheckpointer
+from .checkpoint import Checkpointer, PeriodicCheckpointer
 from .scheduler import LRMultiplier, ParamScheduler
 from .trainer import HookBase
 
 __all__ = [
+    "get_bn_modules",
+    "update_bn_stats",
+    "flatten_results_dict",
     "CallbackHook",
     "IterationTimer",
     "PeriodicWriter",
-    "PeriodicCheckpointer",
+    "PeriodicCheckpointerHook",
     "BestCheckpointer",
     "LRScheduler",
     "SchedulerMultiplier",
     "AutogradProfiler",
     "EvalHook",
+    "EarlyStoppingHook",
     "PreciseBN",
     "TorchProfiler",
     "TorchMemoryStats",
+    "CPUMemoryStats",
     "GradientClipHook",
 ]
 
@@ -90,7 +93,7 @@ def flatten_results_dict(results):
         if isinstance(v, Mapping):
             v = flatten_results_dict(v)
             for kk, vv in v.items():
-                if isinstance(vv, Iterable):  # use mean for list
+                if isinstance(vv, (Sequence, np.ndarray)) and not isinstance(vv, (str, bytes)):
                     vv = np.mean(vv)
                 r[k + "/" + kk] = vv
         else:
@@ -242,7 +245,7 @@ class PeriodicWriter(HookBase):
             writer.close()
 
 
-class PeriodicCheckpointer(_PeriodicCheckpointer, HookBase):
+class PeriodicCheckpointerHook(PeriodicCheckpointer, HookBase):
     """
     Same as :class:`detectron2.checkpoint.PeriodicCheckpointer`, but as a hook.
 
@@ -365,6 +368,7 @@ class SchedulerMultiplier(HookBase):
     def __init__(self, optimizer: Any = None, schedulers: dict | None = None):
         self._optimizer = optimizer
         self._schedulers = {} if schedulers is None else schedulers
+        self._logger = logging.getLogger(__name__)
 
     def before_train(self):
         self._optimizer = self._optimizer or self.trainer.optimizer
@@ -374,7 +378,7 @@ class SchedulerMultiplier(HookBase):
         for k in self._schedulers:
             v = self._schedulers[k][self.trainer.iter]
             self.hyp[k] = v
-            print(k, self.trainer.iter, v)
+            self._logger.debug("SchedulerMultiplier %s @ iter %d: %s", k, self.trainer.iter, v)
             self.trainer.storage.put_scalar(k, v, smoothing_hint=False)
 
         for param_group in self._optimizer.param_groups:
@@ -763,10 +767,255 @@ class TorchMemoryStats(HookBase):
                 torch.cuda.reset_peak_memory_stats()
 
 
+class CPUMemoryStats(HookBase):
+    """
+    Periodically records current CPU memory split by data, model, optimizer, and
+    untracked RSS. This intentionally does not query CUDA memory.
+    """
+
+    def __init__(self, period=20):
+        if period <= 0:
+            raise ValueError(f"period must be positive, got {period}")
+        self._logger = logging.getLogger(__name__)
+        self._period = period
+
+    def after_optimizer(self, data):
+        if (self.trainer.iter + 1) % self._period != 0 and self.trainer.iter != self.trainer.max_iter - 1:
+            return
+
+        batch_stats = object_cpu_memory_bytes(data)
+        model_stats = model_cpu_memory_bytes(self.trainer.model)
+        optimizer_bytes = optimizer_cpu_memory_bytes(self.trainer.optimizer)
+        process_stats = process_memory_bytes(include_children=True)
+        tracked_main_bytes = batch_stats["total_cpu_bytes"] + model_stats["model_cpu_bytes"] + optimizer_bytes
+
+        process_rss_bytes = process_stats["process_rss_bytes"]
+        rss_untracked_bytes = None
+        if process_rss_bytes is not None:
+            rss_untracked_bytes = max(process_rss_bytes - tracked_main_bytes, 0)
+
+        cpu_memory_data_mb = bytes_to_mb(batch_stats["total_cpu_bytes"])
+        cpu_memory_data_tensor_mb = bytes_to_mb(batch_stats["tensor_cpu_bytes"])
+        cpu_memory_data_pinned_tensor_mb = bytes_to_mb(batch_stats["pinned_tensor_cpu_bytes"])
+        cpu_memory_data_numpy_mb = bytes_to_mb(batch_stats["numpy_bytes"])
+        cpu_memory_model_mb = bytes_to_mb(model_stats["model_cpu_bytes"])
+        cpu_memory_model_param_mb = bytes_to_mb(model_stats["model_param_cpu_bytes"])
+        cpu_memory_model_buffer_mb = bytes_to_mb(model_stats["model_buffer_cpu_bytes"])
+        cpu_memory_model_grad_mb = bytes_to_mb(model_stats["model_grad_cpu_bytes"])
+        cpu_memory_optimizer_mb = bytes_to_mb(optimizer_bytes)
+        cpu_memory_tracked_main_mb = bytes_to_mb(tracked_main_bytes)
+        cpu_memory_process_rss_mb = bytes_to_mb(process_rss_bytes) or 0.0
+        cpu_memory_process_vms_mb = bytes_to_mb(process_stats["process_vms_bytes"]) or 0.0
+        cpu_memory_child_process_rss_mb = bytes_to_mb(process_stats["child_process_rss_bytes"]) or 0.0
+        cpu_memory_total_process_rss_mb = bytes_to_mb(process_stats["total_process_rss_bytes"]) or 0.0
+        cpu_memory_untracked_or_fragmented_mb = bytes_to_mb(rss_untracked_bytes) or 0.0
+
+        self.trainer.storage.put_scalars(
+            smoothing_hint=False,
+            cpu_memory_data_mb=cpu_memory_data_mb,
+            cpu_memory_data_tensor_mb=cpu_memory_data_tensor_mb,
+            cpu_memory_data_pinned_tensor_mb=cpu_memory_data_pinned_tensor_mb,
+            cpu_memory_data_numpy_mb=cpu_memory_data_numpy_mb,
+            cpu_memory_model_mb=cpu_memory_model_mb,
+            cpu_memory_model_param_mb=cpu_memory_model_param_mb,
+            cpu_memory_model_buffer_mb=cpu_memory_model_buffer_mb,
+            cpu_memory_model_grad_mb=cpu_memory_model_grad_mb,
+            cpu_memory_optimizer_mb=cpu_memory_optimizer_mb,
+            cpu_memory_tracked_main_mb=cpu_memory_tracked_main_mb,
+            cpu_memory_process_rss_mb=cpu_memory_process_rss_mb,
+            cpu_memory_process_vms_mb=cpu_memory_process_vms_mb,
+            cpu_memory_child_process_rss_mb=cpu_memory_child_process_rss_mb,
+            cpu_memory_total_process_rss_mb=cpu_memory_total_process_rss_mb,
+            cpu_memory_untracked_or_fragmented_mb=cpu_memory_untracked_or_fragmented_mb,
+        )
+        self._logger.info(
+            (
+                " iter: %s rank: %s CPU memory "
+                "data: %.0fMB (tensor: %.0fMB pinned: %.0fMB numpy: %.0fMB) "
+                "model: %.0fMB (param: %.0fMB buffer: %.0fMB grad: %.0fMB) "
+                "optimizer: %.0fMB tracked: %.0fMB rss: %.0fMB child_rss: %.0fMB total_rss: %.0fMB untracked_or_fragmented: %.0fMB"
+            ),
+            self.trainer.iter,
+            get_rank(),
+            cpu_memory_data_mb,
+            cpu_memory_data_tensor_mb,
+            cpu_memory_data_pinned_tensor_mb,
+            cpu_memory_data_numpy_mb,
+            cpu_memory_model_mb,
+            cpu_memory_model_param_mb,
+            cpu_memory_model_buffer_mb,
+            cpu_memory_model_grad_mb,
+            cpu_memory_optimizer_mb,
+            cpu_memory_tracked_main_mb,
+            cpu_memory_process_rss_mb,
+            cpu_memory_child_process_rss_mb,
+            cpu_memory_total_process_rss_mb,
+            cpu_memory_untracked_or_fragmented_mb,
+        )
+
+
 class GradientClipHook(HookBase):
     def __init__(self, max_norm=1.0, norm_type=2.0):
         self.max_norm = max_norm
         self.norm_type = norm_type
 
     def after_backward(self):
-        clip_grad_norm_(self.trainer.model.parameters(), self.max_norm, self.norm_type)
+        parameters = list(self.trainer.model.parameters())
+        grads = [p.grad for p in parameters if p.grad is not None]
+        if any(isinstance(grad, DTensor) for grad in grads):
+            _clip_dtensor_grad_norm_(grads, self.max_norm, self.norm_type)
+            return
+        clip_grad_norm_(parameters, self.max_norm, self.norm_type)
+
+
+@torch.no_grad()
+def _clip_dtensor_grad_norm_(grads, max_norm, norm_type):
+    norm_type = float(norm_type)
+    max_norm = float(max_norm)
+    if len(grads) == 0:
+        return torch.tensor(0.0)
+
+    def to_float(tensor):
+        if isinstance(tensor, DTensor):
+            tensor = tensor.full_tensor()
+        return float(tensor.detach().float().item())
+
+    if norm_type == math.inf:
+        total_norm = max(to_float(grad.detach().abs().max()) for grad in grads)
+    else:
+        total_norm = sum(to_float(torch.linalg.vector_norm(grad.detach(), norm_type)) ** norm_type for grad in grads) ** (1.0 / norm_type)
+
+    clip_coef = min(max_norm / (total_norm + 1e-6), 1.0)
+    for grad in grads:
+        grad.mul_(clip_coef)
+    return torch.tensor(total_norm)
+
+
+class EarlyStoppingHook(HookBase):
+    """Stop training early when a monitored validation metric stops improving.
+
+    The hook reads the metric from ``trainer.storage.latest()`` every
+    ``eval_period`` iterations (aligned with :class:`EvalHook`).  If the metric
+    does not improve by at least ``min_delta`` for ``patience`` consecutive
+    evaluation rounds, it sets ``trainer._early_stop_requested = True``, which
+    causes :class:`TrainerBase` to break out of its training loop after the
+    current step and call ``after_train`` as if training finished normally.
+
+    Args:
+        eval_period (int): How often (in iterations) to check the metric.
+            Must match the ``eval_period`` passed to :class:`EvalHook`.
+        val_metric (str): Flattened key as written to the event storage, e.g.
+            ``"RMSE/z500"`` or ``"IPS/t2m"``.
+        mode (str): ``"min"`` to stop when the metric stops decreasing,
+            ``"max"`` to stop when it stops increasing.
+        patience (int): Number of evaluation rounds with no improvement before
+            training is stopped.
+        min_delta (float): Minimum absolute change in the metric to qualify as
+            an improvement.  Defaults to ``0.0``.
+    """
+
+    def __init__(
+        self,
+        eval_period: int,
+        val_metric: str,
+        mode: str = "min",
+        patience: int = 5,
+        min_delta: float = 0.0,
+    ) -> None:
+        if mode not in ("min", "max"):
+            raise ValueError(f'mode must be "min" or "max", got {mode!r}')
+        if patience <= 0:
+            raise ValueError(f"patience must be a positive integer, got {patience}")
+        if eval_period <= 0:
+            raise ValueError(f"eval_period must be a positive integer, got {eval_period}")
+
+        self._logger = logging.getLogger(__name__)
+        self._period = eval_period
+        self._val_metric = val_metric
+        self._patience = patience
+        self._min_delta = float(min_delta)
+        self._mode = mode
+
+        self.best_metric: float | None = None
+        self.best_iter: int | None = None
+        self._num_no_improve: int = 0
+
+    def _is_improvement(self, val: float) -> bool:
+        if self.best_metric is None:
+            return True
+        delta = self._min_delta
+        if self._mode == "max":
+            return val > self.best_metric + delta
+        return val < self.best_metric - delta
+
+    def after_step(self) -> None:
+        assert self.trainer is not None
+        next_iter = self.trainer.iter + 1
+        if next_iter % self._period != 0:
+            return
+        # Skip at the very last iteration — EvalHook's after_train handles it.
+        if next_iter == self.trainer.max_iter:
+            return
+
+        metric_tuple = self.trainer.storage.latest().get(self._val_metric)
+        if metric_tuple is None:
+            self._logger.warning(
+                "EarlyStoppingHook: metric %r not found in storage at iter %d. " "Make sure EvalHook runs before EarlyStoppingHook.",
+                self._val_metric,
+                self.trainer.iter,
+            )
+            return
+
+        latest_metric, _ = metric_tuple
+        if math.isnan(latest_metric) or math.isinf(latest_metric):
+            self._logger.warning(
+                "EarlyStoppingHook: metric %r is %s at iter %d, skipping.",
+                self._val_metric,
+                latest_metric,
+                self.trainer.iter,
+            )
+            return
+
+        if self._is_improvement(latest_metric):
+            self._logger.info(
+                "EarlyStoppingHook: %r improved from %s to %.6g at iter %d.",
+                self._val_metric,
+                f"{self.best_metric:.6g}" if self.best_metric is not None else "N/A",
+                latest_metric,
+                self.trainer.iter,
+            )
+            self.best_metric = latest_metric
+            self.best_iter = self.trainer.iter
+            self._num_no_improve = 0
+        else:
+            self._num_no_improve += 1
+            self._logger.info(
+                "EarlyStoppingHook: %r did not improve (best=%.6g @ iter %d). " "No-improvement count: %d / %d.",
+                self._val_metric,
+                self.best_metric,
+                self.best_iter,
+                self._num_no_improve,
+                self._patience,
+            )
+
+        if self._num_no_improve >= self._patience:
+            self._logger.info(
+                "EarlyStoppingHook: stopping training — %r has not improved for " "%d evaluations (best=%.6g @ iter %d).",
+                self._val_metric,
+                self._patience,
+                self.best_metric,
+                self.best_iter,
+            )
+            self.trainer._early_stop_requested = True
+
+    def state_dict(self) -> dict:
+        return {
+            "best_metric": self.best_metric,
+            "best_iter": self.best_iter,
+            "num_no_improve": self._num_no_improve,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        self.best_metric = state["best_metric"]
+        self.best_iter = state["best_iter"]
+        self._num_no_improve = state["num_no_improve"]
