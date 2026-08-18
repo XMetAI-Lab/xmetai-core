@@ -214,20 +214,10 @@ class AFNONet(BasePredictor):
 
         # convert all inputs to model dtype
         normed_input = normed_input.to(dtype=self.dtype)
-        step = step.to(dtype=self.dtype)
-        hour = hour.to(dtype=self.dtype)
-        doy = doy.to(dtype=self.dtype)
-
-        batch_size = input.shape[0]
 
         # forward model
         self.reset_input(normed_input)
-        timestamp = {
-            "step": step.repeat(batch_size),
-            "hour": hour.repeat(batch_size),
-            "doy": doy.repeat(batch_size),
-        }
-        output = self.forward_step(normed_input, timestamp=timestamp)
+        output = self.forward_step(normed_input)
 
         # inv normalize output with float32 precision
         output = self.inv_normalize(output)

@@ -1,8 +1,32 @@
 """Unit tests for FourcastNet."""
 
+import numpy as np
 import torch
 
 from xmetai.models.afnonet import AFNONet
+
+
+def test_afnonet_export_onnx():
+    chans, height, width = 3, 10, 10
+    model = AFNONet(
+        in_chans=chans,
+        out_chans=chans,
+        in_frames=1,
+        out_frames=1,
+        embed_dim=8,
+        img_size=(height, width),
+        patch_size=(5, 5),
+        depth=1,
+        num_blocks=1,
+        device="cpu",
+        precision="fp32",
+        buffers={"mean": np.zeros(chans, dtype=np.float32), "std": np.ones(chans, dtype=np.float32)},
+    )
+    inputs = torch.randn(1, 1, chans, height, width)
+
+    output = model.export_onnx(inputs, torch.tensor([1]), torch.tensor([0.5]), torch.tensor([0.5]))
+
+    assert output.shape == (1, 2, chans, height, width)
 
 
 def test_afnonet_forward_loss():
