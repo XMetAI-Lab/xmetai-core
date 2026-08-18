@@ -192,3 +192,10 @@ class AFNONet(BasePredictor):
                     curr_step += 1
 
         return outputs
+
+    @torch.no_grad()
+    def export_onnx(self, inputs, step, hour, doy):
+        raise NotImplementedError(
+            "AFNONet ONNX export is not supported yet."
+        )
+
