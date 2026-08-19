@@ -1,0 +1,126 @@
+"""
+Subseasonal to seasonal deterministic model with the FuXi-2.1 backbone.
+
+Project-native downscaled FuXi-2.1 (flat single-trunk Transformer: Swin window
+attention + 1-D RoPE + adaLN time conditioning + SwiGLU FFN, variable-aware
+multi-head decoder), trained from scratch on the project's 1.5-degree ERA5
+dataset. Official 0.25-degree weights are not loaded.
+"""
+
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import logging
+import os
+
+from s2s_base import (  # noqa: F401
+    ROOT_PATH,
+    accumid,
+    buffers,
+    dataloader,
+    in_chans,
+    in_frames,
+    in_names,
+    load_from_pretrain,
+    logid,
+    maskid,
+    optimizer,
+    out_chans,
+    output_dir,
+    pinn_coeffs,
+    scheduler,
+    step_range,
+    test_chans,
+    test_frames,
+    test_names,
+    train,
+)
+
+from xmetai import MODELS, LazyConfig
+from xmetai import LazyCall as L
+
+logging.basicConfig(level=logging.INFO)
+
+#####################################################################
+# Training settings
+#####################################################################
+model_name = "Fuxi2"
+
+# FuXi-2.1 is single-step autoregressive; keep one-step teacher forcing.
+train.teacher_forcing.teach_iters = -1
+dataloader.train.dataset.fcst_frames = 1
+
+train.output_dir = output_dir
+
+######################################################################
+# Model settings
+######################################################################
+freq = 24
+
+# Downscaled from the official 0.25-degree config (embed_dim=1536, depth=30,
+# num_heads=24, patch_size=6) to the project's 1.5-degree grid:
+#   image_size (120, 240) + patch_size 2 -> 60x120 tokens.
+#   window_size 6 divides both 60 and 120 (shift = 3); embed_dim/depth/heads
+#   are a small starting point and can be scaled up freely.
+patch_size = 2
+embed_dim = 384
+depth = 8
+num_heads = 12
+window_size = 6
+mlp_ratio = 8 / 3
+members = 1
+
+model = L(MODELS.get(model_name))(
+    embed_dim=embed_dim,
+    depth=depth,
+    num_heads=num_heads,
+    window_size=window_size,
+    mlp_ratio=mlp_ratio,
+    patch_size=patch_size,
+    image_size=(120, 240),
+    drop_rate=0.0,
+    drop_path_rate=0.1,
+    loss_type="mse",
+    in_chans=in_chans,
+    out_chans=out_chans,
+    const_chans=2,
+    in_frames=in_frames,
+    out_frames=1,
+    freq=freq,
+    accumid=accumid,
+    logid=logid,
+    maskid=[],  # maskid,
+    zero_accum=True,  # FuXi-2.1 zeroes derived (radiation/precip) channels before feedback
+    test_frames=test_frames,
+    test_chans=test_chans,
+    test_names=test_names,
+    step_range=step_range,
+    members=members,
+    save_dir=output_dir + "/pred/",
+    pinn_enable=False,
+    # pinn_coeffs=pinn_coeffs,
+    in_names=in_names,
+    pinn_use_denorm=True,
+)
+
+model.buffers = buffers
+model.precision = "bf16"
+
+export_onnx = os.getenv("EXPORT_ONNX", "").lower() in ("1", "true", "yes", "on")
+if export_onnx:
+    from xmetai.data import make_onnx
+
+    train.use_ddp = False
+    train.use_fsdp = False
+    train.activation_checkpointing = False
+    dataloader.test.total_batch_size = 1
+    make_onnx(
+        model=train,
+        dataloader_cfg=dataloader.test,
+        mean=buffers.get("mean", None),
+        std=buffers.get("std", None),
+        in_names=in_names,
+        output_dir=output_dir,
+        embed_types=["step", "hour", "doy"],
+        model_name="s2s_fuxi.onnx",
+        device=train.device_type,
+    )
