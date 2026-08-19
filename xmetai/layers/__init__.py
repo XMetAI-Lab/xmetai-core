@@ -18,6 +18,14 @@ from .norm import AdaptiveLN, AdaRMSNorm, LayerNorm, RMSNorm
 from .puyun_blocks import ConvLayerNorm, PuYunBlock
 from .rotary_attention import precompute_freqs_cis, precompute_freqs_cis_3d, precompute_freqs_cis_3d_remapped
 from .swin import SwinLayer
+from .tianquan_blocks import (
+    FGA,
+    SCA,
+    DEConv,
+    PEDadd_UViT,
+    Perceiver3DDecoder,
+    Perceiver3DEncoder,
+)
 
 HAS_MAMBA = find_spec("mamba_ssm") is not None
 HAS_NATTEN = find_spec("natten") is not None
@@ -81,6 +89,12 @@ __all__ = [
     "SwinLayer",
     "SwiGLU",
     "TimestepEmbed",
+    "Perceiver3DEncoder",
+    "Perceiver3DDecoder",
+    "PEDadd_UViT",
+    "SCA",
+    "DEConv",
+    "FGA",
     "TimestepProjection",
     "TransformerLayer3D",
     "apply_lora_to_model",
