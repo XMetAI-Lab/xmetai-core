@@ -21,13 +21,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor, nn
 
 from xmetai.layers.embed import TemporalPatchEmbed
-from xmetai.layers.natten3d_unet import BackBone
+
+if TYPE_CHECKING:
+    from xmetai.layers.natten3d_unet import BackBone
 
 __all__ = [
     "NULL_MODALITY",
