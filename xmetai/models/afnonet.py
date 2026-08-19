@@ -194,7 +194,7 @@ class AFNONet(BasePredictor):
         return outputs
 
     @torch.no_grad()
-def export_onnx(self, input, _step=None, _hour=None, _doy=None, *_extra):
+    def export_onnx(self, input, _step=None, _hour=None, _doy=None, *_extra):
         # normalize input with float32 precision
         normed_input = self.normalize(input)
 
