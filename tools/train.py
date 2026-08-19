@@ -46,6 +46,7 @@ try:
         merge_lora_weights,
     )
     from xmetai.layers.darknet_unet import DarknetBlock, DarknetConv
+    from xmetai.layers.natten import TransformerLayer3D
     from xmetai.layers.swin import SwinBlock
 
     if HAS_MAMBA:
@@ -93,6 +94,7 @@ def build_model(cfg):
         GraphCastLayer,
         GraphCastEncoder,
         GraphCastDecoder,
+        TransformerLayer3D,
     ]
     fsdp_mods = list(checkpoint_mods)
     if cfg.train.use_fsdp2:
