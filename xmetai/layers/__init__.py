@@ -11,6 +11,7 @@ from .earth_conv import EarthConv2d, EarthConvTranspose2d
 from .embed import CubeEmbed, TimestepEmbed
 from .encoding import CyclicTimesteps, StepEncoding, TimestepProjection
 from .fuxi_blocks import (
+    FuxiConstEmbed,
     FuxiPatchEmbed,
     FuxiSubpixelHead,
     FuxiSwinBlock,
@@ -75,6 +76,7 @@ __all__ = [
     "EarthConv2d",
     "EarthConvTranspose2d",
     "EarthSpectralConv2d",
+    "FuxiConstEmbed",
     "FuxiPatchEmbed",
     "FuxiSubpixelHead",
     "FuxiSwinBlock",

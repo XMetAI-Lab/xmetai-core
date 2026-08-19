@@ -10,7 +10,7 @@ the official 0.25-degree / 85-channel weights are **not** loaded.
 ## Architecture
 
 FuXi-2.1 replaces FuXi-1.0's U-Transformer with a **flat single-trunk
-Transformer**:
+Transformer** (no U-Net down/up-sampling):
 
 ```
 patch/const embed → Swin window attention (1-D RoPE) + adaLN(step/hour/doy) + SwiGLU FFN
@@ -29,41 +29,147 @@ The module layout mirrors the released `.pt2` state_dict (`decoder.patch_embed`,
 `decoder.layers.N.{norm1,attn,norm2,mlp,adaln}`, `decoder.norm_layer.scale_shift`,
 `decoder.head.*`) so key names stay aligned if official weights are ever adopted.
 
+## Forward data flow
+
+For one frame `input (B, T=2, C=76, H=121, W=240)`:
+
+```
+input (B, 2, 76, 121, 240)
+  └─ resize_input: 121 → 120  (120 divisible by patch=2 and window=6)  → (B, 2, 76, 120, 240)
+  └─ patch_embed: (2 frames × 76 ch) conv to embed_dim, patch=2         → tokens (B, 7200, embed_dim)
+  └─ FuxiSwinBlock × depth  (window attention + adaLN + SwiGLU)         → (B, 7200, embed_dim)
+  └─ AdaptiveLN final norm                                              → (B, 7200, embed_dim)
+  └─ var_head (3 group heads)                                           → (B, 76, 120, 240)
+  └─ interpolate back to 121×240, add last-frame residual               → (B, 1, 76, 121, 240)
+```
+
+`60×120 = 7200` tokens (`image_size // patch_size`). The output is a
+**residual**: `forward_step` does `output = backbone(...) + input[:, -out_frames:, :out_chans]`,
+so the model predicts the delta from the last input frame.
+
+## Component breakdown
+
+- **`FuxiPatchEmbed`** — patchifies the time-varying input field (frames ×
+  channels) with a conv + LayerNorm. Mirrors `decoder.patch_embed.{input_proj,norm}`.
+- **`FuxiConstEmbed`** — patchifies the constant/static field (`const`, e.g.
+  land-sea mask + orography) with its own conv + LayerNorm (`proj`/`norm`),
+  then **added** to the input tokens. Mirrors `decoder.const_embed.{proj,norm}`.
+- **`FuxiWindowAttention`** — Swin windowed attention (local `window_size²`
+  tokens, not global 7200), with **1-D RoPE** rotary position encoding
+  (`precompute_freqs_cis(head_dim, win_seq)`) applied to q/k inside the window,
+  and native `F.scaled_dot_product_attention` (flash-attention friendly).
+- **`FuxiSwinBlock`** — full block: (1) **cyclic shift** (`shift=0` on even
+  layers, `window//2` on odd) so neighbouring windows interact; (2) attention +
+  SwiGLU FFN (both pre-norm); (3) **adaLN** time modulation — time embedding
+  through `SiLU + Linear(dim→6·dim)`, chunked into
+  `scale/shift/gate` for both MSA and MLP.
+- **`FuxiTimeEmbed`** — three scalars `step / hour / doy`, each sincos-embedded
+  to 128 dims, concatenated (384) and passed through a 2-layer MLP → `embed_dim`.
+- **`SwiGLUFFN`** — `silu(w1(x)) * w3(x) → w2`, no bias, hidden `dim × 8/3`.
+- **`FuxiVarHead`** — three group-specific decoder heads, concatenated then
+  scattered back to canonical `in_names` order via a pre-registered `scatter_idx`.
+
 ## Downscaling from the official 0.25° config
 
 | Property | Official | This config |
 |---|---|---|
 | Resolution | 0.25° (721×1440) | 1.5° (120×240) |
-| Channels | 85 (65 PL + 20 SFC) | 76 (data-driven) |
-| `embed_dim` | 1536 | 384 |
-| `depth` | 30 | 8 |
-| `num_heads` | 24 | 12 |
+| Time step | 6-hourly | daily (24 h) |
+| Forecast horizon | ~10 days (medium range) | subseasonal-to-seasonal |
+| Channels | 85 (65 PL + 15 SFC + 5 DER) | 76 (65 PL + 9 SFC + 2 DER) |
+| `embed_dim` | 1536 | 384 (server) |
+| `depth` | 30 | 8 (server) |
+| `num_heads` | 24 | 12 (server) |
 | `patch_size` | 6 | 2 (→ 60×120 tokens) |
 | `window_size` | — | 6 (shift 3; divides 60 and 120) |
 
-`embed_dim`/`depth`/`num_heads` are a small starting point; they scale up freely
-in `configs/s2s_fuxi.py`. `window_size` **must** divide `feat_size =
-image_size // patch_size`; with `(120, 240)` and patch 2 that is `(60, 120)`, so
-valid choices are 4, 6, 10, 12, … (6 is the default).
+`embed_dim`/`depth`/`num_heads` scale freely in `configs/s2s_fuxi.py`.
+`window_size` **must** divide `feat_size = image_size // patch_size`; with
+`(120, 240)` and patch 2 that is `(60, 120)`, so valid choices are 4, 6, 10, 12,
+… (6 is the default).
+
+## Channel differences vs the official 85
+
+The official input is 85 channels (65 pressure-level + 15 surface + 5 derived);
+the project dataset is 76 (65 + 9 + 2). The pressure levels are identical (5 variables × 13
+levels); all 9 missing channels sit in the surface/derived group:
+
+- **Derived −3**: `ssr`, `ssrd`, `fdir` (surface radiation). The dataset only
+  carries `ttr` and `tp`, so `DERIVED_NAMES` in `fuxi.py` finds no
+  `ssr/ssrd/fdir` hits.
+- **Surface −6**: mainly cloud cover (`tcc` total / `lcc` low / `mcc` medium /
+  `hcc` high) plus a couple of other surface fields.
+
+The 9 project surface channels (`t2m`, `d2m`, `sst`, `10u`, `10v`, `100u`,
+`100v`, `msl`, `tcwv`) are a subset of the official 15 surface channels.
+
+Two convention notes:
+
+- The official pressure variables are `Z/T/U/V/R` (R = *relative* humidity),
+  whereas the project dataset/code uses `q` (specific humidity); the level count
+  is the same (13).
+- Official time step is 6-hourly; the project trains on daily (`freq=24`) data.
+
+## Actual dataset channels (76)
+
+The project's `s2s.1950-2024.c76` dataset holds 76 channels, split by
+`split_var_groups` into:
+
+| Group | Count | Channels |
+|---|---|---|
+| **pressure** | 65 | `z/t/u/v/q` × 13 levels (1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50) |
+| **surface** | 9 | `t2m, d2m, sst, 10u, 10v, 100u, 100v, msl, tcwv` |
+| **derived** | 2 | `ttr, tp` |
+
+Notes:
+
+- Wind fields are named `10u/10v/100u/100v` (not ERA5's `u10/v10/u100/v100`);
+  total-column water vapour is `tcwv` (not `tcw`).
+- The dataset has **no** `ssr/ssrd/fdir` radiation channels, so the derived
+  group reduces to `ttr` (top thermal radiation) and `tp` (total precipitation).
+  `DERIVED_NAMES = ("ssr","ssrd","fdir","ttr","tp")` in `fuxi.py` simply has no
+  `ssr/ssrd/fdir` hits for this dataset.
 
 ## Variable grouping (the extension interface)
 
 Channel grouping is driven entirely by `in_names` via `split_var_groups`:
 
 - **pressure** — `{z,t,u,v,q}<level>` channels (e.g. `z500`, `u850`)
-- **derived** — accumulated diagnostics `ssr / ssrd / fdir / ttr / tp`
-- **surface** — everything else (`msl`, `t2m`, `sst`, `u10m`, …)
+- **derived** — accumulated diagnostics in `DERIVED_NAMES` (`ttr`, `tp`, …)
+- **surface** — everything else (`msl`, `t2m`, `sst`, `10u`, `tcwv`, …)
 
 Each group feeds its own decoder head; outputs are concatenated and scattered
 back to the canonical `in_names` order. **Adding surface variables therefore
 only requires extending the dataset** — no model-code changes. The model raises
 at construction if the groups do not cover exactly `out_chans`.
 
+## Training interface
+
+`Fuxi2` extends `BasePredictor` and implements the framework contract:
+
+- `forward(data)` → loss dict (autoregressive, per-frame loss accumulation)
+- `forward_step(input, const, times, step)` → single-step forward (+ residual)
+- `test_cascade` → multi-step rollout (evaluation)
+- `export_onnx` → ONNX export
+
+## Local vs server config
+
+| Parameter | Local smoke-test | Server training |
+|---|---|---|
+| `embed_dim` | 16 | 384 |
+| `depth` | 2 | 8 |
+| `num_heads` | 2 | 12 |
+| Params | ~0.065 M | ~17.5 M |
+
+`window_size=6`, `patch_size=2`, `mlp_ratio=8/3` are identical for both. The
+only hard constraint when scaling is `embed_dim % num_heads == 0` (e.g. `384/12
+= 32`).
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `xmetai/layers/fuxi_blocks.py` | `SwiGLUFFN`, `FuxiWindowAttention`, `FuxiSwinBlock`, `FuxiSwinLayer`, `FuxiTimeEmbed`, `FuxiPatchEmbed`, `FuxiSubpixelHead`, `FuxiVarHead` |
+| `xmetai/layers/fuxi_blocks.py` | `SwiGLUFFN`, `FuxiWindowAttention`, `FuxiSwinBlock`, `FuxiSwinLayer`, `FuxiTimeEmbed`, `FuxiPatchEmbed`, `FuxiConstEmbed`, `FuxiSubpixelHead`, `FuxiVarHead` |
 | `xmetai/models/fuxi.py` | `Fuxi2` (`@MODELS.register()`), `FuxiBackbone`, `split_var_groups` |
 | `configs/s2s_fuxi.py` | training config (reuses `s2s_base`) |
 | `xmetai/layers/__init__.py`, `xmetai/models/__init__.py` | exports |
@@ -82,6 +188,102 @@ Key config choices:
   not propagated).
 - `const_chans=2` — land-sea mask + orography embedded separately and added to
   the patch tokens.
+
+## Loading official weights — data & shape requirements (future)
+
+The module key names now mirror the official FuXi-2.1 `.pt2` state_dict
+(`decoder.patch_embed.*`, `decoder.const_embed.*`, `decoder.joint_embed_layer.*`,
+`decoder.layers.N.{attn,mlp,adaln}.*`, `decoder.norm_layer.scale_shift.*`,
+`decoder.pred_layer.heads.{pressure,surface,derived}.*`,
+`decoder.pred_layer.scatter_idx`). But loading official weights is **not**
+rename-only — the model and dataset must also match the official scale below.
+
+### Official input data spec
+
+| Item | Official value | Project today |
+|---|---|---|
+| Horizontal grid | 0.25° — `lat=721`, `lon=1440` | 1.5° — `121×240` |
+| Time step | 6-hourly | daily (24 h) |
+| Input tensor | `(time=2, channel=85, lat=721, lon=1440)` | `(T=2, C=76, 121, 240)` |
+| Channels | **85** = 65 PL + 15 SFC + 5 DER | 76 = 65 + 9 + 2 |
+| Pressure levels | 5 vars × 13 levels | same 5 × 13 |
+| Surface | **15** | 9 |
+| Derived | **5** (`ssr, ssrd, fdir, ttr, tp`) | 2 (`ttr, tp`) |
+| Static (const) | **6** channels | 2 (`lsm`, `z`) |
+| Normalization | Z-score (per-channel mean/std) | same |
+
+Channel details:
+
+- **Pressure (65)** — `Z/T/U/V/R` × 13 levels `50, 100, 150, 200, 250, 300, 400,
+  500, 600, 700, 850, 925, 1000` hPa. Official uses **R** (relative humidity);
+  the project dataset/code uses **q** (specific humidity).
+- **Surface (15)** — the project already carries 9 (`t2m, d2m, sst, 10u, 10v,
+  100u, 100v, msl, tcwv`); the 6 extra are cloud cover (`tcc/lcc/mcc/hcc`) plus
+  2 more fields — confirm the exact list against the official data manifest.
+- **Derived (5)** — `ssr` (surface net solar radiation), `ssrd` (downward solar
+  radiation), `fdir` (direct solar radiation), `ttr` (top net thermal radiation),
+  `tp` (total precipitation). The project only has `ttr` and `tp`.
+- **Const (6)** — static geographic fields. Two are known: `lsm` (land-sea mask)
+  and `z` (orography); the other 4 must be confirmed from the official const data.
+- Latitude runs 90°N → 90°S, longitude 0° → 359.75° (0.25° spacing). The model
+  resizes `721 → 720` so `patch_size=6` yields a `120 × 240` token grid.
+
+### Required full-scale config
+
+```python
+embed_dim   = 1536   # today: 384 (server) / 16 (local)
+depth       = 30     # today: 8 / 2
+num_heads   = 24     # today: 12 / 2
+patch_size  = 6      # today: 2
+window_size = 6      # must divide 120 and 240 (feat_size = 720/6, 1440/6); confirm official value
+mlp_ratio   = 8 / 3
+image_size  = (720, 1440)   # 721 -> 720 for patch 6
+in_chans    = out_chans = 85
+const_chans = 6
+in_frames   = 2
+```
+
+### Official tensor shapes (from the released .pt2)
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `patch_embed.input_proj.weight` | `(1536, 170, 6, 6)` | out = embed_dim; in = 2 frames × 85 ch; 6×6 patch |
+| `patch_embed.norm.weight/bias` | `(1536,)` | post-patch LayerNorm |
+| `const_embed.proj.weight` | `(1536, 6, 6, 6)` | out = embed_dim; in = 6 const; 6×6 patch |
+| `const_embed.norm.weight` | `(1536,)` | post-const LayerNorm |
+| `joint_embed_layer.0.weight/bias` | `(1536, 384)` | time MLP layer 1; 384 = 3 (step/hour/doy) × 128 sincos |
+| `joint_embed_layer.2.weight/bias` | `(1536, 1536)` | time MLP layer 2 |
+| `layers.N.attn.wq.weight` | `(1560, 1536)` | q proj; **1560 = 24 heads × 65** (1 extra dim/head vs k/v) |
+| `layers.N.attn.wk/wv/wo.weight` | `(1536, 1536)` | k/v/o proj; 24 heads × 64 |
+| `layers.N.mlp.w1/w3.weight` | `(4096, 1536)` | SwiGLU gates; 4096 = 1536 × 8/3 |
+| `layers.N.mlp.w2.weight` | `(1536, 4096)` | SwiGLU out proj |
+| `layers.N.adaln.1.weight/bias` | `(9216, 1536)` | adaLN; 9216 = 6 × 1536 (scale/shift/gate × msa + mlp) |
+| `norm_layer.scale_shift.1.weight/bias` | `(3072, 1536)` | final adaptive LN; 3072 = 2 × 1536 |
+| `pred_layer.heads.pressure.head.deconv.weight` | `(1536, 65, 9, 9)` | pressure deconv; 65 ch; **9×9 kernel** |
+| `pred_layer.heads.surface.net.0.weight` | `(3072, 1536, 3, 3)` | surface conv 1 → PixelShuffle(2) |
+| `pred_layer.heads.surface.net.3.weight` | `(135, 768, 3, 3)` | surface conv 2; 135 = 15 × 9 → PixelShuffle(3) |
+| `pred_layer.heads.derived.net.3.weight` | `(45, 768, 3, 3)` | derived conv 2; 45 = 5 × 9 → PixelShuffle(3) |
+| `pred_layer.scatter_idx` | `(85,)` | scatter index back to canonical channel order |
+| **total** | **1,387,086,666** | ~5548 MB fp32 / ~2774 MB bf16 |
+
+### Structural differences still to close (code changes, not renames)
+
+1. **`attn.wq` is `(1560, 1536)`**, not `(1536, 1536)`: one extra dim per head
+   (24 heads → 1560 = 24 × 65 vs 24 × 64). Replicate the official q projection.
+2. **Two-stage pixel shuffle** in the surface/derived heads:
+   `net.0(conv) → GELU → PixelShuffle(2) → net.3(conv) → PixelShuffle(3)`
+   (= `patch=6 = 2×3`). Ours is single-stage
+   `net.0 → GELU → net.2 → PixelShuffle(patch)`.
+3. **`pressure.head.deconv` uses a 9×9 kernel**; ours uses `2 × patch_size`.
+4. **Channel counts must match the dataset**: `input_proj` in 85 (vs 76),
+   `const_embed.proj` in 6 (vs 2), `scatter_idx` (85,).
+5. **Full-scale config** (`1536 / 30 / 24 / patch 6`) vs today's downscaled
+   (`384 / 8 / 12 / patch 2`).
+6. **`model.` prefix** — official keys start with `model.decoder.*`; strip it on
+   load.
+7. **Non-persistent buffers** — `scatter_idx` and per-block `attn_mask` are
+   registered `persistent=False` here, so they are not saved/loaded with the
+   state_dict (the official dump lists them explicitly).
 
 ## Notes / differences from official FuXi-2.1
 

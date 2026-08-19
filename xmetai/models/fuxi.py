@@ -23,7 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from xmetai.layers.fuxi_blocks import FuxiPatchEmbed, FuxiSwinBlock, FuxiTimeEmbed, FuxiVarHead
+from xmetai.layers.fuxi_blocks import FuxiConstEmbed, FuxiPatchEmbed, FuxiSwinBlock, FuxiTimeEmbed, FuxiVarHead
 from xmetai.layers.helpers import to_2tuple
 from xmetai.layers.norm import AdaptiveLN
 from xmetai.loss import charbonnier_loss
@@ -95,8 +95,12 @@ class FuxiBackbone(nn.Module):
         patch_2d = to_2tuple(patch_size)
         self.feat_size = (self.image_size[0] // patch_2d[0], self.image_size[1] // patch_2d[1])
 
-        self.patch_embed = FuxiPatchEmbed(in_chans, in_frames, const_chans, embed_dim, patch_size)
-        self.time_embed = FuxiTimeEmbed(embed_dim)
+        self.patch_embed = FuxiPatchEmbed(in_chans, in_frames, embed_dim, patch_size)
+        if const_chans > 0:
+            self.const_embed = FuxiConstEmbed(const_chans, embed_dim, patch_size)
+        else:
+            self.const_embed = None
+        self.joint_embed_layer = FuxiTimeEmbed(embed_dim)
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.layers = nn.ModuleList(
@@ -117,7 +121,7 @@ class FuxiBackbone(nn.Module):
         )
 
         self.norm_layer = AdaptiveLN(embed_dim)
-        self.var_head = FuxiVarHead(embed_dim, group_indices, patch_size, self.feat_size)
+        self.pred_layer = FuxiVarHead(embed_dim, group_indices, patch_size, self.feat_size)
 
     def resize_input(self, input: torch.Tensor) -> torch.Tensor:
         x = rearrange(input, "n t c h w -> n (t c) h w")
@@ -143,13 +147,15 @@ class FuxiBackbone(nn.Module):
         if const is not None:
             const = self.resize_const(const)
 
-        tokens = self.patch_embed(x, const)
-        time_embed = self.time_embed(timestamp) if timestamp is not None else None
+        tokens = self.patch_embed(x)
+        if const is not None and self.const_embed is not None:
+            tokens = tokens + self.const_embed(const)
+        time_embed = self.joint_embed_layer(timestamp) if timestamp is not None else None
         for blk in self.layers:
             tokens = blk(tokens, time_embedding=time_embed)
         tokens = self.norm_layer(tokens, time_embed)
 
-        output = self.var_head(tokens)  # (B, out_chans, image_size)
+        output = self.pred_layer(tokens)  # (B, out_chans, image_size)
 
         if output.shape[-2:] != input.shape[-2:]:
             output = F.interpolate(output.float(), size=input.shape[-2:], mode="bilinear", align_corners=False).to(input)
@@ -200,7 +206,8 @@ class Fuxi2(BasePredictor):
             f"surface={len(group_indices[1])}, derived={len(group_indices[2])}"
         )
 
-        self.backbone = FuxiBackbone(
+        # Named `decoder` to match the official FuXi-2.1 .pt2 state_dict (`decoder.*`).
+        self.decoder = FuxiBackbone(
             in_chans=self.in_chans,
             out_chans=self.out_chans,
             in_frames=self.in_frames,
@@ -275,7 +282,7 @@ class Fuxi2(BasePredictor):
         if timestamp is None:
             timestamp = self.get_timestamp(input, times, step)
         self.logger.debug(f"timestamp: {timestamp}")
-        output = self.backbone(input, const=const, timestamp=timestamp)
+        output = self.decoder(input, const=const, timestamp=timestamp)
         output = output + input[:, -self.out_frames :, : self.out_chans]
         return output
 

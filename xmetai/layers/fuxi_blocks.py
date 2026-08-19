@@ -35,6 +35,7 @@ __all__ = [
     "FuxiWindowAttention",
     "FuxiSwinBlock",
     "FuxiSwinLayer",
+    "FuxiConstEmbed",
     "FuxiTimeEmbed",
     "FuxiPatchEmbed",
     "FuxiSubpixelHead",
@@ -275,54 +276,58 @@ class FuxiSwinLayer(nn.Module):
         return x
 
 
-class FuxiTimeEmbed(nn.Module):
-    """step / hour / doy -> per-scalar sincos(128) -> concat(384) -> MLP -> embed_dim."""
+class FuxiTimeEmbed(nn.Sequential):
+    """step / hour / doy -> per-scalar sincos(128) -> concat(384) -> MLP -> embed_dim.
+
+    Subclasses ``nn.Sequential`` so the state_dict keys read ``joint_embed_layer.0/2``,
+    matching the official FuXi-2.1 ``decoder.joint_embed_layer.*``.
+    """
 
     def __init__(self, dim, freq=128):
-        super().__init__()
-        self.freq = freq
-        self.joint = nn.Sequential(
+        super().__init__(
             nn.Linear(freq * 3, dim, bias=True),
             nn.SiLU(),
             nn.Linear(dim, dim, bias=True),
         )
+        self.freq = freq
 
     def forward(self, timestamp):
         embeds = [sincos_embedding(timestamp[k].float(), self.freq) for k in ("step", "hour", "doy")]
         x = torch.cat(embeds, dim=-1)
-        return self.joint(x)
+        return super().forward(x)
 
 
 class FuxiPatchEmbed(nn.Module):
-    """Patchify input and constant fields, each embedded separately and added.
+    """Patchify the time-varying input field. Mirrors ``decoder.patch_embed.{input_proj,norm}``."""
 
-    Mirrors ``decoder.patch_embed.{input_proj,norm}`` and
-    ``decoder.const_embed.{proj,norm}`` in the released .pt2.
-    """
-
-    def __init__(self, in_chans, in_frames, const_chans, embed_dim, patch_size):
+    def __init__(self, in_chans, in_frames, embed_dim, patch_size):
         super().__init__()
         patch_size = to_2tuple(patch_size)
         self.input_proj = nn.Conv2d(in_chans * in_frames, embed_dim, kernel_size=patch_size, stride=patch_size)
         self.norm = LayerNorm(embed_dim)
-        if const_chans > 0:
-            self.const_proj = nn.Conv2d(const_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
-            self.const_norm = LayerNorm(embed_dim)
-        else:
-            self.const_proj = None
-            self.const_norm = None
 
-    def forward(self, x, const=None):
+    def forward(self, x):
         if x.ndim == 5:
             x = rearrange(x, "n t c h w -> n (t c) h w")
         x = self.input_proj(x).flatten(2).transpose(1, 2)  # B N C
         x = self.norm(x)
-        if const is not None:
-            if const.ndim == 3:
-                const = const.unsqueeze(0)
-            c = self.const_proj(const).flatten(2).transpose(1, 2)
-            x = x + self.const_norm(c)
         return x
+
+
+class FuxiConstEmbed(nn.Module):
+    """Patchify the constant/static field. Mirrors ``decoder.const_embed.{proj,norm}``."""
+
+    def __init__(self, const_chans, embed_dim, patch_size):
+        super().__init__()
+        patch_size = to_2tuple(patch_size)
+        self.proj = nn.Conv2d(const_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.norm = LayerNorm(embed_dim)
+
+    def forward(self, const):
+        if const.ndim == 3:
+            const = const.unsqueeze(0)
+        c = self.proj(const).flatten(2).transpose(1, 2)
+        return self.norm(c)
 
 
 class FuxiSubpixelHead(nn.Module):
@@ -344,6 +349,32 @@ class FuxiSubpixelHead(nn.Module):
         return self.net(x)
 
 
+class FuxiPressureHead(nn.Module):
+    """pressure head (transposed conv), nested as ``pressure.head.deconv``.
+
+    The extra ``head`` wrapper reproduces the official
+    ``decoder.pred_layer.heads.pressure.head.deconv`` key so weights stay aligned.
+    """
+
+    def __init__(self, dim, out_chans, patch_size):
+        super().__init__()
+        self.head = _FuxiPressureDeconv(dim, out_chans, patch_size)
+
+    def forward(self, x):
+        return self.head(x)
+
+
+class _FuxiPressureDeconv(nn.Module):
+    def __init__(self, dim, out_chans, patch_size):
+        super().__init__()
+        self.deconv = nn.ConvTranspose2d(
+            dim, out_chans, kernel_size=2 * patch_size, stride=patch_size, padding=patch_size // 2
+        )
+
+    def forward(self, x):
+        return self.deconv(x)
+
+
 class FuxiVarHead(nn.Module):
     """Variable-aware decoder: three heads (pressure deconv / surface / derived) + scatter.
 
@@ -361,13 +392,15 @@ class FuxiVarHead(nn.Module):
         self.feat_size = tuple(feat_size)
         pl, sfc, der = [len(g) for g in group_indices]
 
-        self.pressure = (
-            nn.ConvTranspose2d(dim, pl, kernel_size=2 * patch_size, stride=patch_size, padding=patch_size // 2)
-            if pl > 0
-            else None
-        )
-        self.surface = FuxiSubpixelHead(dim, sfc, patch_size) if sfc > 0 else None
-        self.derived = FuxiSubpixelHead(dim, der, patch_size) if der > 0 else None
+        # Mirrors the official ``decoder.pred_layer.heads.{pressure,surface,derived}``
+        # layout (with ``pressure.head.deconv``); key names aligned for weight loading.
+        self.heads = nn.ModuleDict()
+        if pl > 0:
+            self.heads["pressure"] = FuxiPressureHead(dim, pl, patch_size)
+        if sfc > 0:
+            self.heads["surface"] = FuxiSubpixelHead(dim, sfc, patch_size)
+        if der > 0:
+            self.heads["derived"] = FuxiSubpixelHead(dim, der, patch_size)
 
         self.register_buffer("scatter_idx", self._build_scatter(group_indices), persistent=False)
 
@@ -386,6 +419,6 @@ class FuxiVarHead(nn.Module):
         B, N, C = x.shape
         H, W = self.feat_size
         x = x.transpose(1, 2).reshape(B, C, H, W)
-        outs = [head(x) for head in (self.pressure, self.surface, self.derived) if head is not None]
+        outs = [head(x) for head in self.heads.values()]
         out = torch.cat(outs, dim=1)
         return out[:, self.scatter_idx]

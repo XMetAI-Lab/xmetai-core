@@ -59,15 +59,29 @@ freq = 24
 # Downscaled from the official 0.25-degree config (embed_dim=1536, depth=30,
 # num_heads=24, patch_size=6) to the project's 1.5-degree grid:
 #   image_size (120, 240) + patch_size 2 -> 60x120 tokens.
-#   window_size 6 divides both 60 and 120 (shift = 3); embed_dim/depth/heads
-#   are a small starting point and can be scaled up freely.
+#   window_size 6 divides both 60 and 120 (shift = 3).
+#
+# 4xA100 server config: ~195M params. Fits comfortably on one A100 (bf16 +
+# activation checkpointing + AdamW), so DDP over 4 GPUs just widens the
+# effective batch. Keep embed_dim % num_heads == 0 (768 / 12 = 64 head_dim).
 patch_size = 2
-embed_dim = 384
-depth = 8
+embed_dim = 768
+depth = 16
 num_heads = 12
 window_size = 6
 mlp_ratio = 8 / 3
 members = 1
+
+# Distributed / data settings for 4xA100 (DDP, world_size=4).
+#
+# total_batch_size is GLOBAL; xmetai/data/loader.py splits it as
+#   per_gpu_batch = total_batch_size // world_size
+# so it must be >= world_size and a multiple of it. 8 -> 2 per GPU.
+total_batch_size = 8
+dataloader.train.total_batch_size = total_batch_size
+dataloader.test.total_batch_size = 8
+# Recompute max_iter for the new batch (keeps ~30 epochs over the ~20k-day set).
+train.max_iter = 30 * 20000 // total_batch_size
 
 model = L(MODELS.get(model_name))(
     embed_dim=embed_dim,
