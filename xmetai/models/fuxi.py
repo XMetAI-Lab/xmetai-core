@@ -96,10 +96,9 @@ class FuxiBackbone(nn.Module):
         self.feat_size = (self.image_size[0] // patch_2d[0], self.image_size[1] // patch_2d[1])
 
         self.patch_embed = FuxiPatchEmbed(in_chans, in_frames, embed_dim, patch_size)
+        self.const_embed: Optional[FuxiConstEmbed] = None
         if const_chans > 0:
             self.const_embed = FuxiConstEmbed(const_chans, embed_dim, patch_size)
-        else:
-            self.const_embed = None
         self.joint_embed_layer = FuxiTimeEmbed(embed_dim)
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
@@ -189,10 +188,7 @@ class Fuxi2(BasePredictor):
         self.const_chans = const_chans
 
         if self.in_names is None:
-            raise ValueError(
-                "Fuxi2 requires `in_names` to split channels into pressure/surface/derived groups; "
-                "pass `in_names=...` in the model config."
-            )
+            raise ValueError("Fuxi2 requires `in_names` to split channels into pressure/surface/derived groups; " "pass `in_names=...` in the model config.")
         group_indices = split_var_groups(self.in_names)
         self.group_indices = group_indices
         total = sum(len(g) for g in group_indices)
@@ -201,10 +197,7 @@ class Fuxi2(BasePredictor):
                 f"Fuxi2 group split covers {total} channels but out_chans={self.out_chans}; "
                 f"pressure={len(group_indices[0])}, surface={len(group_indices[1])}, derived={len(group_indices[2])}."
             )
-        self.logger.info(
-            f"Fuxi2 variable groups: pressure={len(group_indices[0])}, "
-            f"surface={len(group_indices[1])}, derived={len(group_indices[2])}"
-        )
+        self.logger.info(f"Fuxi2 variable groups: pressure={len(group_indices[0])}, " f"surface={len(group_indices[1])}, derived={len(group_indices[2])}")
 
         # Named `decoder` to match the official FuXi-2.1 .pt2 state_dict (`decoder.*`).
         self.decoder = FuxiBackbone(

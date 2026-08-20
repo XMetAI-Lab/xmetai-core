@@ -17,7 +17,6 @@ weights are ever adopted, key names stay aligned:
   decoder.norm_layer.scale_shift           decoder.head.*
 """
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -367,9 +366,7 @@ class FuxiPressureHead(nn.Module):
 class _FuxiPressureDeconv(nn.Module):
     def __init__(self, dim, out_chans, patch_size):
         super().__init__()
-        self.deconv = nn.ConvTranspose2d(
-            dim, out_chans, kernel_size=2 * patch_size, stride=patch_size, padding=patch_size // 2
-        )
+        self.deconv = nn.ConvTranspose2d(dim, out_chans, kernel_size=2 * patch_size, stride=patch_size, padding=patch_size // 2)
 
     def forward(self, x):
         return self.deconv(x)
