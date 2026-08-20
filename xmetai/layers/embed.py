@@ -6,7 +6,7 @@ from torch import nn as nn
 
 from .helpers import to_2tuple
 
-__all__ = ["CubeEmbed", "TimestepEmbed"]
+__all__ = ["CubeEmbed", "TimestepEmbed", "TemporalPatchEmbed", "TemporalPatchUnembed", "PatchMerge2D", "PatchSplit2D"]
 
 
 def sincos_embedding(x, embed_dim, max_period=10000, is_periodic=False):
@@ -261,3 +261,85 @@ class GeoEmbed(nn.Module):
             embed = rearrange(embed, "n c h w -> n (h w) c")
 
         return embed
+
+
+class TemporalPatchEmbed(nn.Module):
+    """Per-frame patch embedding for 5D (B, T, H, W, C) tensors.
+
+    Applies independent Conv2d projection to each frame, preserving temporal dimension.
+    Output: (B, T, H', W', embed_dim).
+    """
+
+    def __init__(self, in_ch: int, embed_dim: int, patch_size: int | list[int] | tuple[int, int] = 2):
+        super().__init__()
+        ps = to_2tuple(patch_size)
+        self.proj = nn.Conv2d(in_ch, embed_dim, kernel_size=ps, stride=ps, bias=False)
+        nn.init.kaiming_normal_(self.proj.weight, nonlinearity="linear")
+
+    def forward(self, x):
+        B, T, H, W, C = x.shape
+        x = x.permute(0, 1, 4, 2, 3).reshape(B * T, C, H, W)
+        x = self.proj(x)
+        _, D, H_out, W_out = x.shape
+        return x.reshape(B, T, D, H_out, W_out).permute(0, 1, 3, 4, 2).contiguous()
+
+
+class TemporalPatchUnembed(nn.Module):
+    """PixelShuffle-based patch unembedding for 5D (B, T, H, W, C) tensors.
+
+    Applies Conv2d channel expansion → PixelShuffle to each frame independently.
+    Output: (B, T, H*scale, W*scale, out_ch).
+    """
+
+    def __init__(self, out_ch: int, embed_dim: int, patch_size: int | list[int] | tuple[int, int] = 2):
+        super().__init__()
+        ps = to_2tuple(patch_size)
+        assert ps[0] == ps[1], "TemporalPatchUnembed requires square patch size"
+        self.scale = ps[0]
+        self.proj = nn.Conv2d(embed_dim, out_ch * ps[0] * ps[0], kernel_size=1, bias=False)
+        nn.init.kaiming_normal_(self.proj.weight, nonlinearity="linear")
+        self.shuffle = nn.PixelShuffle(ps[0])
+
+    def forward(self, x):
+        B, T, H, W, D = x.shape
+        x = x.permute(0, 1, 4, 2, 3).reshape(B * T, D, H, W)
+        x = self.shuffle(self.proj(x))
+        _, C, H_out, W_out = x.shape
+        return x.reshape(B, T, C, H_out, W_out).permute(0, 1, 3, 4, 2).contiguous()
+
+
+class PatchMerge2D(nn.Module):
+    """Merge 2x2 spatial patches into one token via linear projection.
+
+    Input: (B, T, H, W, C) → Output: (B, T, H/2, W/2, out_ch).
+    """
+
+    def __init__(self, in_ch: int, out_ch: int, patch_size: int | list[int] | tuple[int, int] = 2):
+        super().__init__()
+        ps = to_2tuple(patch_size)
+        self.ph, self.pw = ps
+        self.proj = nn.Linear(in_ch * ps[0] * ps[1], out_ch, bias=False)
+
+    def forward(self, x):
+        x = rearrange(x, "b t (h ph) (w pw) c -> b t h w (ph pw c)", ph=self.ph, pw=self.pw)
+        return self.proj(x)
+
+
+class PatchSplit2D(nn.Module):
+    """Split tokens into 2x2 spatial patches with learnable skip gating.
+
+    Input: (B, T, H, W, C) + skip (B, T, H*2, W*2, out_ch) → Output: (B, T, H*2, W*2, out_ch).
+    """
+
+    def __init__(self, in_ch: int, out_ch: int, patch_size: int | list[int] | tuple[int, int] = 2):
+        super().__init__()
+        ps = to_2tuple(patch_size)
+        self.ph, self.pw = ps
+        self.proj = nn.Linear(in_ch, out_ch * ps[0] * ps[1], bias=False)
+        self.gate = nn.Parameter(torch.zeros(out_ch))
+
+    def forward(self, x, skip):
+        x = self.proj(x)
+        x = rearrange(x, "b t h w (ph pw c) -> b t (h ph) (w pw) c", ph=self.ph, pw=self.pw)
+        g = torch.sigmoid(self.gate)[None, None, None, None, :]
+        return torch.lerp(skip.to(x.dtype), x, g.to(x.dtype))

@@ -35,6 +35,7 @@ try:
     )
     from xmetai.layers import (
         HAS_MAMBA,
+        GatedDeltaNet2Block,
         GatedDeltaNet2HybridLayer,
         GatedDeltaNet2Layer,
         GraphCastDecoder,
@@ -45,6 +46,8 @@ try:
         merge_lora_weights,
     )
     from xmetai.layers.darknet_unet import DarknetBlock, DarknetConv
+    from xmetai.layers.natten import TransformerLayer3D
+    from xmetai.layers.swin import SwinBlock
 
     if HAS_MAMBA:
         from xmetai.layers import MambaVisionLayer
@@ -81,7 +84,7 @@ def build_model(cfg):
         logger.info("Model parameters: {:.3f}M".format(model.params() / 1e6))
     model.freeze(cfg.train.freeze)
     model.to(cfg.train.device_type)
-    mods = [
+    checkpoint_mods = [
         DarknetBlock,
         DarknetConv,
         SwinLayer,
@@ -91,12 +94,28 @@ def build_model(cfg):
         GraphCastLayer,
         GraphCastEncoder,
         GraphCastDecoder,
+        TransformerLayer3D,
     ]
-    # mods += [WindowAttention, WindowAttentionV2, RotaryAttention, Attention]
+    fsdp_mods = list(checkpoint_mods)
+    if cfg.train.use_fsdp2:
+        # Keep activation checkpointing at layer granularity, but shard the
+        # large hybrid layers block-by-block to reduce FSDP2 all-gather peaks.
+        fsdp_mods = [
+            DarknetBlock,
+            DarknetConv,
+            SwinBlock,
+            GatedDeltaNet2Block,
+            torch.nn.TransformerEncoderLayer,
+            GraphCastLayer,
+            GraphCastEncoder,
+            GraphCastDecoder,
+        ]
+    # checkpoint_mods += [WindowAttention, WindowAttentionV2, RotaryAttention, Attention]
     if HAS_MAMBA:
-        mods.extend([MambaVisionLayer])
-    mods = tuple(mods)
-    cfg.train.fsdp.mods = mods
+        checkpoint_mods.append(MambaVisionLayer)
+        fsdp_mods.append(MambaVisionLayer)
+    checkpoint_mods = tuple(checkpoint_mods)
+    cfg.train.fsdp.mods = tuple(fsdp_mods)
     # Apply activation checkpointing
     if cfg.train.activation_checkpointing:
 
@@ -115,7 +134,7 @@ def build_model(cfg):
             return any(p.requires_grad for p in module.parameters())
 
         def check_fn(submodule):
-            return isinstance(submodule, mods) and has_trainable_params(submodule)
+            return isinstance(submodule, checkpoint_mods) and has_trainable_params(submodule)
 
         apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap_f1, check_fn=check_fn)
 

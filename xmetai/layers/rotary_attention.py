@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Optional, Tuple
 
 import numpy as np
@@ -7,6 +8,12 @@ from torch import nn
 
 __all__ = [
     "precompute_freqs_cis",
+    "precompute_freqs_cis_3d",
+    "precompute_freqs_cis_3d_remapped",
+    "freqs_cis_3d_per_sample",
+    "apply_rotary_3d",
+    "apply_rotary_3d_batched",
+    "apply_rotary_emb",
 ]
 
 
@@ -32,6 +39,141 @@ def precompute_freqs_cis_2d(dim: int, size: tuple[int, int], theta: float = 1000
     return freqs_cos, freqs_sin
 
 
+@lru_cache(maxsize=None)
+@torch.no_grad()
+def precompute_freqs_cis_3d(
+    dim: int, T: int, H: int, W: int, theta: float = 10000.0, device_str: str = "cpu", dtype: torch.dtype = torch.float32
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """3D RoPE frequencies for (T, H, W) spatial-temporal tokens.
+
+    Frequency allocation matches diffusers: dim_t = dim//4, dim_h = dim_w = dim//8*3.
+    Each axis uses its own sub-dimension as denominator so frequency ranges are
+    independent and non-overlapping.
+
+    Returns cos, sin of shape (T * H * W, dim // 2).
+    """
+    # Sub-dimensions (full, not halved) per axis — matches diffusers
+    dim_t = dim // 4
+    dim_h = dim // 8 * 3
+    dim_w = dim - dim_t - dim_h  # should equal dim // 8 * 3
+
+    # Each axis: standard RoPE formula with its own sub-dim as denominator
+    freqs_t = 1.0 / (theta ** (torch.arange(0, dim_t, 2).float() / dim_t))
+    freqs_h = 1.0 / (theta ** (torch.arange(0, dim_h, 2).float() / dim_h))
+    freqs_w = 1.0 / (theta ** (torch.arange(0, dim_w, 2).float() / dim_w))
+
+    t = torch.arange(T, dtype=torch.float32)
+    y = torch.arange(H, dtype=torch.float32)
+    x = torch.arange(W, dtype=torch.float32)
+    tt, yy, xx = torch.meshgrid(t, y, x, indexing="ij")
+    freqs_t = torch.outer(tt.flatten(), freqs_t).float()
+    freqs_y = torch.outer(yy.flatten(), freqs_h).float()
+    freqs_x = torch.outer(xx.flatten(), freqs_w).float()
+    freqs = torch.cat([freqs_t, freqs_y, freqs_x], dim=-1)
+    return torch.cos(freqs).to(dtype).to(device_str), torch.sin(freqs).to(dtype).to(device_str)
+
+
+@lru_cache(maxsize=None)
+@torch.no_grad()
+def precompute_freqs_cis_3d_remapped(
+    dim: int,
+    T_seq: int,
+    H: int,
+    W: int,
+    temporal_mapping: Tuple[int, ...],
+    theta: float = 10000.0,
+    device_str: str = "cpu",
+    dtype: torch.dtype = torch.float32,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """3D RoPE with temporal position remapping.
+
+    Allows multiple sequence positions to share the same temporal RoPE
+    (e.g. a COARSE token and a NOISE token at t=3 both use temporal index 3).
+
+    Returns cos, sin of shape (T_seq * H * W, dim).
+    """
+    T_real = max(temporal_mapping) + 1
+    cos, sin = precompute_freqs_cis_3d(dim, T_real, H, W, theta, device_str, dtype)
+    hw = H * W
+    indices = torch.empty(T_seq * hw, dtype=torch.long, device=torch.device(device_str))
+    for t_seq in range(T_seq):
+        t_real = temporal_mapping[t_seq]
+        indices[t_seq * hw : (t_seq + 1) * hw] = torch.arange(t_real * hw, (t_real + 1) * hw, device=indices.device)
+    return cos[indices], sin[indices]
+
+
+# Author: zhoushuang — 以下 per-sample 动态时间 RoPE 原创支持任意实数时间/异步模态/任意 t0;
+# 上方静态 precompute_* 为原 xmetai 既有实现。
+def _rope_freqs_3d(dim: int, theta: float = 10000.0) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """3D RoPE 每轴的频率向量(t/h/w),子维分配与 ``precompute_freqs_cis_3d`` 一致。"""
+    dim_t = dim // 4
+    dim_h = dim // 8 * 3
+    dim_w = dim - dim_t - dim_h
+    freq_t = 1.0 / (theta ** (torch.arange(0, dim_t, 2).float() / dim_t))
+    freq_h = 1.0 / (theta ** (torch.arange(0, dim_h, 2).float() / dim_h))
+    freq_w = 1.0 / (theta ** (torch.arange(0, dim_w, 2).float() / dim_w))
+    return freq_t, freq_h, freq_w
+
+
+def freqs_cis_3d_per_sample(
+    dim: int,
+    time_coords: torch.Tensor,
+    H: int,
+    W: int,
+    theta: float = 10000.0,
+    dtype: torch.dtype = torch.float32,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """per-sample 3D RoPE:任意实数时间坐标 → cos, sin。
+
+    Args:
+        dim:         head_dim(= RoPE 作用维度)。
+        time_coords: ``(B, T)`` float —— 每 slot 的真实物理时间(per-sample,任意实数)。
+        H, W:        当前层空间尺寸(多级下采样时逐层不同)。
+    Returns:
+        cos, sin of shape ``(B, T * H * W, dim // 2)``。
+    """
+    freq_t, freq_h, freq_w = _rope_freqs_3d(dim, theta)
+    freq_t = freq_t.to(time_coords.device)
+    freq_h = freq_h.to(time_coords.device)
+    freq_w = freq_w.to(time_coords.device)
+    B, T = time_coords.shape
+
+    # 时间轴:per-sample 任意实数
+    args_t = time_coords.float().unsqueeze(-1) * freq_t.view(1, 1, -1)  # (B, T, dim_t//2)
+    # 空间轴:整数网格(0..H-1, 0..W-1)
+    y = torch.arange(H, device=time_coords.device, dtype=torch.float32)
+    x = torch.arange(W, device=time_coords.device, dtype=torch.float32)
+    yy, xx = torch.meshgrid(y, x, indexing="ij")  # (H, W)
+    args_h = yy.unsqueeze(-1) * freq_h.view(1, 1, -1)  # (H, W, dim_h//2)
+    args_w = xx.unsqueeze(-1) * freq_w.view(1, 1, -1)  # (H, W, dim_w//2)
+
+    cos_t = torch.cos(args_t)[:, :, None, None, :].expand(B, T, H, W, args_t.shape[-1])
+    sin_t = torch.sin(args_t)[:, :, None, None, :].expand(B, T, H, W, args_t.shape[-1])
+    cos_h = torch.cos(args_h)[None, None, :, :, :].expand(B, T, H, W, args_h.shape[-1])
+    sin_h = torch.sin(args_h)[None, None, :, :, :].expand(B, T, H, W, args_h.shape[-1])
+    cos_w = torch.cos(args_w)[None, None, :, :, :].expand(B, T, H, W, args_w.shape[-1])
+    sin_w = torch.sin(args_w)[None, None, :, :, :].expand(B, T, H, W, args_w.shape[-1])
+
+    cos = torch.cat([cos_t, cos_h, cos_w], dim=-1).reshape(B, T * H * W, -1).to(dtype)
+    sin = torch.cat([sin_t, sin_h, sin_w], dim=-1).reshape(B, T * H * W, -1).to(dtype)
+    return cos, sin
+
+
+def apply_rotary_3d_batched(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """per-sample 3D RoPE。
+
+    Args:
+        x:   ``(B, num_heads, seq, head_dim)``。
+        cos, sin: ``(B, seq, head_dim // 2)`` —— 来自 :func:`freqs_cis_3d_per_sample`。
+    """
+    x_r, x_i = x.float().reshape(x.shape[:-1] + (-1, 2)).unbind(-1)  # (B, nh, seq, head_dim//2)
+    cos = cos[:, None, :, :]  # (B, 1, seq, head_dim//2)
+    sin = sin[:, None, :, :]
+    out_r = x_r * cos - x_i * sin
+    out_i = x_r * sin + x_i * cos
+    return torch.stack([out_r, out_i], dim=-1).flatten(-2).to(x.dtype)
+
+
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     ndim = x.ndim
     assert 0 <= 1 < ndim
@@ -40,8 +182,27 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Ten
     return freqs_cis.view(shape)
 
 
+def apply_rotary_3d(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Apply 3D rotary position embedding to a single tensor (NATTEN-style).
+
+    Assumes x has shape (..., seq, head_dim) where the last two dims are the
+    flattened spatiotemporal sequence and head dimension.  This is the layout
+    used after rearranging 3D tokens (B, T, H, W) into a flat sequence.
+
+    Args:
+        x: (..., seq, head_dim) — e.g. (B, num_heads, seq, head_dim).
+        cos, sin: (seq, head_dim // 2) — from precompute_freqs_cis_3d.
+    """
+    x_r, x_i = x.float().reshape(x.shape[:-1] + (-1, 2)).unbind(-1)
+    n_leading = x_r.ndim - 2
+    cos = cos.reshape((1,) * n_leading + cos.shape)
+    sin = sin.reshape((1,) * n_leading + sin.shape)
+    out_r = x_r * cos - x_i * sin
+    out_i = x_r * sin + x_i * cos
+    return torch.stack([out_r, out_i], dim=-1).flatten(-2).to(x.dtype)
+
+
 def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    # xv = xv.view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
     # reshape xq and xk to match the complex representation
     xq_r, xq_i = xq.float().reshape(xq.shape[:-1] + (-1, 2)).unbind(-1)
     xk_r, xk_i = xk.float().reshape(xk.shape[:-1] + (-1, 2)).unbind(-1)
