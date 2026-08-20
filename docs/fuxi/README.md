@@ -9,6 +9,8 @@ the official 0.25-degree / 85-channel weights are **not** loaded.
 
 ## Architecture
 
+![Fuxi_2,1 architecture](../assets/fuxi_arch.png)
+
 FuXi-2.1 replaces FuXi-1.0's U-Transformer with a **flat single-trunk
 Transformer** (no U-Net down/up-sampling):
 
@@ -112,7 +114,7 @@ Two convention notes:
 
 ## Actual dataset channels (76)
 
-The project's `s2s.1950-2024.c76` dataset holds 76 channels, split by
+The project's `s2s.1950-2026.c76` dataset holds 76 channels, split by
 `split_var_groups` into:
 
 | Group | Count | Channels |
@@ -130,40 +132,6 @@ Notes:
   `DERIVED_NAMES = ("ssr","ssrd","fdir","ttr","tp")` in `fuxi.py` simply has no
   `ssr/ssrd/fdir` hits for this dataset.
 
-## Variable grouping (the extension interface)
-
-Channel grouping is driven entirely by `in_names` via `split_var_groups`:
-
-- **pressure** — `{z,t,u,v,q}<level>` channels (e.g. `z500`, `u850`)
-- **derived** — accumulated diagnostics in `DERIVED_NAMES` (`ttr`, `tp`, …)
-- **surface** — everything else (`msl`, `t2m`, `sst`, `10u`, `tcwv`, …)
-
-Each group feeds its own decoder head; outputs are concatenated and scattered
-back to the canonical `in_names` order. **Adding surface variables therefore
-only requires extending the dataset** — no model-code changes. The model raises
-at construction if the groups do not cover exactly `out_chans`.
-
-## Training interface
-
-`Fuxi2` extends `BasePredictor` and implements the framework contract:
-
-- `forward(data)` → loss dict (autoregressive, per-frame loss accumulation)
-- `forward_step(input, const, times, step)` → single-step forward (+ residual)
-- `test_cascade` → multi-step rollout (evaluation)
-- `export_onnx` → ONNX export
-
-## Local vs server config
-
-| Parameter | Local smoke-test | Server training |
-|---|---|---|
-| `embed_dim` | 16 | 384 |
-| `depth` | 2 | 8 |
-| `num_heads` | 2 | 12 |
-| Params | ~0.065 M | ~17.5 M |
-
-`window_size=6`, `patch_size=2`, `mlp_ratio=8/3` are identical for both. The
-only hard constraint when scaling is `embed_dim % num_heads == 0` (e.g. `384/12
-= 32`).
 
 ## Files
 
@@ -174,20 +142,47 @@ only hard constraint when scaling is `embed_dim % num_heads == 0` (e.g. `384/12
 | `configs/s2s_fuxi.py` | training config (reuses `s2s_base`) |
 | `xmetai/layers/__init__.py`, `xmetai/models/__init__.py` | exports |
 
-## Training
+## Training results (2026-08-19, single-step / no rollout)
 
-```bash
-python tools/train.py --config-file configs/s2s_fuxi.py
-```
+First full run of `configs/s2s_fuxi.py` on 4×A100.
 
-Key config choices:
+| Item | Value |
+|---|---|
+| Config | `embed_dim=768, depth=16, num_heads=12` (~195M params) |
+| Hardware | 4×A100 (DDP, bf16), ~18.7 GB / device |
+| Batch | global 8 (2 per GPU) |
+| LR | 5e-4, cosine → ~0 by the end |
+| Iterations | 74,999 |
+| Wall time | 4:01:04 (3:40:56 train + 0:20:07 eval/hooks), 0.1768 s/it |
+| Final train loss (MSE) | ~0.0173 |
 
-- `out_frames=1`, `fcst_frames=1` — single-step autoregressive (FuXi-2.1 rollout).
-- `zero_accum=True`, `accumid=accumid` — derived (radiation/precip) channels are
-  zeroed before feedback, matching the official rollout (diagnostic fields are
-  not propagated).
-- `const_chans=2` — land-sea mask + orography embedded separately and added to
-  the patch tokens.
+Training is single-step teacher forcing (`out_frames=1`, `fcst_frames=1`,
+`teach_iters=-1`): the network only ever sees one-step-ahead targets, so **no
+multi-step rollout is trained**. The long-horizon RMSE below is therefore a pure
+autoregressive rollout at evaluation time — error grows with lead time purely by
+accumulation, not from a rollout-trained objective.
+
+Evaluation: 196 samples (2023-01-03 ~ 2024-11-17) from `s2s.1950-2026.c76`,
+42-day RMSE (`Times` in hours at 24 h/day):
+
+| Day | z500 | u200 | u850 | msl | t2m | sst | ttr | tp |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 76.6 | 1.99 | 1.14 | 125.4 | 0.69 | 0.17 | 10.9 | 0.20 |
+| 3 | 305.8 | 4.66 | 2.71 | 311.4 | 1.23 | 0.26 | 16.8 | 0.25 |
+| 5 | 539.6 | 7.61 | 4.20 | 509.3 | 1.89 | 0.33 | 21.9 | 0.29 |
+| 7 | 721.0 | 9.96 | 5.29 | 667.9 | 2.45 | 0.39 | 26.1 | 0.32 |
+| 10 | 900.1 | 12.50 | 6.29 | 817.1 | 2.96 | 0.47 | 30.1 | 0.35 |
+| 14 | 997.1 | 14.13 | 6.77 | 888.7 | 3.25 | 0.57 | 32.7 | 0.37 |
+| 21 | 1061.4 | 15.04 | 7.10 | 943.7 | 3.50 | 0.71 | 34.2 | 0.37 |
+| 28 | 1075.5 | 15.24 | 7.15 | 951.8 | 3.64 | 0.83 | 34.5 | 0.38 |
+| 35 | 1081.3 | 15.38 | 7.19 | 957.6 | 3.80 | 0.94 | 34.7 | 0.38 |
+| 42 | 1085.5 | 15.48 | 7.20 | 963.8 | 3.97 | 1.03 | 35.2 | 0.38 |
+
+Units: z500 (geopotential, m²/s²), u200/u850 (m/s), msl (Pa), t2m/sst (K),
+ttr (W/m²), tp (mm). RMSE saturates toward climatology around days 14–21 — the
+expected behaviour for a model trained one step at a time; multi-step
+(rollout/teacher-forcing) training is the intended next step to push the long
+horizon.
 
 ## Loading official weights — data & shape requirements (future)
 

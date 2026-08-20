@@ -45,10 +45,6 @@ logging.basicConfig(level=logging.INFO)
 #####################################################################
 model_name = "Fuxi2"
 
-# FuXi-2.1 is single-step autoregressive; keep one-step teacher forcing.
-train.teacher_forcing.teach_iters = -1
-dataloader.train.dataset.fcst_frames = 1
-
 train.output_dir = output_dir
 
 ######################################################################
@@ -80,8 +76,33 @@ members = 1
 total_batch_size = 8
 dataloader.train.total_batch_size = total_batch_size
 dataloader.test.total_batch_size = 8
-# Recompute max_iter for the new batch (keeps ~30 epochs over the ~20k-day set).
-train.max_iter = 30 * 20000 // total_batch_size
+
+# Recompute the per-batch iteration budget (~30 epochs over the ~20k-day set).
+base_iter = 30 * 20000 // total_batch_size
+
+# ---- Training curriculum: single-step from scratch, then rollout fine-tune ----
+# `s2s_base` flips `load_from_pretrain` to True once <output>/model_final.pth
+# exists (single-step finished); it also lowers LR and points the run at a fresh
+# `output/mstep-<date>/` dir. Mirror s2s_group_vae's rollout schedule: ramp the
+# autoregressive horizon 2 -> 20 steps once per circular-LR cycle over a
+# shortened budget. Fuxi2.forward already rolls out data["future_frames"] steps,
+# so no model change is required.
+if load_from_pretrain:
+    train.teacher_forcing.teach_start = 2
+    train.teacher_forcing.teach_steps = 20
+    rollout_steps = train.teacher_forcing.teach_steps - train.teacher_forcing.teach_start + 1
+    train.max_iter = base_iter // 3
+    train.teacher_forcing.teach_iters = train.max_iter // rollout_steps
+    train.eval_period = train.teacher_forcing.teach_iters
+    scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).circular_lr
+    scheduler.end_value = 1e-2
+    scheduler.period = 1.0 / rollout_steps
+    dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
+else:
+    # FuXi-2.1 is single-step autoregressive; keep one-step teacher forcing.
+    train.teacher_forcing.teach_iters = -1
+    dataloader.train.dataset.fcst_frames = 1
+    train.max_iter = base_iter
 
 model = L(MODELS.get(model_name))(
     embed_dim=embed_dim,
