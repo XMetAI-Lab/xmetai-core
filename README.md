@@ -17,8 +17,10 @@
 
 ```
 ├── xmetai/                       # 核心库（模型、数据、训练、配置等）
+│   ├── cli/                      # 可安装的训练命令入口
+│   └── recipes/                  # 可复用 LazyConfig 训练配方
 ├── configs/                      # 训练/推理配置（LazyConfig）
-├── tools/                        # 训练与导出脚本
+├── tools/                        # 数据处理与可视化工具
 ├── scripts/                      # 辅助脚本（train.bash、run_tests.sh 等）
 ├── tests/                        # 单元与集成测试
 ├── README.md                     # 项目说明
@@ -34,6 +36,19 @@
 ```bash
 # 安装开发依赖（含 lint/test 工具）
 pip install -e '.[dev]'
+```
+
+按需安装 Lightning、ONNX 导出或 GPU 推理依赖：
+
+```bash
+pip install -e '.[lightning,export,inference]'
+```
+
+安装后也可以直接使用 Python CLI：
+
+```bash
+xmetai-train --config-file configs/s2s_vit.py
+xmetai-train-lightning --config-file configs/s2s_vit.py
 ```
 
 ### 数据准备

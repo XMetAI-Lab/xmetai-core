@@ -11,7 +11,16 @@ import logging
 import os
 
 import numpy as np
-from iwc_base import (  # noqa: F401
+
+from xmetai import (
+    DATASETS,
+    MODELS,
+    build_test_loader,
+    build_train_loader,
+)
+from xmetai import LazyCall as L
+
+from .iwc_base import (  # noqa: F401
     buffers,
     data_dir,
     dataloader,
@@ -23,14 +32,6 @@ from iwc_base import (  # noqa: F401
     total_batch_size,
     train,
 )
-
-from xmetai import (
-    DATASETS,
-    MODELS,
-    build_test_loader,
-    build_train_loader,
-)
-from xmetai import LazyCall as L
 
 logging.basicConfig(level=logging.INFO)
 

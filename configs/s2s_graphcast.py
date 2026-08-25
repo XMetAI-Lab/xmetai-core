@@ -4,7 +4,10 @@ GraphCast-style subseasonal to seasonal configuration (max for 16GB GPU).
 
 import logging
 
-from s2s_base import (  # noqa: F401
+from xmetai import DATASETS, MODELS
+from xmetai import LazyCall as L
+
+from .s2s_base import (  # noqa: F401
     buffers,
     dataloader,
     depths,
@@ -26,9 +29,6 @@ from s2s_base import (  # noqa: F401
     test_names,
     train,
 )
-
-from xmetai import DATASETS, MODELS
-from xmetai import LazyCall as L
 
 logging.basicConfig(level=logging.INFO)
 

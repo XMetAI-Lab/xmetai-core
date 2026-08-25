@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Reanalysis Lazy templates for Zarr-backed weather datasets."""
+"""Reusable LazyConfig recipe for Zarr-backed weather datasets."""
 
 from typing import Optional, Sequence
 

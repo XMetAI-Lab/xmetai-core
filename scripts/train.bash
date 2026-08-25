@@ -26,7 +26,7 @@ NNODES=1                          # Total number of nodes
 SLEEP_TIME=0                     # Sleep time before starting (in seconds)
 additional_args=()                # Additional arguments to pass to Python script
 CONFIG_FILE="${ROOT_DIR}/configs/s2s_vit.py"
-TRAIN_SCRIPT="${ROOT_DIR}/tools/train.py"
+TRAIN_MODULE="xmetai.cli.train"
 
 # ---- Functions ----
 function print_usage() {
@@ -100,7 +100,7 @@ function setup_environment() {
     CONFIG_FILE_TMP="${CONFIG_FILE_TMP}.py"
     trap 'rm -f "${CONFIG_FILE_TMP}"' EXIT
     cp "${CONFIG_FILE}" "${CONFIG_FILE_TMP}"
-    export PYTHONPATH="${ROOT_DIR}/..:${ROOT_DIR}/configs:${source_config_dir}:${PYTHONPATH:-}"
+    export PYTHONPATH="${ROOT_DIR}:${source_config_dir}:${PYTHONPATH:-}"
 
     # Format depth list for directory naming
     export DEPTH_LIST="${DEPTH_LIST}"
@@ -194,9 +194,9 @@ function setup_environment() {
         additional_args=("--eval" "${additional_args[@]}")
         sed -i "s/^members = .*/members = ${MEMBERS}/g" "${CONFIG_FILE_TMP}"
     fi
-    # use train_lightning.py for ltrain and leval
+    # use the Lightning CLI module for ltrain and leval
     if [[ "$STAGE" == "ltrain" || "$STAGE" == "leval" ]]; then
-        TRAIN_SCRIPT="${ROOT_DIR}/tools/train_lightning.py"
+        TRAIN_MODULE="xmetai.cli.train_lightning"
     fi
 }
 
@@ -319,7 +319,7 @@ case $STAGE in
                  --master_addr "${MASTER_ADDR}" \
                  --local-addr "${LOCAL_ADDR}" \
                  --master-port "${MASTER_PORT}" \
-                 ${TRAIN_SCRIPT} \
+                 --module "${TRAIN_MODULE}" \
                  --config-file "${CONFIG_FILE_TMP}" \
                  --num-gpus "${NUM_GPUS}" \
                  --num-machines "${NNODES}" \
@@ -329,7 +329,7 @@ case $STAGE in
         echo "Starting export..."
         export CUDA_VISIBLE_DEVICES=0
         sed -i "s/^export_onnx.*/export_onnx = True/g" "${BASE_CONFIG}"
-        python "${ROOT_DIR}/tools/train.py" \
+        python -m xmetai.cli.train \
                --config-file "${CONFIG_FILE_TMP}" \
                --export \
                "${additional_args[@]}"

@@ -13,11 +13,6 @@ import torch
 from torch.distributed.fsdp import MixedPrecision
 from typing_extensions import override
 
-# set python path from ../
-CUR_PATH = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(CUR_PATH + "/../")
-sys.path.append(CUR_PATH + "/../configs/")
-
 try:
     from xmetai.config import LazyConfig, instantiate
     from xmetai.core import default_argument_parser, default_setup
@@ -228,6 +223,10 @@ def main(args):
         trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
 
 
-if __name__ == "__main__":
+def cli():
     args = default_argument_parser().parse_args()
     main(args)
+
+
+if __name__ == "__main__":
+    cli()

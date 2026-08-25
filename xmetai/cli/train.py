@@ -11,11 +11,6 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper,
 )
 
-# set python path from ../
-CUR_PATH = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(CUR_PATH + "/../")
-sys.path.append(CUR_PATH + "/../configs/")
-
 try:
     from xmetai.config import LazyConfig, instantiate
     from xmetai.core import (
@@ -355,7 +350,7 @@ def main(args):
         _maybe_destroy_process_group()
 
 
-if __name__ == "__main__":
+def cli():
     # check if logging level is set
     if logging.getLogger().getEffectiveLevel() > logging.INFO:
         logging.getLogger().setLevel(logging.INFO)
@@ -373,3 +368,7 @@ if __name__ == "__main__":
             dist_url=cli_args.dist_url,
             args=(cli_args,),
         )
+
+
+if __name__ == "__main__":
+    cli()

@@ -1,24 +1,24 @@
 # pyproject.toml
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "xmetai-core"
-version = "0.1.0"
+dynamic = ["version"]
 description = "气象人工智能训练与推理基础框架"
 authors = [
   { name = "XMetAI Lab", email = "douzsh@gmail.com" }
 ]
 readme = "README.md"
-license = { text = "GPL-3.0-or-later" }
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 keywords = ["meteorology", "AI", "deep learning", "weather", "climate"]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
   "Operating System :: OS Independent"
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 
 dependencies = [
   "torch>=2.7.0",
@@ -33,21 +33,39 @@ dependencies = [
   "tabulate>=0.9.0",
   "termcolor>=2.0.0",
   "cloudpickle>=2.0.0",
-  "pytorch-lightning>=2.0.0",
   "iopath>=0.1.9",
   "tensorboard>=2.14.0",
   "h5py>=3.8.0",
   "zarr>=2.15.0",
   "xarray>=2023.0.0",
   "dask>=2023.0.0",
-  "onnx>=1.14.0",
-  "onnxruntime>=1.15.0",
-  "onnxruntime-extensions>=0.7.0",
 ]
+
+[project.scripts]
+xmetai-train = "xmetai.cli.train:cli"
+xmetai-train-lightning = "xmetai.cli.train_lightning:cli"
 
 [project.optional-dependencies]
 gpu = [
   "mamba-ssm>=2.2.0",
+]
+lightning = [
+  "pytorch-lightning>=2.0.0",
+  "typing-extensions>=4.4.0",
+]
+export = [
+  "onnx>=1.14.0",
+]
+inference = [
+  "onnx>=1.14.0",
+  "onnxruntime-gpu>=1.15.0; platform_system != 'Darwin'",
+  "onnxruntime>=1.15.0; platform_system == 'Darwin'",
+  "onnxruntime-extensions>=0.7.0",
+]
+inference-cpu = [
+  "onnx>=1.14.0",
+  "onnxruntime>=1.15.0",
+  "onnxruntime-extensions>=0.7.0",
 ]
 lint = [
   "black>=23.0",
@@ -70,13 +88,23 @@ dev = [
   "isort>=5.12",
   "pre-commit>=3.0",
   "build>=0.10",
+  "twine>=5.0",
 ]
 all = [
   "mamba-ssm>=2.2.0",
+  "pytorch-lightning>=2.0.0",
+  "typing-extensions>=4.4.0",
+  "onnx>=1.14.0",
+  "onnxruntime-gpu>=1.15.0; platform_system != 'Darwin'",
+  "onnxruntime>=1.15.0; platform_system == 'Darwin'",
+  "onnxruntime-extensions>=0.7.0",
 ]
 
 [tool.setuptools]
 package-dir = {"" = "."}
+
+[tool.setuptools.dynamic]
+version = {attr = "xmetai.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -110,4 +138,4 @@ warn_unused_configs = true
 strict_optional = true
 disallow_incomplete_defs = true
 check_untyped_defs = false
-exclude = ["tools/train\\.py$", "tests/"]
+exclude = ["xmetai/cli/train\\.py$", "tests/"]

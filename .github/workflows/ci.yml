@@ -19,12 +19,14 @@ jobs:
       - name: Install build tooling and dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install build
+          pip install build twine
           pip install "torch>=2.0" --extra-index-url https://download.pytorch.org/whl/cpu
           pip install -e .
       - name: Build sdist & wheel
         run: |
           python -m build
+          python -m twine check dist/*
       - name: Smoke import
         run: |
           python -c "import xmetai as xm; print(getattr(xm, '__version__', 'unknown'))"
+          xmetai-train --help

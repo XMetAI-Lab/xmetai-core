@@ -10,7 +10,11 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 import logging
 
 import numpy as np
-from iwc_base import (  # noqa: F401
+
+from xmetai import MODELS
+from xmetai import LazyCall as L
+
+from .iwc_base import (  # noqa: F401
     accumid,
     buffers,
     dataloader,
@@ -26,9 +30,6 @@ from iwc_base import (  # noqa: F401
     test_names,
     train,
 )
-
-from xmetai import MODELS
-from xmetai import LazyCall as L
 
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)

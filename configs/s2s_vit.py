@@ -8,9 +8,11 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import logging
-import os
 
-from s2s_base import (  # noqa: F401
+from xmetai import MODELS, LazyConfig
+from xmetai import LazyCall as L
+
+from .s2s_base import (  # noqa: F401
     ROOT_PATH,
     buffers,
     dataloader,
@@ -33,9 +35,6 @@ from s2s_base import (  # noqa: F401
     train,
 )
 
-from xmetai import MODELS, LazyConfig
-from xmetai import LazyCall as L
-
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
 #####################################################################
@@ -52,7 +51,9 @@ if load_from_pretrain:
     train.teacher_forcing.teach_iters = train.max_iter // train.teacher_forcing.teach_steps
     train.eval_period = train.teacher_forcing.teach_iters
 
-    scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).circular_lr
+    from xmetai.recipes import recipe_path
+
+    scheduler = LazyConfig.load(recipe_path("schedule")).circular_lr
     scheduler.end_value = 1e-2
     scheduler.period = 1.0 / (train.teacher_forcing.teach_steps - 1)
 

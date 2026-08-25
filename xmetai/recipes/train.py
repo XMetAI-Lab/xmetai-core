@@ -1,7 +1,7 @@
 """
 Author: DouZesheng && douzsh@gmail.com
 Date: 2025-05-05 09:20:50
-Description: Common training-related configs
+Description: Reusable training-related LazyConfig recipe
 Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
 
