@@ -4,7 +4,7 @@
 
 from typing import Optional, Sequence
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from xmetai import DATASETS, METRICS, build_test_loader, build_train_loader
 from xmetai.config import LazyCall as L
@@ -35,7 +35,7 @@ def zarr_dataloader(
     in_names: Optional[Sequence[str]] = None,
     lat_flip: bool = False,
     start_frames: int = 0,
-):
+) -> DictConfig:
     in_names = [] if in_names is None else list(in_names)
     test_frames = list(range(1, 43)) if test_frames is None else list(test_frames)
     eval_test_names = [] if eval_test_names is None else list(eval_test_names)

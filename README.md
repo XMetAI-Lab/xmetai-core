@@ -51,6 +51,16 @@ xmetai-train --config-file configs/s2s_vit.py
 xmetai-train-lightning --config-file configs/s2s_vit.py
 ```
 
+### 发布到 PyPI
+
+维护者发布新版本时：
+
+1. 更新 `xmetai.__version__` 并合并到 `main`。
+2. 在 PyPI 为 `XMetAI-Lab/xmetai-core` 配置 Trusted Publisher：workflow 填写 `publish.yml`，environment 填写 `pypi`。
+3. 在 GitHub 创建与版本一致的 Release（例如 `v0.1.0`）。
+
+Release 发布后，GitHub Actions 会构建并检查 sdist/Wheel，再通过 OIDC 上传到 PyPI，无需保存长期 API Token。
+
 ### 数据准备
 
 当前支持的数据集为Zarr格式，包含ERA5的1.5°逐天数据，以及0.25°逐6小时数据。数据目录结构如下：

@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 from functools import partial
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 import torch
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
@@ -181,7 +181,11 @@ def build_model(cfg):
     return model
 
 
-def convert_model(model: torch.nn.Module, dtype=torch.float16, ignore_list=["mean", "std"]):
+def convert_model(
+    model: torch.nn.Module,
+    dtype: torch.dtype = torch.float16,
+    ignore_list: Sequence[str] = ("mean", "std"),
+) -> torch.nn.Module:
     """Convert all floating point parameters and buffers of the model to the specified dtype,
     except those in the ignore_list.
     """
@@ -268,7 +272,7 @@ def do_train(args, cfg):
 
 
 def do_export(
-    model,
+    model: Any,
     data: Dict[str, Any],
     save_name: str = "model.onnx",
     forward_name: str = "onnx_export",
