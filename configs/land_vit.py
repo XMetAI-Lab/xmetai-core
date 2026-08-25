@@ -10,7 +10,10 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 import logging
 import os
 
-from land_base import (  # noqa: F401
+from xmetai import MODELS
+from xmetai import LazyCall as L
+
+from .land_base import (  # noqa: F401
     buffers,
     dataloader,
     depths,
@@ -29,9 +32,6 @@ from land_base import (  # noqa: F401
     test_names,
     train,
 )
-
-from xmetai import MODELS
-from xmetai import LazyCall as L
 
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)

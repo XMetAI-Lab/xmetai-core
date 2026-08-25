@@ -4,7 +4,10 @@
 import logging
 import os
 
-from s2s_base import (  # noqa: F401
+from xmetai import MODELS, LazyConfig
+from xmetai import LazyCall as L
+
+from .s2s_base import (  # noqa: F401
     ROOT_PATH,
     accumid,
     buffers,
@@ -25,10 +28,7 @@ from s2s_base import (  # noqa: F401
     test_names,
     train,
 )
-from s2s_base import scheduler as base_scheduler
-
-from xmetai import MODELS, LazyConfig
-from xmetai import LazyCall as L
+from .s2s_base import scheduler as base_scheduler
 
 logging.basicConfig(level=logging.INFO)
 
@@ -42,7 +42,9 @@ if load_from_pretrain:
     rollout_steps = train.teacher_forcing.teach_steps - train.teacher_forcing.teach_start + 1
     train.max_iter = rollout_steps * 1000
     train.teacher_forcing.teach_iters = train.max_iter // rollout_steps
-    scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).circular_lr
+    from xmetai.recipes import recipe_path
+
+    scheduler = LazyConfig.load(recipe_path("schedule")).circular_lr
     scheduler.end_value = 1e-2
     scheduler.period = 1.0 / rollout_steps
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps

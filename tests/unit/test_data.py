@@ -105,12 +105,11 @@ class TestWeatherDataset:
 
     def test_zarr_dataloader_template_builds_multi_zarr_dataset(self, monkeypatch):
         """Test the shared zarr_dataloader template without touching real zarr stores."""
-        import os
-
         import pandas as pd
         import xarray as xr
 
         from xmetai.config import LazyConfig, instantiate
+        from xmetai.recipes import recipe_path
 
         times = pd.date_range("2020-01-01", periods=8, freq="6h")
         levels = ["a", "b", "c"]
@@ -128,7 +127,7 @@ class TestWeatherDataset:
 
         monkeypatch.setattr(xr, "open_zarr", fake_open_zarr)
 
-        zarr_dataloader = LazyConfig.load(os.path.join(os.path.dirname(__file__), "../../common/dataloader.py"), "zarr_dataloader")
+        zarr_dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")
         dataloader_cfg = zarr_dataloader(
             data_paths=["memory.zarr"],
             in_frames=2,

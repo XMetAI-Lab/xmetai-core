@@ -1,13 +1,10 @@
-from pathlib import Path
-
 import pytest
 import torch
 
 from xmetai.config import LazyConfig
 from xmetai.config.instantiate import instantiate
 from xmetai.core.optimizer import get_default_optimizer_params
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from xmetai.recipes import recipe_path
 
 
 class BackboneModel(torch.nn.Module):
@@ -66,7 +63,7 @@ def test_weight_decay_factor_without_base_weight_decay_logs_error(caplog):
 
 def test_lazyconfig_adamw_weight_decay_factor_scales_constructor_decay():
     model = BackboneModel()
-    cfg = LazyConfig.load(str(REPO_ROOT / "common/optim.py"))
+    cfg = LazyConfig.load(recipe_path("optim"))
     cfg.AdamW.params.model = model
     cfg.AdamW.params.overrides = {"backbone": {"weight_decay_factor": 0.1}}
 
@@ -78,7 +75,7 @@ def test_lazyconfig_adamw_weight_decay_factor_scales_constructor_decay():
 
 def test_lazyconfig_sgd_lr_factor_scales_constructor_lr():
     model = BackboneModel()
-    cfg = LazyConfig.load(str(REPO_ROOT / "common/optim.py"))
+    cfg = LazyConfig.load(recipe_path("optim"))
     cfg.SGD.params.model = model
     cfg.SGD.params.overrides = {"backbone": {"lr_factor": 0.1}}
 

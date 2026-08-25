@@ -21,7 +21,10 @@ Date: 2026-02-02
 import logging
 import os
 
-from s2s_base import (  # noqa: F401
+from xmetai import MODELS
+from xmetai import LazyCall as L
+
+from .s2s_base import (  # noqa: F401
     ROOT_PATH,
     buffers,
     dataloader,
@@ -41,9 +44,6 @@ from s2s_base import (  # noqa: F401
     test_names,
     train,
 )
-
-from xmetai import MODELS
-from xmetai import LazyCall as L
 
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)

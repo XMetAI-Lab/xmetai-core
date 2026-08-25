@@ -9,7 +9,10 @@ Copyright (c) 2025 by XMetAI/zhaohan, All Rights Reserved.
 # -*- coding: utf-8 -*-
 import logging
 
-from s2s_base import (  # noqa: F401
+from xmetai import MODELS
+from xmetai import LazyCall as L
+
+from .s2s_base import (  # noqa: F401
     buffers,
     dataloader,
     in_chans,
@@ -29,9 +32,6 @@ from s2s_base import (  # noqa: F401
     test_names,
     train,
 )
-
-from xmetai import MODELS
-from xmetai import LazyCall as L
 
 logging.basicConfig(level=logging.INFO)
 

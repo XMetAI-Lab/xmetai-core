@@ -2,6 +2,7 @@
 
 readonly CURRENT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly ROOT_DIR=$(cd "${CURRENT_DIR}/.." && pwd)
+export PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}"
 
 # env config
 export OMP_NUM_THREADS=1
@@ -61,7 +62,7 @@ torchrun --nproc_per_node ${NPROC:=1} \
          --node_rank ${NODE_RANK:=0} \
          --nnodes=${NNODES:=1} \
          --master_addr ${MASTER_ADDR:=127.0.0.1} \
-         ${ROOT_DIR}/tools/train.py \
+         --module xmetai.cli.train \
            --config-file ${CONFIG_FILE} \
            --num-machines ${NNODES:=1} --num-gpus 8 \
            --machine-rank ${NODE_RANK:=0} \

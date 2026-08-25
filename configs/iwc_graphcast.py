@@ -4,7 +4,10 @@ GraphCast-style integrated weather climate configuration (0.25°).
 
 import logging
 
-from iwc_base import (  # noqa: F401
+from xmetai import DATASETS, MODELS
+from xmetai.config import LazyCall as L
+
+from .iwc_base import (  # noqa: F401
     buffers,
     dataloader,
     depths,
@@ -24,9 +27,6 @@ from iwc_base import (  # noqa: F401
     test_names,
     train,
 )
-
-from xmetai import DATASETS, MODELS
-from xmetai.config import LazyCall as L
 
 logging.basicConfig(level=logging.INFO)
 

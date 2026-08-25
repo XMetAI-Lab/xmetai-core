@@ -14,6 +14,7 @@ from xmetai import (
     LazyConfig,
     get_data_info,
 )
+from xmetai.recipes import recipe_path
 
 ######################################################################
 # Global settings
@@ -36,11 +37,11 @@ epochs = 30
 iters_per_epoch = 60000
 
 # learning rate scheduler settings
-train = LazyConfig.load(os.path.join(ROOT_PATH, "common/train.py")).train
+train = LazyConfig.load(recipe_path("train")).train
 # optimizer settings for training
-optimizer = LazyConfig.load(os.path.join(ROOT_PATH, "common/optim.py")).AdamW
-# Don't use common/schedule.py for now.
-scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).cosine_lr
+optimizer = LazyConfig.load(recipe_path("optim")).AdamW
+# Don't use the shared schedule recipe for now.
+scheduler = LazyConfig.load(recipe_path("schedule")).cosine_lr
 
 load_from_pretrain = False
 if os.path.exists(f"{output_dir}/model_final.pth"):
@@ -52,7 +53,7 @@ if os.path.exists(f"{output_dir}/model_final.pth"):
     epochs = epochs // 3
     load_from_pretrain = True
     scheduler.scheduler.end_value = 1e-2
-    # scheduler = LazyConfig.load(os.path.join(ROOT_PATH, "common/schedule.py")).const_lr
+    # scheduler = LazyConfig.load(recipe_path("schedule")).const_lr
 
 train.max_iter = epochs * iters_per_epoch // total_batch_size  # max_steps with 60000 iterations per epoch
 train.output_dir = output_dir
@@ -99,7 +100,7 @@ train_times = ("19500101-00", "20221231-18")
 test_times = ("20230101-18", "20231231-18")
 # test_times = ("20050101-18", "20250502-18")
 
-dataloader = LazyConfig.load(os.path.join(ROOT_PATH, "common/dataloader.py"), "zarr_dataloader")(
+dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
     data_paths=[data_dir],
     train_times=train_times,
     test_times=test_times,
