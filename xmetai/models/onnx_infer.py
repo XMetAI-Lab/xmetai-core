@@ -18,58 +18,12 @@ from .base_predictor import BasePredictor
 
 logger = logging.getLogger(__name__)
 CUSTOM_OPS_LIB_PATH = "/workspace/cma/xmetai_onnx_plugins.cpython-311-x86_64-linux-gnu.so"
-get_library_path = None
 
 try:
     import onnxruntime as ort
 except ImportError:
     ort = None  # type: ignore[assignment]
-    logger.warning("ONNX Runtime is not available. ONNX inference requires onnxruntime or onnxruntime-gpu.")
-
-if os.path.exists(CUSTOM_OPS_LIB_PATH):
-    # use custom ops library by default
-    def get_library_path():
-        return CUSTOM_OPS_LIB_PATH
-
-else:
-    # use mamba_ssm ops only when onnxruntime-extensions is installed.
-    try:
-        from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
-        from onnxruntime_extensions import PyOp, get_library_path, onnx_op  # type: ignore[no-redef]
-
-        @onnx_op(
-            op_type="SelectiveScanFn",
-            inputs=[
-                PyOp.dt_float,
-                PyOp.dt_float,
-                PyOp.dt_float,
-                PyOp.dt_float,
-                PyOp.dt_float,
-                PyOp.dt_float,
-                PyOp.dt_float,
-                PyOp.dt_float,
-            ],
-            outputs=[PyOp.dt_float],
-            attrs={"delta_softplus": PyOp.dt_int64, "return_last_state": PyOp.dt_int64},
-        )
-        def selective_scan_onnx(u, delta, A, B, C, D, z, delta_bias, **kwargs):
-            delta_softplus = kwargs.get("delta_softplus", 0) == 1
-            return_last_state = kwargs.get("return_last_state", 0) == 1
-            print(f"u:{u.shape}, delta:{delta.shape}, A:{A.shape}, B:{B.shape}, C:{C.shape}, D:{D.shape}, delta_bias:{delta_bias.shape}")
-            print(f"delta_softplus:{delta_softplus}, return_last_state:{return_last_state}")
-            # convert all inputs to torch tensors
-            u = torch.from_numpy(u).to(device="cuda")
-            delta = torch.from_numpy(delta).to(device="cuda")
-            A = torch.from_numpy(A).to(device="cuda")
-            B = torch.from_numpy(B).to(device="cuda")
-            C = torch.from_numpy(C).to(device="cuda")
-            D = torch.from_numpy(D).to(device="cuda")
-            z = None
-            delta_bias = torch.from_numpy(delta_bias).to(device="cuda")
-            return selective_scan_fn(u, delta, A, B, C, D, z, delta_bias, delta_softplus, return_last_state)
-
-    except ImportError as e:
-        logger.debug("ONNX custom op plugin is not available: %s", e)
+    logger.warning("ONNX Runtime is not available. ONNX inference requires onnxruntime-gpu.")
 
 __all__ = ["OnnxInferModel"]
 
@@ -86,7 +40,7 @@ class OnnxInferModel(BasePredictor):
 
     def load_model(self, onnx_path):
         if ort is None:
-            raise ImportError("OnnxInferModel requires onnxruntime. Install onnxruntime or onnxruntime-gpu before using ONNX inference.")
+            raise ImportError("OnnxInferModel requires onnxruntime-gpu.")
         # ort.set_default_logger_severity(0)  # 0 = VERBOSE
         options = self._build_session_options()
 
@@ -116,10 +70,9 @@ class OnnxInferModel(BasePredictor):
 
         providers.append(("CPUExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"}))
 
-        # register custom op library for Mamba if get_library_path() is available
-        if get_library_path is not None:
-            options.register_custom_ops_library(get_library_path())
-            self.logger.info(f"Registered custom op library from {get_library_path()}")
+        if os.path.exists(CUSTOM_OPS_LIB_PATH):
+            options.register_custom_ops_library(CUSTOM_OPS_LIB_PATH)
+            self.logger.info(f"Registered custom op library from {CUSTOM_OPS_LIB_PATH}")
 
         self.session = ort.InferenceSession(onnx_path, sess_options=options, providers=providers)
 
