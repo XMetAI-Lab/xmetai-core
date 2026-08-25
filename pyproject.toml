@@ -58,13 +58,7 @@ export = [
 ]
 inference = [
   "onnx>=1.14.0",
-  "onnxruntime-gpu>=1.15.0; platform_system != 'Darwin'",
-  "onnxruntime>=1.15.0; platform_system == 'Darwin'",
-  "onnxruntime-extensions>=0.7.0",
-]
-inference-cpu = [
-  "onnx>=1.14.0",
-  "onnxruntime>=1.15.0",
+  "onnxruntime-gpu>=1.15.0",
   "onnxruntime-extensions>=0.7.0",
 ]
 lint = [
@@ -95,8 +89,7 @@ all = [
   "pytorch-lightning>=2.0.0",
   "typing-extensions>=4.4.0",
   "onnx>=1.14.0",
-  "onnxruntime-gpu>=1.15.0; platform_system != 'Darwin'",
-  "onnxruntime>=1.15.0; platform_system == 'Darwin'",
+  "onnxruntime-gpu>=1.15.0",
   "onnxruntime-extensions>=0.7.0",
 ]
 
