@@ -4,7 +4,7 @@ import torch
 from xmetai.models.group_vae import _BaseGroupVAE
 
 
-def _build_tiny_group_vae(latent_dyn_weight: float, *, alpha: float = 1.0, rollout_max: int = 2) -> _BaseGroupVAE:
+def _build_tiny_group_vae(latent_dyn_weight: float, *, alpha: float = 1.0, rollout_max: int = 2, out_frames: int = 1) -> _BaseGroupVAE:
     return _BaseGroupVAE(
         group_slice_indices=[[0]],
         embed_dim=8,
@@ -21,8 +21,8 @@ def _build_tiny_group_vae(latent_dyn_weight: float, *, alpha: float = 1.0, rollo
         in_names=["x"],
         in_chans=1,
         out_chans=1,
-        in_frames=2,
-        out_frames=1,
+        in_frames=out_frames + 1,
+        out_frames=out_frames,
         test_frames=[1],
         test_chans=[0],
         test_names=["x"],
@@ -38,12 +38,12 @@ def _build_tiny_group_vae(latent_dyn_weight: float, *, alpha: float = 1.0, rollo
     )
 
 
-def _build_batch() -> dict[str, torch.Tensor | int]:
+def _build_batch(in_frames: int = 2, future_frames: int = 3) -> dict[str, torch.Tensor | int]:
     return {
-        "inputs": torch.randn(1, 2, 1, 4, 4),
-        "targets": torch.randn(1, 3, 1, 4, 4),
+        "inputs": torch.randn(1, in_frames, 1, 4, 4),
+        "targets": torch.randn(1, future_frames, 1, 4, 4),
         "times": torch.tensor([0]),
-        "future_frames": 3,
+        "future_frames": future_frames,
     }
 
 
@@ -86,6 +86,15 @@ def test_rollout_sampling_uses_physical_blocks_without_mutating_batch() -> None:
     assert state["loss_block_indices"] == set(expected_steps)
     torch.testing.assert_close(state["rolling_weights"], expected_weights)
     assert batch["targets"] is original_targets
+
+
+def test_segmented_rollout_stops_after_last_selected_block() -> None:
+    model = _build_tiny_group_vae(latent_dyn_weight=0.0, rollout_max=2, out_frames=2).train()
+
+    _, state, done = model(_build_batch(in_frames=3, future_frames=5), rollout_segment_size=1)
+
+    assert state["loss_block_indices"] == {0}
+    assert done
 
 
 def test_segmented_rollout_preserves_unsegmented_loss_values() -> None:

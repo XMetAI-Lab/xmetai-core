@@ -1181,7 +1181,7 @@ class _BaseGroupVAE(BasePredictor):
                 "k": k,
             }
         )
-        done = segment_index >= num_segments
+        done = not loss_block_indices.intersection(range(segment_index * segment_size, num_rollout_blocks))
 
         loss_dict = {
             "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
