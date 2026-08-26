@@ -1,5 +1,6 @@
 import logging
 import multiprocessing as mp
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -50,6 +51,8 @@ class MultiZarrDataset(Dataset):
         lat_flip: bool = False,  # whether to flip latitude axis
         freq_unit: str = "hours",
         bbox: tuple[float, float, float, float] | None = None,
+        return_valid_mask: bool = False,
+        zero_fill_invalid_names: Sequence[str] = (),
     ):
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Loading data from: {data_paths}")
@@ -62,6 +65,7 @@ class MultiZarrDataset(Dataset):
         self.inference_only = inference_only
         self.lat_flip = lat_flip
         self.freq_unit = freq_unit
+        self.return_valid_mask = bool(return_valid_mask)
 
         # 1. 加载并筛选时间范围
         datasets = []
@@ -132,6 +136,10 @@ class MultiZarrDataset(Dataset):
         self.select_vars: list[int] | None = None
         self.target_select_vars: list[int] | None = None
         channel_values = self.ds.channel.values.tolist()
+        unknown_zero_fill_names = [name for name in zero_fill_invalid_names if name not in channel_values]
+        if unknown_zero_fill_names:
+            raise ValueError(f"zero_fill_invalid_names contains unknown channels: {unknown_zero_fill_names}")
+        self.zero_fill_invalid_channel_indices = {channel_values.index(name) for name in zero_fill_invalid_names}
         if len(in_names) > 0:
             self.select_vars = [channel_values.index(v) for v in in_names if v in channel_values]
             missing = [v for v in in_names if v not in channel_values]
@@ -157,10 +165,30 @@ class MultiZarrDataset(Dataset):
             indexers["channel"] = channel_inds
         frames_np = self.ds.isel(**indexers).values.astype(np.float32, copy=False)
         frames = torch.from_numpy(frames_np)
+        valid_mask = torch.isfinite(frames) if self.return_valid_mask else None
+        if valid_mask is not None and self.zero_fill_invalid_channel_indices:
+            selected_channels = range(self.ds.sizes["channel"]) if channel_inds is None else channel_inds
+            zero_fill_local_indices = [
+                local_index for local_index, channel_index in enumerate(selected_channels) if channel_index in self.zero_fill_invalid_channel_indices
+            ]
+            if zero_fill_local_indices:
+                valid_mask[:, zero_fill_local_indices] &= frames[:, zero_fill_local_indices] != 0
         frames.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
         if self.lat_flip:
             frames = torch.flip(frames, dims=[2])
-        return frames
+            if valid_mask is not None:
+                valid_mask = torch.flip(valid_mask, dims=[2])
+        return frames, valid_mask
+
+    def _build_sample(self, time_tensor, inputs, targets=None, input_valid_mask=None, target_valid_mask=None):
+        sample = dict(times=time_tensor, inputs=inputs)
+        if targets is not None:
+            sample["targets"] = targets
+        if self.return_valid_mask:
+            sample["input_valid_mask"] = input_valid_mask
+            if targets is not None:
+                sample["target_valid_mask"] = target_valid_mask
+        return sample
 
     def __getitem__(self, idx):
         while True:
@@ -192,15 +220,17 @@ class MultiZarrDataset(Dataset):
             rht_inds = rht_inds[self.fcst_frames - 1]
 
         if not self.training and not self.inference_only and self.target_select_vars is not None:
-            inputs = self._read_frames(lft_inds, self.select_vars)
-            targets = self._read_frames(rht_inds, self.target_select_vars)
-            return dict(times=time_tensor, inputs=inputs, targets=targets)
+            inputs, input_valid_mask = self._read_frames(lft_inds, self.select_vars)
+            targets, target_valid_mask = self._read_frames(rht_inds, self.target_select_vars)
+            return self._build_sample(time_tensor, inputs, targets, input_valid_mask, target_valid_mask)
 
         inds = np.concatenate([lft_inds, rht_inds])
-        imgs = self._read_frames(inds, self.select_vars)
+        imgs, valid_masks = self._read_frames(inds, self.select_vars)
         inputs = imgs[: self.hist_frames]
+        input_valid_mask = valid_masks[: self.hist_frames] if valid_masks is not None else None
         if self.inference_only:
-            return dict(times=time_tensor, inputs=inputs)
+            return self._build_sample(time_tensor, inputs, input_valid_mask=input_valid_mask)
 
         targets = imgs[self.hist_frames :]
-        return dict(times=time_tensor, inputs=inputs, targets=targets)
+        target_valid_mask = valid_masks[self.hist_frames :] if valid_masks is not None else None
+        return self._build_sample(time_tensor, inputs, targets, input_valid_mask, target_valid_mask)

@@ -5,7 +5,6 @@ Description: Data utility functions for weather datasets.
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
-import glob
 import os
 import re
 
@@ -23,24 +22,8 @@ __all__ = [
     "unnormalize",
     "make_input",
     "make_onnx",
-    "get_ids_and_buffer",
     "get_data_info",
-    "get_cra_data_info",
 ]
-
-
-def _load_zarr_sidecar_variable(data_dir, key):
-    try:
-        ds = xr.open_zarr(data_dir, consolidated=True)
-    except (KeyError, ValueError):
-        ds = xr.open_zarr(data_dir, consolidated=False)
-
-    try:
-        if key not in ds:
-            return None
-        return ds[key].values
-    finally:
-        ds.close()
 
 
 def make_seq(times, total_frames, freq=1, interval=1, freq_unit="hours"):
@@ -199,16 +182,11 @@ def make_onnx(
     torch.backends.mkldnn.bench = True
 
 
-def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
-    # z: geopotential
-    # t: temperature
-    # u: zonal wind
-    # v: meridional wind
-    # q: specific humidity
-    pl_names = ["z", "t", "u", "v", "q"]  # with 5 upper-air atmospheric variables
-    accum_name = ["ssr", "ssrd", "fdir", "ttr", "tp"]
-    ocean_name = ["sst", "mdts", "mdww", "mpts", "mpww", "shts", "shww"]
-    land_name = [
+def get_data_info(data_dirs, ignore_names=[]):
+    pl_names = {"z", "t", "u", "v", "q"}
+    accum_names = {"ssr", "ssrd", "fdir", "ttr", "tp"}
+    ocean_names = {"sst", "mdts", "mdww", "mpts", "mpww", "shts", "shww"}
+    land_names = {
         "stl1",
         "stl2",
         "stl3",
@@ -217,105 +195,114 @@ def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
         "swvl2",
         "swvl3",
         "swvl4",
-    ]  # soil temperature and water
-
-    logid = [in_names.index(n) for n in ["tp"] if n in in_names]
-    accumid = [in_names.index(n) for n in accum_name if n in in_names]
-    maskid = [in_names.index(n) for n in ocean_name if n in in_names]
-    landid = [in_names.index(n) for n in land_name if n in in_names]
-
-    out_names = in_names  # + ws_name
-
-    # Calculate channel weights
-    channel_weights = np.ones(len(in_names), dtype=np.float32)
-    level_names = {str(level) for level in LEVELS_13}
-    for name in in_names:
-        match = re.match(r"^([A-Za-z]+)_?(\d+)$", name)
-        if match is None:
-            continue
-        var_name, level_name = match.groups()
-        if var_name in pl_names and level_name in level_names:
-            level = int(level_name)
-            channel_weights[in_names.index(name)] = max(0.2, level / 1000)  # min weight 0.2 for upper-air variables
-    channel_weights[landid] *= 0.33  # reduce land variables' weight
-    channel_weights[maskid] *= 0.67  # reduce ocean variables' weight
-    channel_weights /= channel_weights.max()  # normalize to [0, 1]
-    print(f"Channel weights: {channel_weights}")
-
-    buffers = {"channel_weights": channel_weights.reshape((-1, 1, 1))}
-    for k in ["mean", "std", "weight", "mask", "land_mask", "const"]:
-        for data_dir in data_dirs:
-            # Load the buffer file if it exists
-            file_name = os.path.join(data_dir, f"{k}.nc")
-            if os.path.exists(file_name):
-                v = xr.open_dataarray(file_name).values
-            elif os.path.exists(os.path.join(data_dir, f"{k}.npy")):
-                v = np.load(os.path.join(data_dir, f"{k}.npy"))
-            else:
-                v = _load_zarr_sidecar_variable(data_dir, k)
-                if v is None:
-                    print(f"File {file_name} or Zarr variable '{k}' not found, using default value for {k}.")
-                    continue
-            if k == "weight":
-                v = v.reshape(1, -1, 1)
-            elif k in ["mean", "std"]:
-                v = v.reshape(-1, 1, 1)
-                if k not in buffers:
-                    buffers[k] = v
-                else:  # concat if already exists
-                    buffers[k] = np.concatenate([buffers[k], v], axis=0)
-                continue
-            if k in buffers:
-                print(f"{k} already exists, updated by {file_name}")
-            buffers[k] = v
-
-    # update mean/std for ignored variables.
-    if len(ignore_names) > 0:
-        for k in ["mean", "std"]:
-            if k in buffers:
-                buffers[k] = buffers[k][~np.isin(ori_in_names, ignore_names)]
-
-    return {
-        "in_names": in_names,
-        "out_names": out_names,
-        "logid": logid,
-        "accumid": accumid,
-        "maskid": maskid,
-        "landid": landid,
-        "buffers": buffers,
     }
 
+    stores = []
+    store_channel_names = []
+    try:
+        for data_dir in data_dirs:
+            try:
+                store = xr.open_zarr(data_dir, consolidated=True)
+            except (KeyError, ValueError):
+                store = xr.open_zarr(data_dir, consolidated=False)
+            stores.append(store)
 
-def get_data_info(data_dirs, ignore_names=[]):
-    coord = "level"
-    if coord not in xr.open_zarr(data_dirs[0]).coords:
-        coord = "channel"
-    ori_in_names = sum([xr.open_zarr(d).coords[coord].values.tolist() for d in data_dirs], [])
-    in_names = [n for n in ori_in_names if n not in ignore_names]
-    return get_ids_and_buffer(data_dirs, in_names, ori_in_names=ori_in_names, ignore_names=ignore_names)
+            coord = "level" if "level" in store.coords else "channel"
+            if coord not in store.coords:
+                raise ValueError(f"Zarr store {data_dir} has neither a 'level' nor a 'channel' coordinate.")
+            store_channel_names.append(store.coords[coord].values.tolist())
 
+        ori_in_names = sum(store_channel_names, [])
+        in_names = [name for name in ori_in_names if name not in ignore_names]
+        logid = [i for i, name in enumerate(in_names) if name == "tp"]
+        accumid = [i for i, name in enumerate(in_names) if name in accum_names]
+        maskid = [i for i, name in enumerate(in_names) if name in ocean_names]
+        landid = [i for i, name in enumerate(in_names) if name in land_names]
 
-def get_cra_data_info(data_dir, in_names=["tp"]):
-    # get all grib2 files and sort by datetime(*yyyymmddhh.grib2)
-    pattern = re.compile(r"(\d{10})\.grib2$")
-    file_list = glob.glob(os.path.join(data_dir, "**", "*.grib2"), recursive=True)
-    file_map = {}
-    for file_path in file_list:
-        match = pattern.search(file_path)
-        if match:
-            datetime_str = match.group(1)
-            file_map[datetime_str] = file_path
-    sorted_datetimes = sorted(file_map.keys())
-    sorted_files = [file_map[dt] for dt in sorted_datetimes]
-    start_time = sorted_datetimes[0]
-    end_time = sorted_datetimes[-1]
-    print(f"Total files found: {len(sorted_files)}, starting from {start_time} to {end_time}")
+        channel_weights = np.ones(len(in_names), dtype=np.float32)
+        level_names = {str(level) for level in LEVELS_13}
+        for i, name in enumerate(in_names):
+            match = re.match(r"^([A-Za-z]+)_?(\d+)$", name)
+            if match is None:
+                continue
+            var_name, level_name = match.groups()
+            if var_name in pl_names and level_name in level_names:
+                channel_weights[i] = max(0.2, int(level_name) / 1000)
+        channel_weights[landid] *= 0.33
+        channel_weights[maskid] *= 0.67
+        channel_weights /= channel_weights.max()
+        print(f"Channel weights: {channel_weights}")
 
-    # check if file count matches expected count
-    start_pd = pd.to_datetime(start_time, format="%Y%m%d%H")
-    end_pd = pd.to_datetime(end_time, format="%Y%m%d%H")
-    expected_frames = int(((end_pd - start_pd).total_seconds() // 3600) / 6) + 1
-    if len(sorted_files) != expected_frames:
-        print(f"Warning: Expected {expected_frames} files based on time range, but found {len(sorted_files)} files.")
+        buffers = {"channel_weights": channel_weights.reshape((-1, 1, 1))}
+        for key in ["mean", "std", "weight", "mask", "land_mask", "const"]:
+            for data_dir, data_names, store in zip(data_dirs, store_channel_names, stores):
+                file_name = os.path.join(data_dir, f"{key}.nc")
+                npy_name = os.path.join(data_dir, f"{key}.npy")
 
-    return get_ids_and_buffer([data_dir], in_names)
+                if key in {"mean", "std"}:
+                    values = None
+                    if os.path.exists(file_name):
+                        with xr.open_dataarray(file_name) as data_array:
+                            if "channel" in data_array.coords:
+                                sidecar_names = data_array.coords["channel"].values.tolist()
+                                if all(name in sidecar_names for name in data_names):
+                                    values = data_array.sel(channel=data_names).values
+                            if values is None and data_array.size == len(data_names):
+                                values = data_array.values.reshape(-1)
+                    elif os.path.exists(npy_name):
+                        sidecar_values = np.load(npy_name).reshape(-1)
+                        if sidecar_values.size == len(data_names):
+                            values = sidecar_values
+
+                    if values is None:
+                        if "data" not in store or key not in store["data"].attrs:
+                            raise ValueError(f"Cannot align {key!r} statistics for {data_dir}: no matching sidecar or data attribute.")
+                        attr_values = np.asarray(store["data"].attrs[key], dtype=np.float32).reshape(-1)
+                        if attr_values.size % len(data_names) != 0:
+                            raise ValueError(
+                                f"Cannot align {key!r} statistics for {data_dir}: attribute length {attr_values.size} "
+                                f"is not a multiple of {len(data_names)} channels."
+                            )
+                        blocks = attr_values.reshape(-1, len(data_names))
+                        if blocks.shape[0] > 1 and not np.allclose(blocks, blocks[:1], rtol=0.0, atol=0.0):
+                            raise ValueError(f"Cannot align {key!r} statistics for {data_dir}: repeated attribute blocks are inconsistent.")
+                        values = blocks[0]
+                elif os.path.exists(file_name):
+                    with xr.open_dataarray(file_name) as data_array:
+                        values = data_array.values
+                elif os.path.exists(npy_name):
+                    values = np.load(npy_name)
+                elif key in store:
+                    values = store[key].values
+                else:
+                    print(f"File {file_name} or Zarr variable '{key}' not found, using default value for {key}.")
+                    continue
+
+                if key == "weight":
+                    values = values.reshape(1, -1, 1)
+                elif key in {"mean", "std"}:
+                    values = values.reshape(-1, 1, 1)
+                    buffers[key] = np.concatenate([buffers[key], values], axis=0) if key in buffers else values
+                    continue
+                if key in buffers:
+                    print(f"{key} already exists, updated by {file_name}")
+                buffers[key] = values
+
+        if ignore_names:
+            keep_channels = ~np.isin(ori_in_names, ignore_names)
+            for key in ["mean", "std"]:
+                if key in buffers:
+                    buffers[key] = buffers[key][keep_channels]
+
+        return {
+            "in_names": in_names,
+            "out_names": in_names,
+            "logid": logid,
+            "accumid": accumid,
+            "maskid": maskid,
+            "landid": landid,
+            "buffers": buffers,
+        }
+    finally:
+        for store in stores:
+            store.close()
