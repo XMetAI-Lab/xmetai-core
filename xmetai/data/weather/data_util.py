@@ -43,6 +43,70 @@ def _load_zarr_sidecar_variable(data_dir, key):
         ds.close()
 
 
+def _load_channel_statistics(data_dir, key, store_names):
+    """Load mean/std in the channel order used by a Zarr store.
+
+    Some converted stores keep statistics for a larger source channel set in
+    ``mean.nc``/``std.nc`` while the Zarr ``data`` array contains a renamed
+    subset.  The converter also records the correctly ordered statistics in
+    the ``data`` attributes.  Prefer name-aligned sidecars when possible and
+    otherwise validate and use one repeated attribute block.
+    """
+    file_name = os.path.join(data_dir, f"{key}.nc")
+    npy_name = os.path.join(data_dir, f"{key}.npy")
+
+    if os.path.exists(file_name):
+        data_array = xr.open_dataarray(file_name)
+        try:
+            if "channel" in data_array.coords:
+                sidecar_names = data_array.coords["channel"].values.tolist()
+                if all(name in sidecar_names for name in store_names):
+                    return data_array.sel(channel=store_names).values
+            values = data_array.values.reshape(-1)
+            if values.size == len(store_names):
+                return values
+        finally:
+            data_array.close()
+    elif os.path.exists(npy_name):
+        values = np.load(npy_name).reshape(-1)
+        if values.size == len(store_names):
+            return values
+
+    try:
+        store = xr.open_zarr(data_dir, consolidated=True)
+    except (KeyError, ValueError):
+        store = xr.open_zarr(data_dir, consolidated=False)
+    try:
+        if "data" not in store or key not in store["data"].attrs:
+            raise ValueError(f"Cannot align {key!r} statistics for {data_dir}: no matching sidecar or data attribute.")
+        values = np.asarray(store["data"].attrs[key], dtype=np.float32).reshape(-1)
+    finally:
+        store.close()
+
+    if values.size % len(store_names) != 0:
+        raise ValueError(f"Cannot align {key!r} statistics for {data_dir}: attribute length {values.size} is not a multiple of {len(store_names)} channels.")
+    blocks = values.reshape(-1, len(store_names))
+    if blocks.shape[0] > 1 and not np.allclose(blocks, blocks[:1], rtol=0.0, atol=0.0):
+        raise ValueError(f"Cannot align {key!r} statistics for {data_dir}: repeated attribute blocks are inconsistent.")
+    return blocks[0]
+
+
+def _load_store_channel_names(data_dir):
+    """Return channel names from either legacy ``level`` or ``channel`` coordinates."""
+    try:
+        store = xr.open_zarr(data_dir, consolidated=True)
+    except (KeyError, ValueError):
+        store = xr.open_zarr(data_dir, consolidated=False)
+    try:
+        if "level" in store.coords:
+            return store.coords["level"].values.tolist()
+        if "channel" in store.coords:
+            return store.coords["channel"].values.tolist()
+        raise ValueError(f"Zarr store {data_dir} has neither a 'level' nor a 'channel' coordinate.")
+    finally:
+        store.close()
+
+
 def make_seq(times, total_frames, freq=1, interval=1, freq_unit="hours"):
     step = pd.Timedelta(**{freq_unit: freq})
     i = 0
@@ -242,12 +306,16 @@ def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
     channel_weights /= channel_weights.max()  # normalize to [0, 1]
     print(f"Channel weights: {channel_weights}")
 
+    store_channel_names = [_load_store_channel_names(data_dir) for data_dir in data_dirs]
+
     buffers = {"channel_weights": channel_weights.reshape((-1, 1, 1))}
     for k in ["mean", "std", "weight", "mask", "land_mask", "const"]:
-        for data_dir in data_dirs:
+        for data_dir, data_names in zip(data_dirs, store_channel_names):
             # Load the buffer file if it exists
             file_name = os.path.join(data_dir, f"{k}.nc")
-            if os.path.exists(file_name):
+            if k in ["mean", "std"]:
+                v = _load_channel_statistics(data_dir, k, data_names)
+            elif os.path.exists(file_name):
                 v = xr.open_dataarray(file_name).values
             elif os.path.exists(os.path.join(data_dir, f"{k}.npy")):
                 v = np.load(os.path.join(data_dir, f"{k}.npy"))
@@ -287,10 +355,7 @@ def get_ids_and_buffer(data_dirs, in_names, ori_in_names=[], ignore_names=[]):
 
 
 def get_data_info(data_dirs, ignore_names=[]):
-    coord = "level"
-    if coord not in xr.open_zarr(data_dirs[0]).coords:
-        coord = "channel"
-    ori_in_names = sum([xr.open_zarr(d).coords[coord].values.tolist() for d in data_dirs], [])
+    ori_in_names = sum([_load_store_channel_names(data_dir) for data_dir in data_dirs], [])
     in_names = [n for n in ori_in_names if n not in ignore_names]
     return get_ids_and_buffer(data_dirs, in_names, ori_in_names=ori_in_names, ignore_names=ignore_names)
 

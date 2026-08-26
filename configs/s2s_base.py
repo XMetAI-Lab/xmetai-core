@@ -99,9 +99,9 @@ depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 ######################################################################
 # Data settings
 ######################################################################
-train_times = ("19500101", "20230228")
-test_times = ("20230101", "20241231")
-# test_times = ("20050101", "20250202")
+train_times = ("19500101", "20240131")
+test_times = ("20240101", "20261231")
+# test_times = ("20050101", "20261231")
 dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
     data_paths=[data_dir],
     train_times=train_times,

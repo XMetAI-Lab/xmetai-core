@@ -269,6 +269,44 @@ class TestWeatherDataset:
         assert sample["inputs"][1, 0, 0, 0] == 1.0
         assert sample["targets"][0, 0, 0, 0] == 0.0
 
+    def test_multi_zarr_dataset_returns_channel_aware_valid_masks(self, tmp_path):
+        """Keep non-finite and configured zero-fill masks separate from physical zeros."""
+        import pandas as pd
+        import xarray as xr
+
+        from xmetai.data.weather.multi_zarr_dataset import MultiZarrDataset
+
+        times = pd.date_range("2020-01-01", periods=8, freq="6h")
+        values = np.ones((len(times), 3, 1, 1), dtype=np.float32)
+        values[:, 0] = np.nan
+        values[:, 1] = 0.0
+        values[:, 2] = 0.0
+        fake_ds = xr.Dataset(
+            {"data": (("time", "channel", "lat", "lon"), values)},
+            coords={"time": times, "channel": ["ocean", "land", "precip"], "lat": [0.0], "lon": [100.0]},
+        )
+        path = tmp_path / "valid-mask.zarr"
+        fake_ds.to_zarr(path, consolidated=True, zarr_format=2)
+
+        dataset = MultiZarrDataset(
+            data_paths=[path],
+            hist_frames=2,
+            fcst_frames=[1],
+            freq=6,
+            training=False,
+            years=("20200101", "20200102"),
+            target_names=["precip", "land"],
+            return_valid_mask=True,
+            zero_fill_invalid_names=["land"],
+        )
+        sample = dataset[0]
+
+        assert not sample["input_valid_mask"][:, 0].any()
+        assert not sample["input_valid_mask"][:, 1].any()
+        assert sample["input_valid_mask"][:, 2].all()
+        assert sample["target_valid_mask"][:, 0].all()
+        assert not sample["target_valid_mask"][:, 1].any()
+
 
 class TestDataSampler:
     """Test custom data samplers."""

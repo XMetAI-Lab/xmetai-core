@@ -533,10 +533,16 @@ class ExpandTrainer(SimpleTrainer):
         use_ema=True,
         teacher_forcing=None,
         ens_train=False,
+        segmented_backward=False,
+        rollout_segment_size=1,
+        use_fsdp2=False,
     ):
         """
         Args:
             teacher_forcing (dict): Configuration for teacher forcing.
+            segmented_backward (bool): Backward each rollout segment separately.
+            rollout_segment_size (int): Number of physical rollout blocks per BPTT segment.
+            use_fsdp2 (bool): Delay FSDP2 gradient synchronization until the last segment.
         """
         super().__init__(
             model,
@@ -547,6 +553,11 @@ class ExpandTrainer(SimpleTrainer):
             async_write_metrics,
             use_ema,
         )
+        self.segmented_backward = bool(segmented_backward)
+        self.rollout_segment_size = int(rollout_segment_size)
+        self.use_fsdp2 = bool(use_fsdp2)
+        if self.rollout_segment_size <= 0:
+            raise ValueError(f"rollout_segment_size must be positive, got {self.rollout_segment_size}.")
         if teacher_forcing is None:
             teacher_forcing = dict(teach_iters=-1, teach_steps=10, teach_start=0)
         self.teacher_forcing = teacher_forcing
@@ -559,6 +570,40 @@ class ExpandTrainer(SimpleTrainer):
         self.ens_train = ens_train
         if ens_train:
             self.logger.info("Using ensemble training mode.")
+
+    def _backward_rollout_segments(self, data):
+        """Backward each rollout segment and aggregate its detached loss metrics."""
+        rollout_state = None
+        first_segment = True
+        total_loss_dict = {}
+
+        try:
+            while True:
+                with torch.amp.autocast(device_type=self.model.device, dtype=self.model.dtype):
+                    segment_loss_dict, rollout_state, is_last_segment = self.model(
+                        data if first_segment else None,
+                        rollout_state=rollout_state,
+                        rollout_segment_size=self.rollout_segment_size,
+                    )
+                if first_segment and not self.zero_grad_before_forward:
+                    self.optimizer.zero_grad()
+
+                self._set_fsdp2_backward_mode(is_last_segment)
+                losses = sum(segment_loss_dict.values())
+                losses.backward()
+                for name, value in segment_loss_dict.items():
+                    total_loss_dict[name] = total_loss_dict.get(name, 0) + value.detach()
+
+                if is_last_segment:
+                    return total_loss_dict
+                first_segment = False
+        finally:
+            self._set_fsdp2_backward_mode(True)
+
+    def _set_fsdp2_backward_mode(self, is_last_backward):
+        if self.use_fsdp2:
+            self.model.set_requires_gradient_sync(is_last_backward, recurse=True)
+            self.model.set_is_last_backward(is_last_backward)
 
     def run_step(self):
         assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
@@ -590,25 +635,21 @@ class ExpandTrainer(SimpleTrainer):
             """
             self.optimizer.zero_grad()
 
-        """
-        If you want to do something with the losses, you can wrap the model.
-        """
-        with torch.amp.autocast(device_type=self.model.device, dtype=self.model.dtype):
-            loss_dict = self.model(data)
-        if loss_dict is None:
-            return
-        if isinstance(loss_dict, torch.Tensor):
-            losses = loss_dict
-            loss_dict = {"total_loss": loss_dict}
+        if self.segmented_backward:
+            loss_dict = self._backward_rollout_segments(data)
         else:
-            losses = sum(loss_dict.values())
-        if not self.zero_grad_before_forward:
-            """
-            If you need to accumulate gradients or do something similar, you can
-            wrap the optimizer with your custom `zero_grad()` method.
-            """
-            self.optimizer.zero_grad()
-        losses.backward()
+            with torch.amp.autocast(device_type=self.model.device, dtype=self.model.dtype):
+                loss_dict = self.model(data)
+            if loss_dict is None:
+                return
+            if isinstance(loss_dict, torch.Tensor):
+                losses = loss_dict
+                loss_dict = {"total_loss": loss_dict}
+            else:
+                losses = sum(loss_dict.values())
+            if not self.zero_grad_before_forward:
+                self.optimizer.zero_grad()
+            losses.backward()
 
         self.after_backward()
 

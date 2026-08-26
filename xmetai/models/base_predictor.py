@@ -453,7 +453,7 @@ class BasePredictor(Meta):
                     "time": pred_times,
                     "level": self.test_names,
                     "lat": np.linspace(90, -90, results["output"].shape[3]),
-                    "lon": np.linspace(0, 360, results["output"].shape[4]),
+                    "lon": np.linspace(0, 360, results["output"].shape[4]+1)[:-1],  # ensure lon wraps around correctly
                 },
                 name="data",
             )
@@ -469,7 +469,7 @@ class BasePredictor(Meta):
                         "time": pred_times,
                         "level": self.test_names,
                         "lat": np.linspace(90, -90, results["target"].shape[3]),
-                        "lon": np.linspace(0, 360, results["target"].shape[4]),
+                        "lon": np.linspace(0, 360, results["target"].shape[4]+1)[:-1],  # ensure lon wraps around correctly
                     },
                     name="data",
                 )

@@ -29,7 +29,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.layers import AdaptiveLN, EarthConvTranspose2d, set_lora_step
-from xmetai.loss import charbonnier_loss
+from xmetai.loss import charbonnier_loss, field_dynamics_consistency_loss
 from xmetai.registries import MODELS
 from xmetai.utils import get_event_storage
 
@@ -474,6 +474,7 @@ class _BaseGroupVAE(BasePredictor):
         residual_vae_indices: list[int] | None = None,
         alpha: float = 1.0,
         loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
+        latent_dyn_weight: float = 0.0,
         rollout_max: int = 50,
         pretrain: bool = False,
         pretrain_mask_ratio: float = 0.15,
@@ -492,6 +493,7 @@ class _BaseGroupVAE(BasePredictor):
         if len(loss_weight) != 5:
             raise ValueError("loss_weight must contain five floats: (vae_input, vae_target, pred_rec, latent_reg, latent_pred)")
         self.loss_weight = loss_weight
+        self.latent_dyn_weight = float(latent_dyn_weight)
         self.const_chans = const_chans
         self.rollout_max = rollout_max
         if self.in_frames < self.out_frames + 1:
@@ -629,7 +631,10 @@ class _BaseGroupVAE(BasePredictor):
             f"Evaluation ensemble schedule initialized: freq={self.freq}, members={self.members}, "
             f"total_step={self.eval_total_step}, forecast_stride={self.forecast_stride}, ensemble_sizes={self.ensemble_sizes}"
         )
-        self.logger.info(f"Group VAE with members={self.members}, alpha={self.alpha}, loss_weight={self.loss_weight}, rollout_max={self.rollout_max}")
+        self.logger.info(
+            f"Group VAE with members={self.members}, alpha={self.alpha}, loss_weight={self.loss_weight}, "
+            f"latent_dyn_weight={self.latent_dyn_weight}, rollout_max={self.rollout_max}"
+        )
         if self.pretrain:
             self._configure_pretrain_trainable()
 
@@ -998,104 +1003,165 @@ class _BaseGroupVAE(BasePredictor):
             "loss_pre_latent_reg": self.pretrain_latent_reg_weight * loss_latent_reg,
         }
 
-    def forward(self, data):
+    def forward(self, data, *, rollout_state=None, rollout_segment_size=None):
         if not self.training:
             return self.test(data)
 
-        # Pretraining stage for VAE reconstruction only.
         if self.pretrain:
             return self.forward_pre_stage(data)
 
-        data = self.process_data(data)
-        input = data["input"]
-        targets = data["targets"]
-        times = data["times"]
-        const = data["const"] if self.const_chans > 0 else None
+        if rollout_state is None:
+            targets = data.pop("targets")
+            targets = targets[:, : data.get("future_frames", self.out_frames)]
+            data = self.process_data(data)
+            input = data["input"]
+            future_step = targets.size(1)
+            if future_step < self.out_frames:
+                raise ValueError(f"Expected at least {self.out_frames} target frames, got {future_step}.")
 
-        future_step = targets.size(1)
-        loss_steps, rolling_weights = self.build_loss_steps_and_weights(future_step, self.alpha, self.rollout_max)
+            num_rollout_blocks = 1 + (future_step - self.out_frames) // self.forecast_stride
+            segment_size = num_rollout_blocks if rollout_segment_size is None else int(rollout_segment_size)
+            if segment_size <= 0:
+                raise ValueError(f"rollout_segment_size must be positive, got {segment_size}.")
 
-        loss_vae_input = torch.zeros((), device=input.device)
-        loss_vae_target = torch.zeros((), device=input.device)
-        loss_pred_rec = torch.zeros((), device=input.device)
-        loss_latent_pred_rec = torch.zeros((), device=input.device)
-        loss_latent_reg = torch.zeros((), device=input.device)
-        pinn_acc: dict[str, torch.Tensor] = {}
-        precip_acc: dict[str, torch.Tensor] = {}
+            num_segments = (num_rollout_blocks + segment_size - 1) // segment_size
+            loss_segments, rolling_weights = self.build_loss_steps_and_weights(num_segments, self.alpha, self.rollout_max)
+            state = {
+                "targets": targets,
+                "input": input,
+                "times": data["times"],
+                "const": data["const"] if self.const_chans > 0 else None,
+                "future_step": future_step,
+                "segment_size": segment_size,
+                "num_rollout_blocks": num_rollout_blocks,
+                "num_segments": num_segments,
+                "loss_segments": loss_segments,
+                "rolling_weights": rolling_weights,
+                "kl_weight": self._get_kl_weight(),
+                "true_input": input.clone(),
+                "segment_index": 0,
+                "k": 0,
+            }
+        else:
+            state = rollout_state
 
-        true_input = input.clone()
+        input = state["input"]
+        targets = state["targets"]
+        times = state["times"]
+        const = state["const"]
+        future_step = state["future_step"]
+        segment_size = state["segment_size"]
+        num_rollout_blocks = state["num_rollout_blocks"]
+        num_segments = state["num_segments"]
+        loss_segments = state["loss_segments"]
+        rolling_weights = state["rolling_weights"]
+        kl_weight = state["kl_weight"]
+        true_input = state["true_input"]
+        segment_index = state["segment_index"]
+        k = state["k"]
 
-        for k in range(0, future_step, self.forecast_stride):
-            t = self.start_frames + k
-            block_weight = rolling_weights[k : k + self.out_frames].mean()
-            loss_available = any(step in loss_steps for step in range(k, k + self.out_frames))
-            target = targets[:, k : k + self.out_frames]
-            if target.shape[1] != self.out_frames:
-                break
-            if not loss_available:
-                with torch.no_grad():
-                    input = input.detach()
+        # Traverse skipped segments without retaining a graph. Each call then
+        # returns exactly one selected contiguous segment for backward.
+        while segment_index < num_segments and segment_index not in loss_segments:
+            first_block = segment_index * segment_size
+            last_block = min(first_block + segment_size, num_rollout_blocks)
+            with torch.no_grad():
+                for _ in range(first_block, last_block):
+                    t = self.start_frames + k
+                    target = targets[:, k : k + self.out_frames].to(input, non_blocking=True)
+                    input = self.reset_input(input.detach())
                     true_input = self.reset_input(true_input)
-                    self.logger.debug(f"Time step {t}: input.shape={input.shape}, target.shape={target.shape}, rollout loss skipped")
                     _, input = self._predict_next(input, times, t, const=const)
                     input = input.detach()
                     true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
-                continue
+                    k += self.forecast_stride
+            segment_index += 1
 
+        first_block = segment_index * segment_size
+        last_block = min(first_block + segment_size, num_rollout_blocks)
+        segment_blocks = last_block - first_block
+        block_weight = rolling_weights[segment_index] / segment_blocks
+
+        loss_vae_input = input.new_zeros(())
+        loss_vae_target = input.new_zeros(())
+        loss_pred_rec = input.new_zeros(())
+        loss_latent_pred_rec = input.new_zeros(())
+        loss_latent_reg = input.new_zeros(())
+        loss_latent_dyn_consistency = input.new_zeros(())
+        compute_latent_dyn_loss = self.latent_dyn_weight != 0.0
+        pinn_acc: dict[str, torch.Tensor] = {}
+        precip_acc: dict[str, torch.Tensor] = {}
+
+        for _ in range(first_block, last_block):
+            t = self.start_frames + k
+            target = targets[:, k : k + self.out_frames].to(input, non_blocking=True)
+            k += self.forecast_stride
             input = self.reset_input(input)
             true_input = self.reset_input(true_input)
             new_target = self._build_posterior_input(true_input, target)
             timestamp = self.get_timestamp(input, times, t)
             timestamp_target = self.get_timestamp(input, times, t + self.out_frames)
-            self.logger.debug(f"Time step {t}: input.shape={input.shape}, target.shape={target.shape}")
 
-            h_prior_states_by_group = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
-            h_posterior_states_by_group = self._encode_all_groups(new_target, timestamp_target, const=const, is_prior=False)
-            vae_rec_input_outputs_by_group = self._decode_all_groups(h_prior_states_by_group, timestamp, const=const, lora_step=t)
-            vae_rec_target_outputs_by_group = self._decode_all_groups(
-                h_posterior_states_by_group,
+            h_prior_states = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
+            h_posterior_states = self._encode_all_groups(new_target, timestamp_target, const=const, is_prior=False)
+            vae_input_groups = self._decode_all_groups(h_prior_states, timestamp, const=const, lora_step=t)
+            vae_target_groups = self._decode_all_groups(
+                h_posterior_states,
                 timestamp_target,
                 const=const,
                 lora_step=t + self.out_frames,
             )
 
-            # Constrain latent space to prevent norm explosion
-            for h_prior, h_posterior in zip(h_prior_states_by_group, h_posterior_states_by_group):
+            for h_prior, h_posterior in zip(h_prior_states, h_posterior_states):
                 loss_latent_reg += torch.mean(h_prior**2) + torch.mean(h_posterior**2)
 
             vae_input_base = true_input[:, -self.out_frames - 1 : -1]
-            vae_input_recon = self._assemble_prediction(vae_rec_input_outputs_by_group, vae_input_base)
+            vae_input_recon = self._assemble_prediction(vae_input_groups, vae_input_base)
             vae_input_target = true_input[:, -self.out_frames :]
             loss_vae_input += block_weight * charbonnier_loss(vae_input_recon, vae_input_target, weight=self.weight)
 
             vae_target_base = new_target[:, -self.out_frames - 1 : -1]
-            vae_target_recon = self._assemble_prediction(vae_rec_target_outputs_by_group, vae_target_base)
+            vae_target_recon = self._assemble_prediction(vae_target_groups, vae_target_base)
             loss_vae_target += block_weight * charbonnier_loss(vae_target_recon, target, weight=self.weight)
 
-            z_coupled = self.latent_mixer(h_prior_states_by_group, timestamp_target)
-            for gi in range(self.num_groups):
-                loss_latent_pred_rec += block_weight * charbonnier_loss(z_coupled[gi], h_posterior_states_by_group[gi].detach())
+            z_coupled = self.latent_mixer(h_prior_states, timestamp_target)
+            for group_index in range(self.num_groups):
+                loss_latent_pred_rec += block_weight * charbonnier_loss(z_coupled[group_index], h_posterior_states[group_index].detach())
 
             group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames)
             output = self._assemble_prediction(group_outputs, input)
-            if "channel_weights" in self._buffers:
-                loss_pred_rec += block_weight * charbonnier_loss(output, target, weight=self.channel_weights * self.weight)
-            else:
-                loss_pred_rec += block_weight * charbonnier_loss(output, target, weight=self.weight)
+            if compute_latent_dyn_loss:
+                loss_latent_dyn_consistency += block_weight * field_dynamics_consistency_loss(
+                    output=output,
+                    target=target,
+                    input=input.detach(),
+                    target_input=true_input,
+                    group_slice_indices=self.group_slice_indices,
+                )
+            field_weight = self.channel_weights * self.weight if "channel_weights" in self._buffers else self.weight
+            loss_pred_rec += block_weight * charbonnier_loss(output, target, weight=field_weight)
 
             if self.pinn_enable:
-                pinn_losses = self.compute_pinn_losses(output, target)
-                for loss_name, loss_val in pinn_losses.items():
-                    pinn_acc[loss_name] = pinn_acc.get(loss_name, 0) + block_weight * loss_val
+                for loss_name, loss_value in self.compute_pinn_losses(output, target).items():
+                    pinn_acc[loss_name] = pinn_acc.get(loss_name, 0) + block_weight * loss_value
             if self.precip_loss_enable:
-                precip_losses = self.compute_precip_losses(output, target)
-                for loss_name, loss_val in precip_losses.items():
-                    precip_acc[loss_name] = precip_acc.get(loss_name, 0) + block_weight * loss_val
+                for loss_name, loss_value in self.compute_precip_losses(output, target).items():
+                    precip_acc[loss_name] = precip_acc.get(loss_name, 0) + block_weight * loss_value
 
             input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
             true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
 
-        kl_weight = self._get_kl_weight()
+        segment_index += 1
+        state.update(
+            {
+                "input": input.detach(),
+                "true_input": true_input,
+                "segment_index": segment_index,
+                "k": k,
+            }
+        )
+        done = segment_index >= num_segments
+
         loss_dict = {
             "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
             "loss_vae_input": self.loss_weight[0] * loss_vae_input,
@@ -1103,11 +1169,15 @@ class _BaseGroupVAE(BasePredictor):
             "loss_latent_reg": self.loss_weight[3] * loss_latent_reg * kl_weight,
             "loss_latent_pred_rec": self.loss_weight[4] * loss_latent_pred_rec,
         }
-        if len(pinn_acc) > 0:
-            loss_dict.update(pinn_acc)
-        if len(precip_acc) > 0:
-            loss_dict.update(precip_acc)
-        return loss_dict
+        if compute_latent_dyn_loss:
+            loss_dict["loss_latent_dyn_consistency"] = self.latent_dyn_weight * loss_latent_dyn_consistency
+        loss_dict.update(pinn_acc)
+        loss_dict.update(precip_acc)
+        if rollout_segment_size is None:
+            if not done:
+                raise RuntimeError("Unsegmented rollout did not consume all forecast steps.")
+            return loss_dict
+        return loss_dict, state, done
 
     @torch.no_grad()
     def test_cascade(self, data):
@@ -1119,7 +1189,9 @@ class _BaseGroupVAE(BasePredictor):
         self.logger.debug(f"Testing cascade: total_step={total_step}, stride={self.forecast_stride}, input.shape={input.shape}")
 
         hw = list(input.shape[-2:])
-        outputs = input.new_zeros(input.shape[0], len(self.test_frames), len(self.test_chans), *hw)
+        # Match perturb evaluation precision: FP16 accumulation avoids BF16
+        # ensemble-reduction error without the persistent cost of FP32.
+        outputs = torch.zeros(input.shape[0], len(self.test_frames), len(self.test_chans), *hw, device=input.device, dtype=torch.float16)
 
         assert total_step <= len(self.ensemble_sizes), f"Total steps {total_step} exceeds precomputed ensemble schedule length {len(self.ensemble_sizes)}"
         ensemble_sizes = self.ensemble_sizes[:total_step]

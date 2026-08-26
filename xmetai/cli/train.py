@@ -4,6 +4,13 @@ import sys
 from functools import partial
 from typing import Any, Dict, Sequence
 
+# Configure the CUDA allocator before importing torch so it is active before
+# distributed launch initializes CUDA/NCCL. Respect an explicit job setting.
+os.environ.setdefault(
+    "PYTORCH_ALLOC_CONF",
+    os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"),
+)
+
 import torch
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -236,6 +243,10 @@ def do_train(args, cfg):
             teacher_forcing=cfg.train.teacher_forcing,
             use_ema=cfg.train.use_ema,
             ens_train=cfg.train.ens_train,
+            zero_grad_before_forward=True,
+            segmented_backward=cfg.train.segmented_backward,
+            rollout_segment_size=cfg.train.rollout_segment_size,
+            use_fsdp2=cfg.train.use_fsdp2,
         )
     else:
         trainer = SimpleTrainer(model, train_loader, optimizer, use_ema=cfg.train.use_ema)
