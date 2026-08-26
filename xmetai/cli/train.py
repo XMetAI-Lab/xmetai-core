@@ -7,8 +7,8 @@ from typing import Any, Dict, Sequence
 # Configure the CUDA allocator before importing torch so it is active before
 # distributed launch initializes CUDA/NCCL. Respect an explicit job setting.
 os.environ.setdefault(
-    "PYTORCH_ALLOC_CONF",
-    os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"),
+    "PYTORCH_CUDA_ALLOC_CONF",
+    os.environ.get("PYTORCH_ALLOC_CONF", "expandable_segments:True"),
 )
 
 import torch

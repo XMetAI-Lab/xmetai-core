@@ -5,7 +5,6 @@ Description: Data utility functions for weather datasets.
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
-import glob
 import os
 import re
 
@@ -25,7 +24,6 @@ __all__ = [
     "make_onnx",
     "get_ids_and_buffer",
     "get_data_info",
-    "get_cra_data_info",
 ]
 
 
@@ -358,29 +356,3 @@ def get_data_info(data_dirs, ignore_names=[]):
     ori_in_names = sum([_load_store_channel_names(data_dir) for data_dir in data_dirs], [])
     in_names = [n for n in ori_in_names if n not in ignore_names]
     return get_ids_and_buffer(data_dirs, in_names, ori_in_names=ori_in_names, ignore_names=ignore_names)
-
-
-def get_cra_data_info(data_dir, in_names=["tp"]):
-    # get all grib2 files and sort by datetime(*yyyymmddhh.grib2)
-    pattern = re.compile(r"(\d{10})\.grib2$")
-    file_list = glob.glob(os.path.join(data_dir, "**", "*.grib2"), recursive=True)
-    file_map = {}
-    for file_path in file_list:
-        match = pattern.search(file_path)
-        if match:
-            datetime_str = match.group(1)
-            file_map[datetime_str] = file_path
-    sorted_datetimes = sorted(file_map.keys())
-    sorted_files = [file_map[dt] for dt in sorted_datetimes]
-    start_time = sorted_datetimes[0]
-    end_time = sorted_datetimes[-1]
-    print(f"Total files found: {len(sorted_files)}, starting from {start_time} to {end_time}")
-
-    # check if file count matches expected count
-    start_pd = pd.to_datetime(start_time, format="%Y%m%d%H")
-    end_pd = pd.to_datetime(end_time, format="%Y%m%d%H")
-    expected_frames = int(((end_pd - start_pd).total_seconds() // 3600) / 6) + 1
-    if len(sorted_files) != expected_frames:
-        print(f"Warning: Expected {expected_frames} files based on time range, but found {len(sorted_files)} files.")
-
-    return get_ids_and_buffer([data_dir], in_names)

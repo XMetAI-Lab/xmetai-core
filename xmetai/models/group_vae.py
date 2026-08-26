@@ -1011,9 +1011,10 @@ class _BaseGroupVAE(BasePredictor):
             return self.forward_pre_stage(data)
 
         if rollout_state is None:
-            targets = data.pop("targets")
-            targets = targets[:, : data.get("future_frames", self.out_frames)]
-            data = self.process_data(data)
+            targets = data["targets"][:, : data.get("future_frames", self.out_frames)]
+            model_data = data.copy()
+            del model_data["targets"]
+            data = self.process_data(model_data)
             input = data["input"]
             future_step = targets.size(1)
             if future_step < self.out_frames:
@@ -1025,7 +1026,13 @@ class _BaseGroupVAE(BasePredictor):
                 raise ValueError(f"rollout_segment_size must be positive, got {segment_size}.")
 
             num_segments = (num_rollout_blocks + segment_size - 1) // segment_size
-            loss_segments, rolling_weights = self.build_loss_steps_and_weights(num_segments, self.alpha, self.rollout_max)
+            loss_steps, rolling_weights = self.build_loss_steps_and_weights(future_step, self.alpha, self.rollout_max)
+            loss_step_set = set(loss_steps)
+            loss_block_indices = {
+                block_index
+                for block_index in range(num_rollout_blocks)
+                if not loss_step_set.isdisjoint(range(block_index * self.forecast_stride, block_index * self.forecast_stride + self.out_frames))
+            }
             state = {
                 "targets": targets,
                 "input": input,
@@ -1035,7 +1042,7 @@ class _BaseGroupVAE(BasePredictor):
                 "segment_size": segment_size,
                 "num_rollout_blocks": num_rollout_blocks,
                 "num_segments": num_segments,
-                "loss_segments": loss_segments,
+                "loss_block_indices": loss_block_indices,
                 "rolling_weights": rolling_weights,
                 "kl_weight": self._get_kl_weight(),
                 "true_input": input.clone(),
@@ -1053,7 +1060,7 @@ class _BaseGroupVAE(BasePredictor):
         segment_size = state["segment_size"]
         num_rollout_blocks = state["num_rollout_blocks"]
         num_segments = state["num_segments"]
-        loss_segments = state["loss_segments"]
+        loss_block_indices = state["loss_block_indices"]
         rolling_weights = state["rolling_weights"]
         kl_weight = state["kl_weight"]
         true_input = state["true_input"]
@@ -1062,9 +1069,11 @@ class _BaseGroupVAE(BasePredictor):
 
         # Traverse skipped segments without retaining a graph. Each call then
         # returns exactly one selected contiguous segment for backward.
-        while segment_index < num_segments and segment_index not in loss_segments:
+        while segment_index < num_segments:
             first_block = segment_index * segment_size
             last_block = min(first_block + segment_size, num_rollout_blocks)
+            if any(block_index in loss_block_indices for block_index in range(first_block, last_block)):
+                break
             with torch.no_grad():
                 for _ in range(first_block, last_block):
                     t = self.start_frames + k
@@ -1077,10 +1086,11 @@ class _BaseGroupVAE(BasePredictor):
                     k += self.forecast_stride
             segment_index += 1
 
+        if segment_index >= num_segments:
+            raise RuntimeError("No selected rollout loss block remains for backward.")
+
         first_block = segment_index * segment_size
         last_block = min(first_block + segment_size, num_rollout_blocks)
-        segment_blocks = last_block - first_block
-        block_weight = rolling_weights[segment_index] / segment_blocks
 
         loss_vae_input = input.new_zeros(())
         loss_vae_target = input.new_zeros(())
@@ -1092,10 +1102,21 @@ class _BaseGroupVAE(BasePredictor):
         pinn_acc: dict[str, torch.Tensor] = {}
         precip_acc: dict[str, torch.Tensor] = {}
 
-        for _ in range(first_block, last_block):
+        for block_index in range(first_block, last_block):
             t = self.start_frames + k
             target = targets[:, k : k + self.out_frames].to(input, non_blocking=True)
             k += self.forecast_stride
+            if block_index not in loss_block_indices:
+                with torch.no_grad():
+                    input = self.reset_input(input.detach())
+                    true_input = self.reset_input(true_input)
+                    _, input = self._predict_next(input, times, t, const=const)
+                    input = input.detach()
+                    true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
+                continue
+
+            block_start = block_index * self.forecast_stride
+            block_weight = rolling_weights[block_start : block_start + self.out_frames].mean()
             input = self.reset_input(input)
             true_input = self.reset_input(true_input)
             new_target = self._build_posterior_input(true_input, target)
