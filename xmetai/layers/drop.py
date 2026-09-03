@@ -214,7 +214,7 @@ class MCDropout(nn.Module):
         super().__init__()
 
     def forward(self, x: torch.Tensor, dropout: float = 0) -> torch.Tensor:
-        if dropout == 0:
+        if dropout == 0 or not self.training:
             return x
 
         mask = torch.empty_like(x).bernoulli_(1 - dropout)

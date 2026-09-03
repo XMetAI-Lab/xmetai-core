@@ -448,10 +448,10 @@ class BasePredictor(Meta):
             # save results to netcdf
             xr_output = xr.DataArray(
                 results["output"].squeeze().cpu().numpy(),
-                dims=["time", "level", "lat", "lon"],
+                dims=["time", "channel", "lat", "lon"],
                 coords={
                     "time": pred_times,
-                    "level": self.test_names,
+                    "channel": self.test_names,
                     "lat": np.linspace(90, -90, results["output"].shape[3]),
                     "lon": np.linspace(0, 360, results["output"].shape[4] + 1)[:-1],  # ensure lon wraps around correctly
                 },
@@ -464,10 +464,10 @@ class BasePredictor(Meta):
                 save_path = os.path.join(self.save_dir, f"obs_{ymd_time}.nc")
                 xr_output = xr.DataArray(
                     results["target"].squeeze().cpu().numpy(),
-                    dims=["time", "level", "lat", "lon"],
+                    dims=["time", "channel", "lat", "lon"],
                     coords={
                         "time": pred_times,
-                        "level": self.test_names,
+                        "channel": self.test_names,
                         "lat": np.linspace(90, -90, results["target"].shape[3]),
                         "lon": np.linspace(0, 360, results["target"].shape[4] + 1)[:-1],  # ensure lon wraps around correctly
                     },
