@@ -147,8 +147,10 @@ class CorrectionModel(OnnxInferModel):
         total_step = max(self.test_frames)
 
         save_steps = {int(step): index for index, step in enumerate(np.asarray(self.test_frames) // self.out_frames)}
-        channels, height, width = normalized_input.shape[-3:]
-        outputs = torch.zeros(normalized_input.shape[0], len(save_steps), channels, height, width, device=normalized_input.device, dtype=torch.float32)
+        height, width = normalized_input.shape[-2:]
+        outputs = torch.zeros(
+            normalized_input.shape[0], len(save_steps), len(self.test_chans), height, width, device=normalized_input.device, dtype=torch.float32
+        )
 
         for _ in range(self.members):
             physical_input = self.inv_normalize(normalized_input)
@@ -158,7 +160,7 @@ class CorrectionModel(OnnxInferModel):
                 if forecast_step in save_steps:
                     lead = self.start_frames + forecast_step
                     correction = self.predict_correction(raw_normalized, lead=lead)
-                    outputs[:, save_steps[forecast_step]] += self.merge_correction(raw_normalized, correction).float()[:, 0]
+                    outputs[:, save_steps[forecast_step]] += self.merge_correction(raw_normalized, correction).float()[:, 0, self.test_chans]
                 physical_input = torch.cat([physical_input, raw_physical], dim=1)[:, -self.in_frames :].contiguous()
 
         return (outputs / self.members).to(normalized_input)

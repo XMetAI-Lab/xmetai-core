@@ -13,13 +13,14 @@ from xmetai.models.correction import CorrectionModel
 from xmetai.models.onnx_infer import OnnxInferModel
 
 
-def _build_model(monkeypatch, correct_chans=(1, 3), test_frames=(1, 2), in_names=None, logid=(), **model_kwargs):
+def _build_model(monkeypatch, correct_chans=(1, 3), test_frames=(1, 2), test_chans=None, in_names=None, logid=(), **model_kwargs):
     def fake_load_model(self, onnx_path):
         self.session = object()
 
     monkeypatch.setattr(OnnxInferModel, "load_model", fake_load_model)
     channels = 4
     in_names = [f"c{index}" for index in range(channels)] if in_names is None else in_names
+    test_chans = list(range(channels)) if test_chans is None else list(test_chans)
     return CorrectionModel(
         onnx_path="base.onnx",
         correct_chans=correct_chans,
@@ -31,8 +32,8 @@ def _build_model(monkeypatch, correct_chans=(1, 3), test_frames=(1, 2), in_names
         members=1,
         step_range=[max(test_frames)],
         test_frames=list(test_frames),
-        test_chans=list(range(channels)),
-        test_names=in_names,
+        test_chans=test_chans,
+        test_names=[in_names[index] for index in test_chans],
         in_names=in_names,
         logid=list(logid),
         buffers=dict(
@@ -210,3 +211,16 @@ def test_correction_is_postprocessing_and_not_onnx_feedback(monkeypatch):
     torch.testing.assert_close(output[:, 1, model.correct_chans], torch.full((1, 2, 8, 8), 3.0))
     torch.testing.assert_close(output[:, 0, [0, 2]], torch.ones(1, 2, 8, 8))
     torch.testing.assert_close(output[:, 1, [0, 2]], torch.full((1, 2, 8, 8), 2.0))
+
+
+def test_cascade_only_stores_test_channels(monkeypatch):
+    model = _build_model(monkeypatch, test_chans=(1, 3))
+    _install_incrementing_onnx(model)
+    model.eval()
+    processed = model.process_data(_batch(future_steps=2))
+
+    output = model.test_cascade(processed)
+
+    assert output.shape == (1, 2, 2, 8, 8)
+    torch.testing.assert_close(output[:, 0], torch.ones(1, 2, 8, 8))
+    torch.testing.assert_close(output[:, 1], torch.full((1, 2, 8, 8), 2.0))

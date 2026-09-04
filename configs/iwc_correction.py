@@ -43,6 +43,7 @@ train.teacher_forcing.teach_iters = -1
 train.teacher_forcing.teach_steps = 1
 dataloader.train.dataset.fcst_frames = 1
 dataloader.train.dataset.years = ("20100101-00", "20231231-18")
+dataloader.test.dataset.target_names = test_names
 
 ######################################################################
 # IWC precipitation contract
