@@ -27,6 +27,7 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
         test_times: Sequence[int],
         neighborhood_size: int = 1,
         channel_index: int = 0,
+        value_scale: float = 1.0,
         output_key: str = "output",
         target_key: str = "target",
     ) -> None:
@@ -34,6 +35,7 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
         self.thresholds = tuple(float(v) for v in thresholds)
         self.neighborhood_size = int(neighborhood_size)
         self.channel_index = int(channel_index)
+        self.value_scale = float(value_scale)
         self.output_key = output_key
         self.target_key = target_key
         self.test_times = tuple(int(v) for v in test_times)
@@ -45,6 +47,8 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
             raise ValueError(f"neighborhood_size must be positive, got {neighborhood_size}")
         if self.neighborhood_size % 2 == 0:
             raise ValueError(f"neighborhood_size must be odd to keep the neighborhood centered, got {neighborhood_size}")
+        if self.value_scale <= 0:
+            raise ValueError(f"value_scale must be positive, got {value_scale}")
 
     def _empty_counts(self) -> dict[float, dict[str, float]]:
         return {threshold: {"hit": 0.0, "false_alarm": 0.0, "miss": 0.0} for threshold in self.thresholds}
@@ -74,8 +78,8 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
         if self.channel_index < 0 or self.channel_index >= output.shape[2] or self.channel_index >= target.shape[2]:
             raise ValueError(f"channel_index={self.channel_index} is out of range for output/target shapes {tuple(output.shape)} and {tuple(target.shape)}")
 
-        pred = output[:, :, self.channel_index]
-        obs = target[:, :, self.channel_index]
+        pred = output[:, :, self.channel_index] * self.value_scale
+        obs = target[:, :, self.channel_index] * self.value_scale
         frame_start = int(outputs.get("frame_start", 0))
         if frame_start < 0:
             raise ValueError(f"frame_start must be non-negative, got {frame_start}")

@@ -50,6 +50,8 @@ class BasePredictor(Meta):
         add_noise: Whether to add stochastic perturbations to the inputs.
         save_dir: Directory used to dump NetCDF predictions/observations when existing.
         buffers: Optional mapping whose numpy arrays become registered buffers.
+        precip_mm_scale: Factor that converts precipitation from the dataset's
+            physical units to millimeters before applying ``precip_threshold_mm``.
 
     Notes:
         Buffers such as ``mean``, ``std``, ``mask``, and ``weight`` are consumed
@@ -93,6 +95,9 @@ class BasePredictor(Meta):
         precip_names = (precip_names,) if isinstance(precip_names, str) else tuple(precip_names)
         precip_threshold_mm = float(kwargs.pop("precip_threshold_mm", 0.1))
         self.precip_occurrence_scale = float(kwargs.pop("precip_occurrence_scale", 10.0))
+        self.precip_mm_scale = float(kwargs.pop("precip_mm_scale", 1.0))
+        if self.precip_mm_scale <= 0:
+            raise ValueError(f"precip_mm_scale must be positive, got {self.precip_mm_scale}")
 
         # If True, convert normalized model outputs/targets back to physical
         # units before evaluating PINN losses. This preserves gradients
@@ -384,15 +389,14 @@ class BasePredictor(Meta):
         channel_idx = indices[0]
         mean = self.mean[channel_idx].detach().float()
         std = self.std[channel_idx].detach().float()
-        threshold = precip_threshold_mm
+        threshold = precip_threshold_mm / self.precip_mm_scale
         logid = {int(idx) for idx in self.logid}
         if channel_idx in logid:
             threshold = math.log1p(threshold)
         self.precip_threshold = float((threshold - mean.item()) / std.item())
         self.precip_indices = tuple(indices[0:1])
         self.logger.info(
-            f"enabling precipitation losses for channels={[self.in_names[idx] for idx in indices]}, coeffs={self.precip_loss_coeffs}, "
-            f"threshold_mm={precip_threshold_mm}, occurrence_scale={self.precip_occurrence_scale}"
+            f"enabling precipitation losses for channels={[self.in_names[idx] for idx in indices]}, coeffs={self.precip_loss_coeffs}, threshold_mm={precip_threshold_mm}, precip_mm_scale={self.precip_mm_scale}, occurrence_scale={self.precip_occurrence_scale}"
         )
 
     def compute_precip_losses(self, output: torch.Tensor, target: torch.Tensor) -> dict:

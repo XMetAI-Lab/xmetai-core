@@ -60,3 +60,22 @@ def test_threshold_metrics_use_test_times_with_frame_start():
     assert results["ThreatScore"]["TS"][0] == 0.0
     assert abs(results["ThreatScore"]["TS"][1] - 1.0) < 1.0e-6
     assert results["ThreatScore"]["TS"][2] == 0.0
+
+
+def test_threshold_metrics_apply_value_scale_before_mm_threshold():
+    metric = ThreatScore(thresholds=(10.0,), test_times=(6,), value_scale=21.6)
+    metric.reset()
+    target = torch.full((1, 1, 1, 2, 2), 0.5)
+    output = target.clone()
+
+    metric.process({}, {"output": output, "target": target})
+    results = metric.evaluate()
+
+    assert results is not None
+    assert results["ThreatScore"]["Threshold"] == [10.0]
+    assert results["ThreatScore"]["TS"][0] == pytest.approx(1.0)
+
+
+def test_threshold_metrics_reject_non_positive_value_scale():
+    with pytest.raises(ValueError, match="value_scale"):
+        ThreatScore(thresholds=(10.0,), test_times=(6,), value_scale=0.0)

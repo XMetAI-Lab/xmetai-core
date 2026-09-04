@@ -1,4 +1,5 @@
 from .base_predictor import BasePredictor
+from .correction import CorrectionModel
 from .diffusion_forecast import ConditionalGenerativeForecast, ODEGenerativeForecast
 from .ema import EMA
 from .group_vae import FeatureGroupVAEPredictor, GroupVAEPredictor
@@ -12,6 +13,7 @@ __all__ = [
     "FeatureGroupVAEPredictor",
     "GroupVAEPredictor",
     "ODEGenerativeForecast",
+    "CorrectionModel",
     "TianQuan",
     "UTransformer",
 ]

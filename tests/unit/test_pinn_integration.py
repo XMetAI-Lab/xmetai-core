@@ -177,6 +177,30 @@ def test_precip_threshold_mm_uses_log_transform_for_logid():
     assert model.precip_threshold == pytest.approx(expected)
 
 
+def test_precip_threshold_mm_applies_native_unit_scale():
+    names = ["tp", "t2m"]
+    buffers = {
+        "mean": np.array([0.2, 0.0], dtype=np.float32).reshape(2, 1, 1),
+        "std": np.array([2.0, 1.0], dtype=np.float32).reshape(2, 1, 1),
+    }
+
+    model = DummyPredictor(
+        in_names=names,
+        device="cpu",
+        precision="fp32",
+        buffers=buffers,
+        logid=[0],
+        precip_loss_enable=True,
+        precip_loss_coeffs={"occurrence": 1.0},
+        precip_names=("tp",),
+        precip_threshold_mm=0.1,
+        precip_mm_scale=21.6,
+    )
+
+    expected = (math.log1p(0.1 / 21.6) - 0.2) / 2.0
+    assert model.precip_threshold == pytest.approx(expected)
+
+
 def test_precip_loss_enable_fails_without_precip_channel():
     buffers = {
         "mean": np.zeros((1, 1, 1), dtype=np.float32),
