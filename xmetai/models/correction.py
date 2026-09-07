@@ -1,6 +1,6 @@
 """Residual correction for frozen ONNX weather forecasts."""
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 import numpy as np
 import torch
@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from xmetai.layers import DarknetConvUNet2D
-from xmetai.loss import charbonnier_loss
+from xmetai.loss import charbonnier_loss, precip_loss
 from xmetai.registries import MODELS
 
 from .onnx_infer import OnnxInferModel
@@ -34,6 +34,7 @@ class CorrectionModel(OnnxInferModel):
         rollout_max: int = 0,
         rollout_alpha: float = 1.0,
         zero_init_output: bool = True,
+        target_chans: Sequence[int] | None = None,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -61,10 +62,13 @@ class CorrectionModel(OnnxInferModel):
             raise ValueError(f"correct_chans contains duplicates: {self.correct_chans}")
         if min(self.correct_chans) < 0 or max(self.correct_chans) >= self.out_chans:
             raise ValueError(f"correct_chans must be in [0, {self.out_chans - 1}], got {self.correct_chans}")
+        target_chans = list(range(self.out_chans)) if target_chans is None else list(target_chans)
+        self.correct_target_chans = [target_chans.index(channel) for channel in self.correct_chans]
         if self.precip_loss_enable:
             missing_precip_chans = sorted(set(self.precip_indices) - set(self.correct_chans))
             if missing_precip_chans:
                 raise ValueError(f"precipitation loss channels must be included in correct_chans, missing {missing_precip_chans}")
+            self.correct_precip_indices = tuple(self.correct_chans.index(channel) for channel in self.precip_indices)
 
         options = dict(backbone_kwargs)
         base_channels = int(options.pop("base_channels"))
@@ -89,14 +93,14 @@ class CorrectionModel(OnnxInferModel):
             if self.corrector.out.bias is not None:
                 nn.init.zeros_(self.corrector.out.bias)
 
-    def predict_correction(self, raw_forecast: Tensor, lead: int) -> Tensor:
-        """Predict normalized residuals for ``correct_chans`` at one lead."""
+    def predict_correction(self, raw_forecast: Tensor, lead: int | Tensor) -> Tensor:
+        """Predict residuals with a one-based lead (one step is ``freq`` hours)."""
         model_input = raw_forecast[:, 0]
         height, width = model_input.shape[-2:]
         pad_h = (self.corrector_multiple - height % self.corrector_multiple) % self.corrector_multiple
         pad_w = (self.corrector_multiple - width % self.corrector_multiple) % self.corrector_multiple
         model_input = F.pad(model_input, (0, pad_w, 0, pad_h))
-        timesteps = torch.full((model_input.shape[0],), float(lead), device=model_input.device, dtype=torch.float32)
+        timesteps = torch.ones(model_input.shape[0], device=model_input.device, dtype=torch.float32) * lead
         correction = self.corrector(model_input, timesteps, return_dict=False)[0]
         return correction[:, :, :height, :width]
 
@@ -105,46 +109,91 @@ class CorrectionModel(OnnxInferModel):
         corrected[:, 0, self.correct_chans] = corrected[:, 0, self.correct_chans] + correction.to(corrected)
         return corrected
 
+    @torch.no_grad()
     def _raw_forecast(self, physical_input: Tensor, times: Any, step: int) -> tuple[Tensor, Tensor]:
         onnx_output = self._run_onnx_step(physical_input, step=step, times=times)
         raw_physical = onnx_output[:, -1:]
-        raw_normalized = self.normalize(raw_physical)
+        # normalize updates log channels in-place; preserve physical ONNX feedback.
+        raw_normalized = self.normalize(raw_physical.clone())
         return raw_physical, raw_normalized
 
-    def forward(self, data: dict[str, Any]) -> dict[str, Tensor]:
+    def forward(
+        self, data: dict[str, Any] | None, *, rollout_state: dict[str, Any] | None = None, rollout_segment_size: int | None = None
+    ) -> dict[str, Tensor] | tuple[dict[str, Tensor], dict[str, Any], bool]:
+        """Roll out frozen forecasts and supervise corrections at selected leads.
+
+        With ExpandTrainer, segments are always one supervised lead, regardless
+        of the supplied segment size. Frozen ONNX steps before that lead run
+        without a graph. Targets stay on the host; only the current correction
+        channels reach the GPU. ``rollout_max=0`` supervises every lead in the
+        current training horizon; positive values limit the selected loss leads.
+        """
         if not self.training:
             return self.test(data)
 
-        data = self.process_data(data)
-        normalized_input = data["input"]
-        targets = data["targets"]
-        future_steps = targets.shape[1]
+        if rollout_state is None:
+            # The first segment receives data; continuation calls receive state.
+            data = cast(dict[str, Any], data)
+            targets = data["targets"][:, : data.get("future_frames", data["targets"].shape[1])]
+            model_data = data.copy()
+            del model_data["targets"]
+            processed = self.process_data(model_data)
+            physical_input = self.inv_normalize(processed["input"]).detach()
+            for step in range(self.start_frames):
+                raw_physical, _ = self._raw_forecast(physical_input, processed["times"], step=step)
+                physical_input = torch.cat([physical_input[:, 1:], raw_physical], dim=1).contiguous()
+            loss_steps, rolling_weights = self.build_loss_steps_and_weights(targets.shape[1], self.rollout_alpha, self.rollout_max)
+            rollout_state = dict(
+                targets=targets, physical_input=physical_input, times=processed["times"], loss_steps=loss_steps, rolling_weights=rolling_weights, step=0
+            )
 
-        loss_steps, rolling_weights = self.build_loss_steps_and_weights(future_steps, self.rollout_alpha, self.rollout_max)
-        loss_steps = set(loss_steps)
-        physical_input = self.inv_normalize(normalized_input).detach()
-        loss_rec = targets.new_zeros((), dtype=torch.float32)
+        physical_input = rollout_state["physical_input"]
+        targets = rollout_state["targets"]
+        loss_steps = rollout_state["loss_steps"]
+        rolling_weights = rollout_state["rolling_weights"]
+        first_step = rollout_state["step"]
+        last_step = targets.shape[1]
+        if rollout_segment_size is not None:
+            # Segment size is fixed to 1: only rollout_max controls supervision.
+            next_loss_step = next(step for step in loss_steps if step >= first_step)
+            last_step = next_loss_step + 1
+
+        loss_rec = physical_input.new_zeros((), dtype=torch.float32)
         precip_losses: dict[str, Tensor] = {}
 
-        for step in range(future_steps):
-            raw_physical, raw_normalized = self._raw_forecast(physical_input, data["times"], step=self.start_frames + step)
+        for step in range(first_step, last_step):
+            raw_physical, raw_normalized = self._raw_forecast(physical_input, rollout_state["times"], step=self.start_frames + step)
             if step in loss_steps:
                 lead = self.start_frames + step + 1
                 correction = self.predict_correction(raw_normalized, lead=lead)
-                residual_target = targets[:, step, self.correct_chans].float() - raw_normalized[:, 0, self.correct_chans]
+                target = targets[:, step : step + 1, self.correct_target_chans].to(device=physical_input.device, dtype=torch.float32, non_blocking=True)
+                raw_selected = raw_normalized[:, :, self.correct_chans]
+                residual_target = target[:, 0] - raw_selected[:, 0]
                 loss_rec = loss_rec + rolling_weights[step] * charbonnier_loss(correction, residual_target)
                 if self.precip_loss_enable:
-                    corrected = self.merge_correction(raw_normalized, correction)
-                    for name, value in self.compute_precip_losses(corrected, targets[:, step : step + 1]).items():
+                    corrected = raw_selected + correction[:, None].float()
+                    for name, value in precip_loss(
+                        corrected,
+                        target,
+                        self.correct_precip_indices,
+                        self.precip_threshold,
+                        coefficients=self.precip_loss_coeffs,
+                        occurrence_scale=self.precip_occurrence_scale,
+                        reduction="mean",
+                    ).items():
                         precip_losses[name] = precip_losses.get(name, 0) + rolling_weights[step] * value
-            physical_input = torch.cat([physical_input, raw_physical], dim=1)[:, -self.in_frames :].contiguous()
+            physical_input = torch.cat([physical_input[:, 1:], raw_physical], dim=1).contiguous()
 
-        return {"loss_rec": loss_rec, **precip_losses}
+        loss_dict = {"loss_rec": loss_rec, **{f"precip_{name}": value for name, value in precip_losses.items()}}
+        if rollout_segment_size is None:
+            return loss_dict
+        rollout_state.update(physical_input=physical_input.detach(), step=last_step)
+        return loss_dict, rollout_state, last_step > loss_steps[-1]
 
     @torch.no_grad()
     def test_cascade(self, data: dict[str, Any]) -> Tensor:
         normalized_input = data["input"]
-        total_step = max(self.test_frames)
+        total_step = self.start_frames + max(self.test_frames)
 
         save_steps = {int(step): index for index, step in enumerate(np.asarray(self.test_frames) // self.out_frames)}
         height, width = normalized_input.shape[-2:]
@@ -155,12 +204,27 @@ class CorrectionModel(OnnxInferModel):
         for _ in range(self.members):
             physical_input = self.inv_normalize(normalized_input)
             for step in range(total_step):
-                raw_physical, raw_normalized = self._raw_forecast(physical_input, data["times"], step=self.start_frames + step)
-                forecast_step = step + 1
+                raw_physical, raw_normalized = self._raw_forecast(physical_input, data["times"], step=step)
+                forecast_step = step + 1 - self.start_frames
                 if forecast_step in save_steps:
                     lead = self.start_frames + forecast_step
                     correction = self.predict_correction(raw_normalized, lead=lead)
                     outputs[:, save_steps[forecast_step]] += self.merge_correction(raw_normalized, correction).float()[:, 0, self.test_chans]
-                physical_input = torch.cat([physical_input, raw_physical], dim=1)[:, -self.in_frames :].contiguous()
+                physical_input = torch.cat([physical_input[:, 1:], raw_physical], dim=1).contiguous()
 
         return (outputs / self.members).to(normalized_input)
+
+    @torch.no_grad()
+    def export_onnx(self, raw_pred: Tensor, lead: Tensor) -> Tensor:
+        """Export the standalone corrector, without calling the original ONNX.
+
+        ``raw_pred`` is a physical full-channel forecast, [B, T, C, H, W]; only
+        its last frame is used. ``lead`` is float32 [B], measured in forecast
+        steps (1 means +6 hours for IWC), and stays an ONNX input. The output is
+        physical corrected channels in ``correct_chans`` order, [B, 1, K, H, W].
+        This output is postprocessing and must not replace the raw ONNX feedback.
+        """
+        raw_normalized = self.normalize(raw_pred[:, -1:].clone())
+        correction = self.predict_correction(raw_normalized.to(dtype=self.dtype), lead=lead)
+        corrected = raw_normalized[:, :, self.correct_chans] + correction[:, None].float()
+        return self.inv_normalize(corrected, self.correct_chans)

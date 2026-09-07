@@ -112,17 +112,19 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
                     frame_counts[threshold]["false_alarm"] += threshold_counts[threshold]["false_alarm"]
                     frame_counts[threshold]["miss"] += threshold_counts[threshold]["miss"]
 
-        results: dict[str, list[int | float]] = {"Times": [], "Threshold": [], self.metric_prefix: []}
+        # One row per lead and one score column per threshold.
+        results: dict[str, list[int | float]] = {"Times": list(self.test_times)}
+        columns = {threshold: f"{self.metric_prefix}@{threshold:g}" for threshold in self.thresholds}
+        for column in columns.values():
+            results[column] = []
         eps = 1.0e-6
-        for frame_index, t in enumerate(self.test_times):
+        for frame_index in range(len(self.test_times)):
             frame_counts = counts_by_frame.get(frame_index, self._empty_counts())
             for threshold in self.thresholds:
                 hit = frame_counts[threshold]["hit"]
                 false_alarm = frame_counts[threshold]["false_alarm"]
                 miss = frame_counts[threshold]["miss"]
-                results["Times"].append(t)
-                results["Threshold"].append(threshold)
-                results[self.metric_prefix].append(self._metric_value(hit, false_alarm, miss, eps))
+                results[columns[threshold]].append(self._metric_value(hit, false_alarm, miss, eps))
         return {self.metric_name: results}
 
 
