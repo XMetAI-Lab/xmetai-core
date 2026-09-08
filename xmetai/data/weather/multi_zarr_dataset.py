@@ -219,7 +219,7 @@ class MultiZarrDataset(Dataset):
         else:
             rht_inds = rht_inds[self.fcst_frames - 1]
 
-        if not self.training and not self.inference_only and self.target_select_vars is not None:
+        if not self.inference_only and self.target_select_vars is not None:
             inputs, input_valid_mask = self._read_frames(lft_inds, self.select_vars)
             targets, target_valid_mask = self._read_frames(rht_inds, self.target_select_vars)
             return self._build_sample(time_tensor, inputs, targets, input_valid_mask, target_valid_mask)

@@ -111,79 +111,51 @@ class OnnxInferModel(BasePredictor):
         return
 
     @torch.no_grad()
-    def inference(
-        self,
-        input,
-        step,
-        num_step,
-        times=None,
-    ):
+    def _run_onnx_step(self, input, step, times=None):
+        """Run one full-channel ONNX forecast step one sample at a time."""
+        input = input.float()
         model = self.session
-        outputs = input.new_zeros(input.shape[0], num_step, len(self.test_chans), *input.shape[-2:])
-        output = input.new_zeros(model.get_outputs()[0].shape)
-        step_tensor = input.new_zeros([1])
-        hour_tensor = input.new_zeros([1])
-        doy_tensor = input.new_zeros([1])
-        self.logger.debug(f"inference for output shape:{outputs.shape}, dtype:{outputs.dtype}")
-        input_names = [x.name for x in model.get_inputs()]
-        io_binding = model.io_binding()
-        for k in range(num_step):
-            self.logger.debug(f"inference step {step} with input shape:{input.shape}, dtype:{input.dtype}, min: {input.min():.3f}, max: {input.max():.3f}")
+        input_names = {node.name for node in model.get_inputs()}
+        timestamp = self.get_timestamp(input, times, step)
+        output_meta = model.get_outputs()[0]
+        output_shape = [1, *output_meta.shape[1:]]
+        outputs = []
+        for batch_index in range(input.shape[0]):
+            sample = input[batch_index : batch_index + 1].contiguous()
+            device_type = sample.device.type
+            device_id = self.device_id if device_type == "cuda" else 0
+            io_binding = model.io_binding()
             io_binding.bind_input(
-                "input",
-                device_type="cuda",
-                device_id=self.device_id,
-                element_type=np.float32,
-                shape=input.shape,
-                buffer_ptr=input.data_ptr(),
+                "input", device_type=device_type, device_id=device_id, element_type=np.float32, shape=sample.shape, buffer_ptr=sample.data_ptr()
             )
-            timestamp = self.get_timestamp(input, times, step)
-            self.logger.debug(f"timestamp: {timestamp}")
-            if "step" in input_names:
-                step_tensor.fill_(timestamp["step"].item())
-                self.logger.debug(f"step_tensor:{step_tensor}")
-                io_binding.bind_input(
-                    "step",
-                    device_type="cuda",
-                    device_id=self.device_id,
-                    element_type=np.float32,
-                    shape=[1],
-                    buffer_ptr=step_tensor.data_ptr(),
-                )
-            if "hour" in input_names:
-                hour_tensor.fill_(timestamp["hour"].item())
-                self.logger.debug(f"hour_tensor:{hour_tensor}")
-                io_binding.bind_input(
-                    "hour",
-                    device_type="cuda",
-                    device_id=self.device_id,
-                    element_type=np.float32,
-                    shape=[1],
-                    buffer_ptr=hour_tensor.data_ptr(),
-                )
-            if "doy" in input_names:
-                doy_tensor.fill_(timestamp["doy"].item())
-                self.logger.debug(f"doy_tensor:{doy_tensor}")
-                io_binding.bind_input(
-                    "doy",
-                    device_type="cuda",
-                    device_id=self.device_id,
-                    element_type=np.float32,
-                    shape=[1],
-                    buffer_ptr=doy_tensor.data_ptr(),
-                )
-            self.logger.debug(f"model output shape:{output.shape}, dtype:{output.dtype}")
+
+            scalar_inputs = []
+            for name in ("step", "hour", "doy"):
+                if name in input_names:
+                    value = timestamp[name][batch_index : batch_index + 1].float().contiguous()
+                    scalar_inputs.append(value)
+                    io_binding.bind_input(
+                        name, device_type=device_type, device_id=device_id, element_type=np.float32, shape=value.shape, buffer_ptr=value.data_ptr()
+                    )
+
+            output = sample.new_zeros(output_shape)
             io_binding.bind_output(
-                model.get_outputs()[0].name,
-                device_type="cuda",
-                device_id=self.device_id,
-                element_type=np.float32,
-                shape=output.shape,
-                buffer_ptr=output.data_ptr(),
+                output_meta.name, device_type=device_type, device_id=device_id, element_type=np.float32, shape=output.shape, buffer_ptr=output.data_ptr()
             )
             model.run_with_iobinding(io_binding)
-            outputs[:, k] = output[:, -1:, self.test_chans]
-            input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
+            outputs.append(output)
+        return torch.cat(outputs, dim=0)
+
+    @torch.no_grad()
+    def inference(self, input, step, num_step, times=None):
+        outputs = input.new_zeros(input.shape[0], num_step, len(self.test_chans), *input.shape[-2:])
+        self.logger.debug(f"inference for output shape:{outputs.shape}, dtype:{outputs.dtype}")
+        for k in range(num_step):
+            self.logger.debug(f"inference step {step} with input shape:{input.shape}, dtype:{input.dtype}, min: {input.min():.3f}, max: {input.max():.3f}")
+            output = self._run_onnx_step(input, step=step, times=times)
+            self.logger.debug(f"model output shape:{output.shape}, dtype:{output.dtype}")
+            outputs[:, k] = output[:, -1, self.test_chans]
+            input = torch.cat([input, output[:, -1:]], dim=1)[:, -self.in_frames :]
             step += 1
         return outputs
 
@@ -208,12 +180,7 @@ class OnnxInferModel(BasePredictor):
             curr_input = input.clone()
             curr_step = step
 
-            output = self.inference(
-                curr_input,
-                step=curr_step,
-                num_step=num_step,
-                times=times,
-            )
+            output = self.inference(curr_input, step=curr_step, num_step=num_step, times=times)
             curr_input = output[:, -self.in_frames :]
             normed_output = self.normalize(output, self.test_chans)
             # accumulate result with current step.

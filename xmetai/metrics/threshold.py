@@ -1,3 +1,4 @@
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -26,14 +27,26 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
         *,
         test_times: Sequence[int],
         neighborhood_size: int = 1,
+        composite_weights: Sequence[float] = (),
         channel_index: int = 0,
+        channel_name: str | None = None,
+        test_names: Sequence[str] = (),
+        value_scale: float = 1.0,
         output_key: str = "output",
         target_key: str = "target",
     ) -> None:
         super().__init__()
         self.thresholds = tuple(float(v) for v in thresholds)
+        self.composite_weights = tuple(float(v) for v in composite_weights)
+        if self.composite_weights and (
+            len(self.composite_weights) != len(self.thresholds)
+            or any(not math.isfinite(v) or v < 0 for v in self.composite_weights)
+            or sum(self.composite_weights) <= 0
+        ):
+            raise ValueError("composite_weights must match thresholds, be finite/nonnegative, and have positive sum")
         self.neighborhood_size = int(neighborhood_size)
-        self.channel_index = int(channel_index)
+        self.channel_index = list(test_names).index(channel_name) if channel_name is not None else int(channel_index)
+        self.value_scale = float(value_scale)
         self.output_key = output_key
         self.target_key = target_key
         self.test_times = tuple(int(v) for v in test_times)
@@ -45,6 +58,8 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
             raise ValueError(f"neighborhood_size must be positive, got {neighborhood_size}")
         if self.neighborhood_size % 2 == 0:
             raise ValueError(f"neighborhood_size must be odd to keep the neighborhood centered, got {neighborhood_size}")
+        if self.value_scale <= 0:
+            raise ValueError(f"value_scale must be positive, got {value_scale}")
 
     def _empty_counts(self) -> dict[float, dict[str, float]]:
         return {threshold: {"hit": 0.0, "false_alarm": 0.0, "miss": 0.0} for threshold in self.thresholds}
@@ -74,8 +89,8 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
         if self.channel_index < 0 or self.channel_index >= output.shape[2] or self.channel_index >= target.shape[2]:
             raise ValueError(f"channel_index={self.channel_index} is out of range for output/target shapes {tuple(output.shape)} and {tuple(target.shape)}")
 
-        pred = output[:, :, self.channel_index]
-        obs = target[:, :, self.channel_index]
+        pred = output[:, :, self.channel_index] * self.value_scale
+        obs = target[:, :, self.channel_index] * self.value_scale
         frame_start = int(outputs.get("frame_start", 0))
         if frame_start < 0:
             raise ValueError(f"frame_start must be non-negative, got {frame_start}")
@@ -108,17 +123,34 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
                     frame_counts[threshold]["false_alarm"] += threshold_counts[threshold]["false_alarm"]
                     frame_counts[threshold]["miss"] += threshold_counts[threshold]["miss"]
 
-        results: dict[str, list[int | float]] = {"Times": [], "Threshold": [], self.metric_prefix: []}
+        # One row per lead and one score column per threshold.
+        results: dict[str, list[int | float]] = {"Times": list(self.test_times)}
+        columns = {threshold: f"{self.metric_prefix}@{threshold:g}" for threshold in self.thresholds}
+        for column in columns.values():
+            results[column] = []
         eps = 1.0e-6
-        for frame_index, t in enumerate(self.test_times):
+        for frame_index in range(len(self.test_times)):
             frame_counts = counts_by_frame.get(frame_index, self._empty_counts())
             for threshold in self.thresholds:
                 hit = frame_counts[threshold]["hit"]
                 false_alarm = frame_counts[threshold]["false_alarm"]
                 miss = frame_counts[threshold]["miss"]
-                results["Times"].append(t)
-                results["Threshold"].append(threshold)
-                results[self.metric_prefix].append(self._metric_value(hit, false_alarm, miss, eps))
+                results[columns[threshold]].append(self._metric_value(hit, false_alarm, miss, eps))
+        if self.composite_weights:
+            composite = []
+            for index in range(len(self.test_times)):
+                valid = []
+                counts = counts_by_frame.get(index, self._empty_counts())
+                for threshold, weight in zip(self.thresholds, self.composite_weights):
+                    hit = counts[threshold]["hit"]
+                    miss = counts[threshold]["miss"]
+                    false_alarm = counts[threshold]["false_alarm"]
+                    denominator = hit + miss + (false_alarm if self.metric_prefix == "TS" else 0.0)
+                    if denominator > 0:
+                        valid.append((results[columns[threshold]][index], weight))
+                total_weight = sum(weight for _, weight in valid)
+                composite.append(sum(value * weight for value, weight in valid) / total_weight if total_weight > 0 else float("nan"))
+            results["Composite"] = composite
         return {self.metric_name: results}
 
 
