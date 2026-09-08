@@ -29,9 +29,10 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.layers import AdaptiveLN, EarthConvTranspose2d, set_lora_step
-from xmetai.loss import charbonnier_loss, field_dynamics_consistency_loss
+from xmetai.loss import SphericalBandPowerLoss, charbonnier_loss, field_dynamics_consistency_loss
 from xmetai.registries import MODELS
 from xmetai.utils import get_event_storage
+from xmetai.utils.events import has_event_storage
 
 from .base_predictor import BasePredictor
 from .utransformer import UTransformer
@@ -369,7 +370,12 @@ class LatentMixerPredictor(UTransformer):
         norm_type: normalization type ("adaln", etc.)
         ffn_type: feed-forward type ("gegluffn", etc.)
         layer_type: block type ("swin", etc.)
+        group_norm_mode: per-group normalization mode ("none", "norm", or "adaptive")
     """
+
+    GROUP_NORM_MODES = {"none", "norm", "adaptive"}
+    GROUP_NORM_WARMUP_ITERS = 1000
+    GROUP_NORM_RAMP_ITERS = 4000
 
     def __init__(
         self,
@@ -385,8 +391,12 @@ class LatentMixerPredictor(UTransformer):
         ffn_type: str = "gegluffn",
         layer_type: str = "mamba_embed",
         use_projection: bool = True,
+        group_norm_mode: str = "none",
         **kwargs: Any,
     ) -> None:
+        if group_norm_mode not in self.GROUP_NORM_MODES:
+            raise ValueError(f"group_norm_mode must be one of {sorted(self.GROUP_NORM_MODES)}, got {group_norm_mode!r}.")
+
         # Initialize parent UTransformer with minimal dummy parameters.
         # The critical parameters for layer construction are:
         #   - embed_dim: must match latent_dim
@@ -416,10 +426,24 @@ class LatentMixerPredictor(UTransformer):
         del self.head
         self.drop_mcmc = drop_mcmc
         self.latent_dim = latent_dim
+        self.group_norm_mode = group_norm_mode
+        if self.group_norm_mode == "adaptive":
+            self.group_norm_logits = nn.Parameter(torch.zeros(len(latent_dim)))
+            self.group_norm_logits._no_weight_decay = True
+            # Keep old checkpoints functionally unchanged at zero, then save the
+            # fine-tuning progress so export preserves the selected strength.
+            self.register_buffer("group_norm_max", torch.tensor(0.0))
         if use_projection:
             self.group_projs = torch.nn.ModuleList([torch.nn.Linear(sum(latent_dim), d) for d in latent_dim])
         else:
             self.group_projs = None
+
+    def _update_group_norm_max(self) -> None:
+        if not self.training or not has_event_storage():
+            return
+        current_iter = get_event_storage().iter
+        progress = max(0.0, min(1.0, (current_iter - self.GROUP_NORM_WARMUP_ITERS) / self.GROUP_NORM_RAMP_ITERS))
+        self.group_norm_max.fill_(progress)
 
     def forward(self, h_states, timestamp=None):
         if len(h_states) != len(self.latent_dim):
@@ -427,7 +451,18 @@ class LatentMixerPredictor(UTransformer):
         embed_dims = [h.shape[-1] for h in h_states]
         if embed_dims != self.latent_dim:
             raise ValueError(f"LatentMixerPredictor expects per-group latent_dim={self.latent_dim}, got {embed_dims}")
-        h = torch.cat(h_states, dim=-1)  # (B, N, G*D)
+        if self.group_norm_mode == "none":
+            mixer_states = h_states
+        elif self.group_norm_mode == "norm":
+            mixer_states = [F.layer_norm(x.float(), (d,), eps=1e-6).to(x) for x, d in zip(h_states, self.latent_dim)]
+        else:
+            self._update_group_norm_max()
+            offsets = 2.0 * self.group_norm_logits.sigmoid() - 1.0
+            strengths = self.group_norm_max + self.group_norm_max * (1.0 - self.group_norm_max) * offsets
+            mixer_states = [
+                torch.lerp(x, F.layer_norm(x.float(), (d,), eps=1e-6).to(x), strength.to(x)) for x, d, strength in zip(h_states, self.latent_dim, strengths)
+            ]
+        h = torch.cat(mixer_states, dim=-1)
         time_embedding = self.get_embed(timestamp)
         shortcut = h_states
         for i, blk in enumerate(self.layers):
@@ -471,10 +506,13 @@ class _BaseGroupVAE(BasePredictor):
         vt_num_layers: int = 12,
         vt_layer_type: str = "swin",
         vt_use_proj: bool = True,
+        vt_group_norm_mode: str = "none",
         residual_vae_indices: list[int] | None = None,
         alpha: float = 1.0,
         loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
         latent_dyn_weight: float = 0.0,
+        spectral_loss_weight: float = 0.0,
+        spectral_loss_names: tuple[str, ...] = (),
         rollout_max: int = 50,
         pretrain: bool = False,
         pretrain_mask_ratio: float = 0.15,
@@ -494,6 +532,26 @@ class _BaseGroupVAE(BasePredictor):
             raise ValueError("loss_weight must contain five floats: (vae_input, vae_target, pred_rec, latent_reg, latent_pred)")
         self.loss_weight = loss_weight
         self.latent_dyn_weight = float(latent_dyn_weight)
+        self.spectral_loss_weight = float(spectral_loss_weight)
+        if not math.isfinite(self.spectral_loss_weight) or self.spectral_loss_weight < 0:
+            raise ValueError("spectral_loss_weight must be finite and nonnegative")
+        self.compute_prior_vae = self.loss_weight[0] != 0
+        self.compute_posterior_vae = self.loss_weight[1] != 0
+        self.compute_pred_rec = self.loss_weight[2] != 0
+        self.compute_latent_reg = self.loss_weight[3] != 0
+        self.compute_latent_pred = self.compute_posterior_vae and self.loss_weight[4] != 0
+        self.compute_latent_dyn = self.latent_dyn_weight != 0
+        self.compute_spectral_loss = self.spectral_loss_weight > 0
+        self.spectral_loss = None
+        if self.compute_spectral_loss:
+            if not spectral_loss_names or len(set(spectral_loss_names)) != len(spectral_loss_names):
+                raise ValueError("Enabled spectral loss requires nonempty, unique spectral_loss_names")
+            spectral_indices = [self.in_names.index(name) for name in spectral_loss_names]
+            if set(spectral_indices).intersection(self.logid):
+                raise ValueError("Spectral loss expects linearly normalized channels, not log-transformed channels")
+            self.register_buffer("spectral_channel_indices", torch.tensor(spectral_indices, dtype=torch.long), persistent=False)
+            self.spectral_loss = SphericalBandPowerLoss(image_size)
+            self.logger.info(f"Spectral loss: weight={self.spectral_loss_weight}, channels={spectral_loss_names}, bands={self.spectral_loss.bands}")
         self.const_chans = const_chans
         self.rollout_max = rollout_max
         if self.in_frames < self.out_frames + 1:
@@ -610,6 +668,7 @@ class _BaseGroupVAE(BasePredictor):
             ffn_type=ffn_type,
             drop_mcmc=drop_mcmc,
             use_projection=vt_use_proj,
+            group_norm_mode=vt_group_norm_mode,
         )
         self.logger.info(
             f"Initialized {self.__class__.__name__} with {self.num_groups} groups, embed_dims={self.embed_dims}, residual_indices={self.residual_vae_indices}"
@@ -637,6 +696,8 @@ class _BaseGroupVAE(BasePredictor):
         )
         if self.pretrain:
             self._configure_pretrain_trainable()
+        elif not self.compute_posterior_vae:
+            self.freeze(("posterior_encoder_group",))
 
     def _configure_pretrain_trainable(self) -> None:
         """Keep only posterior encoder and decoder trainable during pretraining.
@@ -1098,7 +1159,7 @@ class _BaseGroupVAE(BasePredictor):
         loss_latent_pred_rec = input.new_zeros(())
         loss_latent_reg = input.new_zeros(())
         loss_latent_dyn_consistency = input.new_zeros(())
-        compute_latent_dyn_loss = self.latent_dyn_weight != 0.0
+        loss_spectral = input.new_zeros(())
         pinn_acc: dict[str, torch.Tensor] = {}
         precip_acc: dict[str, torch.Tensor] = {}
 
@@ -1119,39 +1180,45 @@ class _BaseGroupVAE(BasePredictor):
             block_weight = rolling_weights[block_start : block_start + self.out_frames].mean()
             input = self.reset_input(input)
             true_input = self.reset_input(true_input)
-            new_target = self._build_posterior_input(true_input, target)
             timestamp = self.get_timestamp(input, times, t)
             timestamp_target = self.get_timestamp(input, times, t + self.out_frames)
 
             h_prior_states = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
-            h_posterior_states = self._encode_all_groups(new_target, timestamp_target, const=const, is_prior=False)
-            vae_input_groups = self._decode_all_groups(h_prior_states, timestamp, const=const, lora_step=t)
-            vae_target_groups = self._decode_all_groups(
-                h_posterior_states,
-                timestamp_target,
-                const=const,
-                lora_step=t + self.out_frames,
-            )
+            # The prior always drives forecasting, independently of reconstruction.
+            if self.compute_latent_reg:
+                for h_prior in h_prior_states:
+                    loss_latent_reg += block_weight * h_prior.square().mean() / self.num_groups
 
-            for h_prior, h_posterior in zip(h_prior_states, h_posterior_states):
-                loss_latent_reg += torch.mean(h_prior**2) + torch.mean(h_posterior**2)
-
-            vae_input_base = true_input[:, -self.out_frames - 1 : -1]
-            vae_input_recon = self._assemble_prediction(vae_input_groups, vae_input_base)
-            vae_input_target = true_input[:, -self.out_frames :]
-            loss_vae_input += block_weight * charbonnier_loss(vae_input_recon, vae_input_target, weight=self.weight)
-
-            vae_target_base = new_target[:, -self.out_frames - 1 : -1]
-            vae_target_recon = self._assemble_prediction(vae_target_groups, vae_target_base)
-            loss_vae_target += block_weight * charbonnier_loss(vae_target_recon, target, weight=self.weight)
+            if self.compute_prior_vae:
+                vae_input_groups = self._decode_all_groups(h_prior_states, timestamp, const=const, lora_step=t)
+                vae_input_base = true_input[:, -self.out_frames - 1 : -1]
+                vae_input_recon = self._assemble_prediction(vae_input_groups, vae_input_base)
+                vae_input_target = true_input[:, -self.out_frames :]
+                loss_vae_input += block_weight * charbonnier_loss(vae_input_recon, vae_input_target, weight=self.weight)
 
             z_coupled = self.latent_mixer(h_prior_states, timestamp_target)
-            for group_index in range(self.num_groups):
-                loss_latent_pred_rec += block_weight * charbonnier_loss(z_coupled[group_index], h_posterior_states[group_index].detach())
+            if self.compute_posterior_vae:
+                new_target = self._build_posterior_input(true_input, target)
+                h_posterior_states = self._encode_all_groups(new_target, timestamp_target, const=const, is_prior=False)
+                vae_target_groups = self._decode_all_groups(h_posterior_states, timestamp_target, const=const, lora_step=t + self.out_frames)
+                vae_target_base = new_target[:, -self.out_frames - 1 : -1]
+                vae_target_recon = self._assemble_prediction(vae_target_groups, vae_target_base)
+                loss_vae_target += block_weight * charbonnier_loss(vae_target_recon, target, weight=self.weight)
+                if self.compute_latent_reg:
+                    for h_posterior in h_posterior_states:
+                        loss_latent_reg += block_weight * h_posterior.square().mean() / self.num_groups
+                if self.compute_latent_pred:
+                    for predicted, posterior in zip(z_coupled, h_posterior_states):
+                        loss_latent_pred_rec += block_weight * charbonnier_loss(predicted, posterior.detach())
 
             group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames)
             output = self._assemble_prediction(group_outputs, input)
-            if compute_latent_dyn_loss:
+            if self.compute_spectral_loss:
+                loss_spectral += block_weight * self.spectral_loss(
+                    output.index_select(2, self.spectral_channel_indices),
+                    target.index_select(2, self.spectral_channel_indices),
+                )
+            if self.compute_latent_dyn:
                 loss_latent_dyn_consistency += block_weight * field_dynamics_consistency_loss(
                     output=output,
                     target=target,
@@ -1159,8 +1226,9 @@ class _BaseGroupVAE(BasePredictor):
                     target_input=true_input,
                     group_slice_indices=self.group_slice_indices,
                 )
-            field_weight = self.channel_weights * self.weight if "channel_weights" in self._buffers else self.weight
-            loss_pred_rec += block_weight * charbonnier_loss(output, target, weight=field_weight)
+            if self.compute_pred_rec:
+                field_weight = self.channel_weights * self.weight if "channel_weights" in self._buffers else self.weight
+                loss_pred_rec += block_weight * charbonnier_loss(output, target, weight=field_weight)
 
             if self.pinn_enable:
                 for loss_name, loss_value in self.compute_pinn_losses(output, target).items():
@@ -1183,15 +1251,21 @@ class _BaseGroupVAE(BasePredictor):
         )
         done = not loss_block_indices.intersection(range(segment_index * segment_size, num_rollout_blocks))
 
-        loss_dict = {
-            "loss_pred_rec": self.loss_weight[2] * loss_pred_rec,
-            "loss_vae_input": self.loss_weight[0] * loss_vae_input,
-            "loss_vae_target": self.loss_weight[1] * loss_vae_target,
-            "loss_latent_reg": self.loss_weight[3] * loss_latent_reg * kl_weight,
-            "loss_latent_pred_rec": self.loss_weight[4] * loss_latent_pred_rec,
-        }
-        if compute_latent_dyn_loss:
+        loss_dict = {}
+        if self.compute_pred_rec:
+            loss_dict["loss_pred_rec"] = self.loss_weight[2] * loss_pred_rec
+        if self.compute_prior_vae:
+            loss_dict["loss_vae_input"] = self.loss_weight[0] * loss_vae_input
+        if self.compute_posterior_vae:
+            loss_dict["loss_vae_target"] = self.loss_weight[1] * loss_vae_target
+        if self.compute_latent_reg:
+            loss_dict["loss_latent_reg"] = self.loss_weight[3] * loss_latent_reg * kl_weight
+        if self.compute_latent_pred:
+            loss_dict["loss_latent_pred_rec"] = self.loss_weight[4] * loss_latent_pred_rec
+        if self.compute_latent_dyn:
             loss_dict["loss_latent_dyn_consistency"] = self.latent_dyn_weight * loss_latent_dyn_consistency
+        if self.compute_spectral_loss:
+            loss_dict["loss_spectral"] = self.spectral_loss_weight * loss_spectral
         loss_dict.update(pinn_acc)
         loss_dict.update(precip_acc)
         if rollout_segment_size is None:

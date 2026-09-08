@@ -39,6 +39,7 @@ logging.basicConfig(level=logging.INFO)
 #####################################################################
 train.use_ddp = False  # Disable DDP for ONNX inference
 train.use_fsdp = False  # Disable FSDP for ONNX inference
+train.use_fsdp2 = False  # Disable FSDP2 for ONNX inference
 ######################################################################
 # Model settings
 ######################################################################

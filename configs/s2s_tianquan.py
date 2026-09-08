@@ -25,6 +25,7 @@ from .s2s_base import (  # noqa: F401
     ROOT_PATH,
     buffers,
     depths,
+    export_onnx,
     in_chans,
     in_frames,
     in_names,
@@ -212,23 +213,5 @@ dataloader.test = L(build_test_loader)(
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
 
-export_onnx = False
 if export_onnx:
-    from xmetai.data import make_onnx
-
-    train.use_ddp = False
-    train.use_fsdp = False
-    train.activation_checkpointing = False
-    dataloader.test.total_batch_size = 1
-    make_onnx(
-        model=train,
-        dataloader_cfg=dataloader.test,
-        mean=buffers.get("mean", None),
-        std=buffers.get("std", None),
-        in_names=in_names,
-        output_dir=output_dir,
-        # embed_types=["step"],
-        embed_types=["step", "hour", "doy"],
-        model_name="s2s_pred.onnx",
-        device=train.device_type,
-    )
+    train.export_kwargs.save_name = os.path.join(output_dir, "s2s_tianquan.onnx")
