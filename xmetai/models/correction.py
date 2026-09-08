@@ -100,7 +100,9 @@ class CorrectionModel(OnnxInferModel):
         pad_h = (self.corrector_multiple - height % self.corrector_multiple) % self.corrector_multiple
         pad_w = (self.corrector_multiple - width % self.corrector_multiple) % self.corrector_multiple
         model_input = F.pad(model_input, (0, pad_w, 0, pad_h))
-        timesteps = torch.ones(model_input.shape[0], device=model_input.device, dtype=torch.float32) * lead
+        lead_tensor = lead if isinstance(lead, Tensor) else torch.tensor(lead, device=model_input.device)
+        lead_tensor = lead_tensor.to(device=model_input.device, dtype=model_input.dtype)
+        timesteps = lead_tensor.expand(model_input.shape[0]) if lead_tensor.ndim == 0 else lead_tensor
         correction = self.corrector(model_input, timesteps, return_dict=False)[0]
         return correction[:, :, :height, :width]
 
