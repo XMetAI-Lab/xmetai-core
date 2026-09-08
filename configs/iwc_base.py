@@ -115,14 +115,6 @@ dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
     test_frames=test_frames,
     freq=freq,
 )
-# Follow the shared RMSE channel/lead selection when a derived config overrides it.
-dataloader.evaluator.append(
-    L(METRICS.get("ForecastFidelity"))(
-        test_names="${..0.test_names}",
-        test_times="${..0.test_times}",
-        image_size=(int(180 / degree) + 1, int(360 / degree)),
-    )
-)
 # Physical TP is already in millimeters per 6 hours, matching the corrector loss.
 precip_mm_scale = 1.0
 # Expose as a config field (not just a python constant) so it can be overridden from the
