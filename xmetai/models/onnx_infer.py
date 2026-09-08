@@ -113,7 +113,7 @@ class OnnxInferModel(BasePredictor):
     @torch.no_grad()
     def _run_onnx_step(self, input, step, times=None):
         """Run one full-channel ONNX forecast step one sample at a time."""
-        input = input.float().contiguous()
+        input = input.float()
         model = self.session
         input_names = {node.name for node in model.get_inputs()}
         timestamp = self.get_timestamp(input, times, step)
@@ -121,7 +121,7 @@ class OnnxInferModel(BasePredictor):
         output_shape = [1, *output_meta.shape[1:]]
         outputs = []
         for batch_index in range(input.shape[0]):
-            sample = input[batch_index : batch_index + 1]
+            sample = input[batch_index : batch_index + 1].contiguous()
             device_type = sample.device.type
             device_id = self.device_id if device_type == "cuda" else 0
             io_binding = model.io_binding()

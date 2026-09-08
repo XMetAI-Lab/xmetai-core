@@ -42,7 +42,7 @@ train.use_fsdp = False  # Disable FSDP for ONNX inference
 ######################################################################
 # Model settings
 ######################################################################
-test_frames = np.arange(1, 61).tolist()  # predict 1-3 days ahead
+test_frames = np.arange(1, 61).tolist()  # predict 1-15 days ahead
 step_range = [max(test_frames)]
 members = 8  # for ensemble prediction inference mse calculation.
 zero_accum = True  # set accumid to zero every time.
