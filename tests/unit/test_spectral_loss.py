@@ -7,22 +7,20 @@ from xmetai.loss import SphericalBandPowerLoss
 
 
 def make_loss(image_size, bands):
-    # Low-degree fixtures keep analytic tests independent of production grid size.
-    class AnalyticBandPowerLoss(SphericalBandPowerLoss):
-        BANDS = bands
-
-    return AnalyticBandPowerLoss(image_size)
+    return SphericalBandPowerLoss(image_size, bands=bands)
 
 
-def harmonic_field() -> torch.Tensor:
-    theta = torch.linspace(0, math.pi, 33)[:, None]
+def harmonic_field(nlat=33) -> torch.Tensor:
+    theta = torch.linspace(0, math.pi, nlat)[:, None]
     longitude = torch.arange(64)[None, :] * (2 * math.pi / 64)
     return (theta.sin() * longitude.cos())[None, None, None]
 
 
-def test_spherical_power_normalization_and_degree_isolation() -> None:
-    loss = make_loss((33, 64), bands=((1, 4),))
-    power = loss._power(harmonic_field())
+@pytest.mark.parametrize("nlat", [32, 33, 120])
+def test_spherical_power_normalization_and_degree_isolation(nlat) -> None:
+    loss = make_loss((nlat, 64), bands=((1, 4),))
+    torch.testing.assert_close(loss.latitude_weights.sum(), torch.tensor(1.0))
+    power = loss._power(harmonic_field(nlat))
     torch.testing.assert_close(power[0, 1], torch.tensor(4 * math.pi / 3), rtol=1e-5, atol=1e-6)
     assert power[0, [0, 2, 3, 4]].sum() < 1e-10
 
@@ -76,6 +74,14 @@ def test_separate_bands_detect_redistributed_power() -> None:
 def test_invalid_spectral_grid_fails_at_construction(size) -> None:
     with pytest.raises(ValueError):
         SphericalBandPowerLoss(size)
+
+
+def test_group_vae_grid_resolves_highest_configured_degree() -> None:
+    loss = make_loss((120, 240), bands=((1, 4), (5, 20), (21, 40), (41, 59)))
+    colatitude = torch.linspace(0, math.pi, 120, dtype=torch.float64)
+    field = math.sqrt(119 / (4 * math.pi)) * torch.special.legendre_polynomial_p(colatitude.cos(), 59)
+    power = loss.band_power(field[:, None].expand(-1, 240))
+    torch.testing.assert_close(power, torch.tensor([0.0, 0.0, 0.0, 1.0]), rtol=1e-5, atol=1e-6)
 
 
 def test_production_bands_are_fixed() -> None:

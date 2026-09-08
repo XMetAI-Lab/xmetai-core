@@ -133,18 +133,6 @@ def test_precipitation_loss_requires_correcting_precipitation_channel(monkeypatc
         )
 
 
-def test_inherited_onnx_inference_uses_full_step_output(monkeypatch):
-    model = _build_model(monkeypatch)
-    _install_incrementing_onnx(model)
-    physical_input = torch.zeros(1, 2, 4, 8, 8)
-
-    output = model.inference(physical_input, step=0, num_step=2)
-
-    assert output.shape == (1, 2, 4, 8, 8)
-    torch.testing.assert_close(output[:, 0], torch.ones(1, 4, 8, 8))
-    torch.testing.assert_close(output[:, 1], torch.full((1, 4, 8, 8), 2.0))
-
-
 def test_onnx_step_runs_multi_batch_one_sample_at_a_time(monkeypatch):
     class FakeBinding:
         def __init__(self):
@@ -187,6 +175,25 @@ def test_onnx_step_runs_multi_batch_one_sample_at_a_time(monkeypatch):
 
     assert model.session.batch_shapes == [(1, 2, 4, 8, 8)] * 3
     torch.testing.assert_close(output[:, 0, 0, 0, 0], torch.tensor([1.0, 2.0, 3.0]))
+
+
+@pytest.mark.parametrize("start_frames", [0, 2])
+def test_onnx_cascade_saves_relative_leads(monkeypatch, start_frames):
+    model = _build_model(monkeypatch, test_frames=(1, 3), test_chans=(1, 3), start_frames=start_frames)
+    model.members = 2
+    steps = []
+
+    def fake_run_onnx_step(physical_input, step, times=None):
+        steps.append(step)
+        return physical_input[:, -1:] + 1.0
+
+    model._run_onnx_step = fake_run_onnx_step
+    inputs = torch.arange(4, dtype=torch.float32)[None, None, :, None, None].expand(1, 2, 4, 8, 8)
+    output = OnnxInferModel.test_cascade(model, {"input": inputs, "times": None})
+
+    expected = inputs[:, :1, [1, 3]] + torch.tensor([1.0, 3.0])[None, :, None, None, None]
+    torch.testing.assert_close(output, expected.half())
+    assert steps == list(range(start_frames, start_frames + 3)) * model.members
 
 
 def test_correction_is_postprocessing_and_not_onnx_feedback(monkeypatch):

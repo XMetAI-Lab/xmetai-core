@@ -118,8 +118,14 @@ if export_onnx:
 
     train.use_ddp = False
     train.use_fsdp = False
+    train.use_fsdp2 = False
     train.activation_checkpointing = False
     dataloader.test.total_batch_size = 1
+    dataloader.test.num_workers = 1
+    dataloader.test.pin_memory = False
+    dataloader.test.dataset.inference_only = True
+    dataloader.test.dataset.fcst_frames = [1]
+
     make_onnx(
         model=train,
         dataloader_cfg=dataloader.test,

@@ -39,6 +39,7 @@ logging.basicConfig(level=logging.INFO)
 #####################################################################
 train.use_ddp = False  # Disable DDP for ONNX inference
 train.use_fsdp = False  # Disable FSDP for ONNX inference
+train.use_fsdp2 = False  # Disable FSDP2 for ONNX inference
 ######################################################################
 # Model settings
 ######################################################################
@@ -73,6 +74,7 @@ model.precision = "fp32"
 ######################################################################
 dataloader.test.dataset.interval = 100
 dataloader.test.dataset.fcst_frames = test_frames
+dataloader.test.dataset.target_names = test_names
 eval_times = [int(t * 6) for t in test_frames]
 for _evaluator in dataloader.evaluator:
     if hasattr(_evaluator, "test_times"):

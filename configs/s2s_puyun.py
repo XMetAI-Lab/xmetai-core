@@ -15,6 +15,7 @@ from .s2s_base import (  # noqa: F401
     buffers,
     dataloader,
     depths,
+    export_onnx,
     in_chans,
     in_frames,
     in_names,
@@ -111,22 +112,5 @@ model = L(MODELS.get(model_name))(
 model.buffers = buffers
 model.precision = "bf16"
 
-export_onnx = os.getenv("EXPORT_ONNX", "").lower() in ("1", "true", "yes", "on")
 if export_onnx:
-    from xmetai.data import make_onnx
-
-    train.use_ddp = False
-    train.use_fsdp = False
-    train.activation_checkpointing = False
-    dataloader.test.total_batch_size = 1
-    make_onnx(
-        model=train,
-        dataloader_cfg=dataloader.test,
-        mean=buffers.get("mean", None),
-        std=buffers.get("std", None),
-        in_names=in_names,
-        output_dir=output_dir,
-        embed_types=["step", "hour", "doy"],
-        model_name="s2s_puyun.onnx",
-        device=train.device_type,
-    )
+    train.export_kwargs.save_name = os.path.join(output_dir, "s2s_puyun.onnx")

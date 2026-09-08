@@ -31,10 +31,11 @@ class SphericalBandPowerLoss(nn.Module):
         image_size: tuple[int, int],
         relative_floor: float = 1e-6,
         eps: float = 1e-12,
+        bands: tuple[tuple[int, int], ...] | None = None,
     ) -> None:
         super().__init__()
         self.image_size = tuple(image_size)
-        self.bands = self.BANDS
+        self.bands = self.BANDS if bands is None else tuple(bands)
         if len(self.image_size) != 2 or any(not isinstance(size, int) or size < 3 for size in self.image_size):
             raise ValueError("image_size must contain two integer dimensions >= 3")
         if not math.isfinite(relative_floor) or relative_floor <= 0 or not math.isfinite(eps) or eps <= 0:
@@ -44,17 +45,18 @@ class SphericalBandPowerLoss(nn.Module):
         self.lmax = self.bands[-1][1]
         nlat, nlon = self.image_size
         n = nlat - 1
-        if n % 2 or 2 * self.lmax >= n or self.lmax >= nlon // 2:
-            raise ValueError("Need an odd latitude count with 2*lmax < H-1 and lmax < W//2")
+        if 2 * self.lmax >= n or self.lmax >= nlon // 2:
+            raise ValueError("Need 2*lmax < H-1 and lmax < W//2")
 
         # Clenshaw-Curtis quadrature integrates in x=cos(colatitude).
         theta = torch.arange(nlat, dtype=torch.float64) * (math.pi / n)
         weights = torch.zeros(nlat, dtype=torch.float64)
-        weights[[0, -1]] = 1 / (n * n - 1)
+        weights[[0, -1]] = 1 / (n * n - 1) if n % 2 == 0 else 1 / (n * n)
         interior = torch.ones(n - 1, dtype=torch.float64)
-        for k in range(1, n // 2):
+        for k in range(1, (n + 1) // 2):
             interior -= 2 * torch.cos(2 * k * theta[1:-1]) / (4 * k * k - 1)
-        interior -= torch.cos(n * theta[1:-1]) / (n * n - 1)
+        if n % 2 == 0:
+            interior -= torch.cos(n * theta[1:-1]) / (n * n - 1)
         weights[1:-1] = 2 * interior / n
 
         # Stable recurrence for orthonormal associated Legendre functions.

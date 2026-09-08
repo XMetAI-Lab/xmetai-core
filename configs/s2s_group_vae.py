@@ -120,6 +120,7 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     # Overall model settings
     alpha=0.9,
     loss_weight=loss_weight,
+    spectral_loss_bands=((1, 4), (5, 20), (21, 40), (41, 59)),
     # BasePredictor params
     in_names=in_names,
     in_chans=in_chans,
@@ -148,22 +149,4 @@ model.buffers = buffers
 model.precision = "bf16"
 
 if export_onnx:
-    from xmetai.data import make_onnx
-
-    train.use_ddp = False
-    train.use_fsdp = False
-    train.use_fsdp2 = False
-    train.activation_checkpointing = True
-    dataloader.test.total_batch_size = 1
-    model.precision = "fp16"
-    make_onnx(
-        model=train,
-        dataloader_cfg=dataloader.test,
-        mean=buffers.get("mean", None),
-        std=buffers.get("std", None),
-        in_names=in_names,
-        output_dir=output_dir,
-        embed_types=["step", "hour", "doy"],
-        model_name="s2s_group_vae.onnx",
-        device=train.device_type,
-    )
+    train.export_kwargs.save_name = os.path.join(output_dir, "s2s_group_vae.onnx")
