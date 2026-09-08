@@ -111,6 +111,7 @@ dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
     test_workers=1,
     test_pin_memory=False,
     test_interval=16,
+    test_target_names=test_names,
     eval_test_names=test_names,
     test_frames=test_frames,
     freq=freq,
@@ -144,19 +145,18 @@ if "tp" in test_names:
                 value_scale="${dataloader.precip_mm_scale}",
             )
         )
-    for window_size in (1, 3, 5, 15, 31, 63):
-        dataloader.evaluator.append(
-            L(METRICS.get("RadarFSS"))(
-                thresholds=(13.0,),
-                channel_name="tp",
-                metric_name=f"PrecipFSS_w{window_size}",
-                empty_score=float("nan"),
-                test_times="${..0.test_times}",
-                test_names="${..0.test_names}",
-                neighborhood_size=window_size,
-                value_scale="${dataloader.precip_mm_scale}",
-            )
+    dataloader.evaluator.append(
+        L(METRICS.get("RadarFSS"))(
+            thresholds=(13.0,),
+            channel_name="tp",
+            metric_name="PrecipFSS",
+            empty_score=float("nan"),
+            test_times="${..0.test_times}",
+            test_names="${..0.test_names}",
+            neighborhood_sizes=(1, 3, 5, 15, 31, 63),
+            value_scale="${dataloader.precip_mm_scale}",
         )
+    )
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
 

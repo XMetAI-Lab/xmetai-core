@@ -147,19 +147,6 @@ class OnnxInferModel(BasePredictor):
         return torch.cat(outputs, dim=0)
 
     @torch.no_grad()
-    def inference(self, input, step, num_step, times=None):
-        outputs = input.new_zeros(input.shape[0], num_step, len(self.test_chans), *input.shape[-2:])
-        self.logger.debug(f"inference for output shape:{outputs.shape}, dtype:{outputs.dtype}")
-        for k in range(num_step):
-            self.logger.debug(f"inference step {step} with input shape:{input.shape}, dtype:{input.dtype}, min: {input.min():.3f}, max: {input.max():.3f}")
-            output = self._run_onnx_step(input, step=step, times=times)
-            self.logger.debug(f"model output shape:{output.shape}, dtype:{output.dtype}")
-            outputs[:, k] = output[:, -1, self.test_chans]
-            input = torch.cat([input, output[:, -1:]], dim=1)[:, -self.in_frames :]
-            step += 1
-        return outputs
-
-    @torch.no_grad()
     def test_cascade(self, data):
         input = data["input"]
         times = data["times"]
@@ -168,23 +155,26 @@ class OnnxInferModel(BasePredictor):
         assert sum(self.step_range) <= total_step
 
         steps = np.array(self.test_frames) // self.out_frames
+        save_steps = {int(forecast_step): index for index, forecast_step in enumerate(steps)}
         hw = list(input.shape[-2:])
-        outputs = input.new_zeros(input.shape[0], len(steps), len(self.test_chans), *hw)  # only save test channels
+        outputs = torch.zeros(input.shape[0], len(self.test_frames), len(self.test_chans), *hw, device=input.device, dtype=torch.float16)
         self.logger.debug(f"finale outputs shape is {outputs.shape}")
         step = self.start_frames
         num_step = self.step_range[0]
 
-        # for each member, we inference for step_range times. Each time we get num_step results.
         for member in range(self.members):
             self.logger.debug(f"inference with member:{member} for step_range:{self.step_range}.")
             curr_input = input.clone()
-            curr_step = step
+            for curr_step in range(step, step + num_step):
+                output = self._run_onnx_step(curr_input, step=curr_step, times=times)
+                out_index = save_steps.get(curr_step + 1)
+                if out_index is not None:
+                    normed_output = self.normalize(output[:, -1:, self.test_chans], self.test_chans)
+                    outputs[:, out_index].add_(normed_output[:, 0].to(outputs))
+                    del normed_output
+                curr_input = torch.cat([curr_input, output[:, -1:]], dim=1)[:, -self.in_frames :]
+                del output
+            del curr_input
 
-            output = self.inference(curr_input, step=curr_step, num_step=num_step, times=times)
-            curr_input = output[:, -self.in_frames :]
-            normed_output = self.normalize(output, self.test_chans)
-            # accumulate result with current step.
-            outputs[:, curr_step : curr_step + num_step] += normed_output
-
-        outputs /= self.members  # ensemble prediction with mean
+        outputs.div_(self.members)
         return outputs

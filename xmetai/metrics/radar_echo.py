@@ -294,6 +294,7 @@ class RadarFSS(_RadarEchoMetric):
         *,
         test_times: Sequence[int],
         neighborhood_size: int = 5,
+        neighborhood_sizes: Sequence[int] | None = None,
         channel_index: int = 0,
         channel_name: str | None = None,
         test_names: Sequence[str] = (),
@@ -316,18 +317,23 @@ class RadarFSS(_RadarEchoMetric):
         self.empty_score = float(empty_score)
         self.thresholds = tuple(float(v) for v in thresholds)
         self.neighborhood_size = int(neighborhood_size)
+        self.neighborhood_sizes = tuple(int(size) for size in neighborhood_sizes) if neighborhood_sizes is not None else (self.neighborhood_size,)
+        self._multi_window = neighborhood_sizes is not None
         if len(self.thresholds) == 0:
             raise ValueError("thresholds must not be empty")
-        if self.neighborhood_size <= 0:
-            raise ValueError(f"neighborhood_size must be positive, got {neighborhood_size}")
-        if self.neighborhood_size % 2 == 0:
-            raise ValueError(f"neighborhood_size must be odd to keep the neighborhood centered, got {neighborhood_size}")
+        if not self.neighborhood_sizes or len(set(self.neighborhood_sizes)) != len(self.neighborhood_sizes):
+            raise ValueError("neighborhood_sizes must be non-empty and unique")
+        for size in self.neighborhood_sizes:
+            if size <= 0:
+                raise ValueError(f"neighborhood_size must be positive, got {size}")
+            if size % 2 == 0:
+                raise ValueError(f"neighborhood_size must be odd to keep the neighborhood centered, got {size}")
 
-    def _empty_components(self) -> dict[float, dict[str, float]]:
-        return {threshold: {"diff_sq": 0.0, "reference": 0.0} for threshold in self.thresholds}
+    def _empty_components(self) -> dict[tuple[int, float], dict[str, float]]:
+        return {(size, threshold): {"diff_sq": 0.0, "reference": 0.0} for size in self.neighborhood_sizes for threshold in self.thresholds}
 
     def reset(self) -> None:
-        self._components_by_frame: dict[int, dict[float, dict[str, float]]] = {}
+        self._components_by_frame: dict[int, dict[tuple[int, float], dict[str, float]]] = {}
 
     def process(self, inputs: Any, outputs: dict[str, Any]) -> None:
         pred, obs, frame_start = self._extract_frames(outputs)
@@ -337,10 +343,11 @@ class RadarFSS(_RadarEchoMetric):
             pred_frame = pred[:, frame_offset : frame_offset + 1]
             obs_frame = obs[:, frame_offset : frame_offset + 1]
             frame_components = self._components_by_frame.setdefault(frame_index, self._empty_components())
-            for threshold in self.thresholds:
-                diff_sq, reference = _fss_components(pred_frame, obs_frame, threshold, self.neighborhood_size)
-                frame_components[threshold]["diff_sq"] += diff_sq
-                frame_components[threshold]["reference"] += reference
+            for size in self.neighborhood_sizes:
+                for threshold in self.thresholds:
+                    diff_sq, reference = _fss_components(pred_frame, obs_frame, threshold, size)
+                    frame_components[size, threshold]["diff_sq"] += diff_sq
+                    frame_components[size, threshold]["reference"] += reference
 
     def evaluate(self) -> dict[str, Any] | None:
         comm.synchronize()
@@ -348,29 +355,31 @@ class RadarFSS(_RadarEchoMetric):
         if not comm.is_main_process():
             return None
 
-        components_by_frame: dict[int, dict[float, dict[str, float]]] = {}
+        components_by_frame: dict[int, dict[tuple[int, float], dict[str, float]]] = {}
         for worker_components in gathered_by_frame:
             for frame_index, threshold_components in worker_components.items():
                 frame_components = components_by_frame.setdefault(frame_index, self._empty_components())
-                for threshold in self.thresholds:
-                    frame_components[threshold]["diff_sq"] += threshold_components[threshold]["diff_sq"]
-                    frame_components[threshold]["reference"] += threshold_components[threshold]["reference"]
+                for component_key in frame_components:
+                    frame_components[component_key]["diff_sq"] += threshold_components[component_key]["diff_sq"]
+                    frame_components[component_key]["reference"] += threshold_components[component_key]["reference"]
 
-        results: dict[str, list[int | float]] = {"Times": [], "Threshold": [], self.metric_prefix: []}
+        columns = {size: f"{self.metric_prefix}{size}" if self._multi_window else self.metric_prefix for size in self.neighborhood_sizes}
+        results: dict[str, list[int | float]] = {"Times": [], "Threshold": [], **{column: [] for column in columns.values()}}
         eps = 1.0e-6
         for frame_index, lead_time in enumerate(self.test_times):
             has_frame = frame_index in components_by_frame
             frame_components = components_by_frame.get(frame_index, self._empty_components())
             for threshold in self.thresholds:
-                diff_sq = frame_components[threshold]["diff_sq"]
-                reference = frame_components[threshold]["reference"]
-                if not has_frame:
-                    fss = 0.0
-                else:
-                    fss = 1.0 - diff_sq / (reference + eps) if reference > 0 else self.empty_score
                 results["Times"].append(lead_time)
                 results["Threshold"].append(threshold)
-                results[self.metric_prefix].append(fss)
+                for size, column in columns.items():
+                    diff_sq = frame_components[size, threshold]["diff_sq"]
+                    reference = frame_components[size, threshold]["reference"]
+                    if not has_frame:
+                        fss = 0.0
+                    else:
+                        fss = 1.0 - diff_sq / (reference + eps) if reference > 0 else self.empty_score
+                    results[column].append(fss)
         return {self.metric_name: results}
 
 

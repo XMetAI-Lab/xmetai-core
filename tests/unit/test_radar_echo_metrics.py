@@ -105,6 +105,62 @@ def test_radar_fss_requires_odd_neighborhood_size():
         RadarFSS(thresholds=(35.0,), test_times=(6,), neighborhood_size=4)
 
 
+def test_radar_fss_multiple_windows_match_single_windows():
+    sizes = (1, 3, 5, 15, 31, 63)
+    kwargs = dict(thresholds=(13.0, 35.0), test_times=(6, 12, 18), channel_name="tp", test_names=("t2m", "tp"), value_scale=21.6, empty_score=float("nan"))
+    merged = RadarFSS(neighborhood_sizes=sizes, metric_name="PrecipFSS", **kwargs)
+    singles = [RadarFSS(neighborhood_size=size, **kwargs) for size in sizes]
+    target = torch.zeros(2, 1, 2, 8, 8)
+    target[:, :, 1, 2:5, 2:5] = 2.0
+    output = torch.roll(target, shifts=2, dims=-1)
+    for metric in [merged, *singles]:
+        metric.reset()
+        for _ in range(2):
+            metric.process({}, {"output": output, "target": target, "frame_start": 1})
+        metric.process({}, {"output": torch.zeros_like(output), "target": torch.zeros_like(target), "frame_start": 2})
+    table = merged.evaluate()["PrecipFSS"]
+    assert list(table) == ["Times", "Threshold", *[f"FSS{size}" for size in sizes]]
+    for size, single in zip(sizes, singles):
+        expected = single.evaluate()["RadarFSS"]
+        assert table["Times"] == expected["Times"]
+        assert table["Threshold"] == expected["Threshold"]
+        torch.testing.assert_close(torch.tensor(table[f"FSS{size}"]), torch.tensor(expected["FSS"]), rtol=0, atol=0, equal_nan=True)
+        assert table[f"FSS{size}"][:2] == [0.0, 0.0]
+        assert torch.tensor(table[f"FSS{size}"][-2:]).isnan().all()
+    merged.reset()
+    reset_table = merged.evaluate()["PrecipFSS"]
+    assert all(reset_table[f"FSS{size}"] == [0.0] * 6 for size in sizes)
+
+
+@pytest.mark.parametrize("sizes", [(), (3, 3), (0,), (2,)])
+def test_radar_fss_rejects_invalid_multiple_windows(sizes):
+    with pytest.raises(ValueError):
+        RadarFSS(thresholds=(13.0,), test_times=(6,), neighborhood_sizes=sizes)
+
+
+def test_radar_fss_multiple_windows_gather_workers(monkeypatch):
+    metrics = [RadarFSS(thresholds=(13.0,), test_times=(6,), neighborhood_sizes=(1, 3)) for _ in range(3)]
+    first, second, combined = metrics
+    for metric in metrics:
+        metric.reset()
+    target = torch.full((1, 1, 1, 8, 8), 20.0)
+    for worker, output in zip((first, second), (target, torch.zeros_like(target))):
+        outputs = {"output": output, "target": target}
+        worker.process({}, outputs)
+        combined.process({}, outputs)
+    expected = combined.evaluate()
+    monkeypatch.setattr("xmetai.metrics.radar_echo.comm.synchronize", lambda: None)
+    monkeypatch.setattr("xmetai.metrics.radar_echo.comm.is_main_process", lambda: True)
+    worker_states = []
+    monkeypatch.setattr("xmetai.metrics.radar_echo.comm.gather", lambda state, dst: worker_states.append(state) or [state])
+    first.evaluate()
+    second.evaluate()
+    monkeypatch.setattr("xmetai.metrics.radar_echo.comm.gather", lambda state, dst: worker_states)
+    assert first.evaluate() == expected
+    monkeypatch.setattr("xmetai.metrics.radar_echo.comm.is_main_process", lambda: False)
+    assert second.evaluate() is None
+
+
 def test_radar_ssim_requires_odd_window_size():
     with pytest.raises(ValueError, match="window_size must be a positive odd integer"):
         RadarSSIM(test_times=(6,), window_size=10)

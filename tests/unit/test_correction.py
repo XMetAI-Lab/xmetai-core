@@ -133,18 +133,6 @@ def test_precipitation_loss_requires_correcting_precipitation_channel(monkeypatc
         )
 
 
-def test_inherited_onnx_inference_uses_full_step_output(monkeypatch):
-    model = _build_model(monkeypatch)
-    _install_incrementing_onnx(model)
-    physical_input = torch.zeros(1, 2, 4, 8, 8)
-
-    output = model.inference(physical_input, step=0, num_step=2)
-
-    assert output.shape == (1, 2, 4, 8, 8)
-    torch.testing.assert_close(output[:, 0], torch.ones(1, 4, 8, 8))
-    torch.testing.assert_close(output[:, 1], torch.full((1, 4, 8, 8), 2.0))
-
-
 def test_onnx_step_runs_multi_batch_one_sample_at_a_time(monkeypatch):
     class FakeBinding:
         def __init__(self):
