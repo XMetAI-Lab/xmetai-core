@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from xmetai.models.group_vae import SphericalBandPowerLoss, _BaseGroupVAE
+from xmetai.models.group_vae import _BaseGroupVAE
 
 
 def _build_tiny_group_vae(latent_dyn_weight: float, *, alpha: float = 1.0, rollout_max: int = 2, out_frames: int = 1, **kwargs) -> _BaseGroupVAE:
@@ -163,20 +163,21 @@ def test_latent_regularization_is_rollout_normalized_and_posterior_gated(posteri
             handle.remove()
 
 
-def test_spectral_loss_backpropagates_and_segments_sum_to_full_rollout(monkeypatch) -> None:
-    monkeypatch.setattr(SphericalBandPowerLoss, "BANDS", ((1, 2), (3, 4)))
+@pytest.mark.parametrize("image_size,bands", [((17, 32), ((1, 2), (3, 4))), ((120, 240), ((1, 4), (5, 20), (21, 40), (41, 59)))])
+def test_spectral_loss_backpropagates_and_segments_sum_to_full_rollout(image_size, bands) -> None:
     model = _build_tiny_group_vae(
         0.0,
         alpha=0.7,
         rollout_max=-1,
-        image_size=(17, 32),
+        image_size=image_size,
         patch_size=2,
         spectral_loss_weight=0.1,
         spectral_loss_names=("x",),
+        spectral_loss_bands=bands,
     ).train()
-    baseline = _build_tiny_group_vae(0.0, image_size=(17, 32), patch_size=2)
+    baseline = _build_tiny_group_vae(0.0, image_size=image_size, patch_size=2)
     model.load_state_dict(baseline.state_dict(), strict=True)
-    batch = {"inputs": torch.randn(1, 2, 1, 17, 32), "targets": torch.randn(1, 3, 1, 17, 32), "times": torch.tensor([0]), "future_frames": 3}
+    batch = {"inputs": torch.randn(1, 2, 1, *image_size), "targets": torch.randn(1, 3, 1, *image_size), "times": torch.tensor([0]), "future_frames": 3}
     # Dropout would otherwise make the two trajectories different.
     model.eval()
     model.training = True

@@ -513,6 +513,7 @@ class _BaseGroupVAE(BasePredictor):
         latent_dyn_weight: float = 0.0,
         spectral_loss_weight: float = 0.0,
         spectral_loss_names: tuple[str, ...] = (),
+        spectral_loss_bands: tuple[tuple[int, int], ...] | None = None,
         rollout_max: int = 50,
         pretrain: bool = False,
         pretrain_mask_ratio: float = 0.15,
@@ -550,7 +551,7 @@ class _BaseGroupVAE(BasePredictor):
             if set(spectral_indices).intersection(self.logid):
                 raise ValueError("Spectral loss expects linearly normalized channels, not log-transformed channels")
             self.register_buffer("spectral_channel_indices", torch.tensor(spectral_indices, dtype=torch.long), persistent=False)
-            self.spectral_loss = SphericalBandPowerLoss(image_size)
+            self.spectral_loss = SphericalBandPowerLoss(image_size, bands=spectral_loss_bands)
             self.logger.info(f"Spectral loss: weight={self.spectral_loss_weight}, channels={spectral_loss_names}, bands={self.spectral_loss.bands}")
         self.const_chans = const_chans
         self.rollout_max = rollout_max

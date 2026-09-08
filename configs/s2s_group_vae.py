@@ -120,6 +120,7 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     # Overall model settings
     alpha=0.9,
     loss_weight=loss_weight,
+    spectral_loss_bands=((1, 4), (5, 20), (21, 40), (41, 59)),
     # BasePredictor params
     in_names=in_names,
     in_chans=in_chans,

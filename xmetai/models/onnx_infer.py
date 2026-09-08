@@ -167,7 +167,7 @@ class OnnxInferModel(BasePredictor):
             curr_input = input.clone()
             for curr_step in range(step, step + num_step):
                 output = self._run_onnx_step(curr_input, step=curr_step, times=times)
-                out_index = save_steps.get(curr_step + 1)
+                out_index = save_steps.get(curr_step + 1 - self.start_frames)
                 if out_index is not None:
                     normed_output = self.normalize(output[:, -1:, self.test_chans], self.test_chans)
                     outputs[:, out_index].add_(normed_output[:, 0].to(outputs))
