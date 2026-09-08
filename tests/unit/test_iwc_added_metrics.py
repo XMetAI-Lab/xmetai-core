@@ -2,17 +2,18 @@ import numpy as np
 import pytest
 import torch
 
+from xmetai.loss import SphericalBandPowerLoss
 from xmetai.metrics import ForecastFidelity, FrequencyBias, RadarFSS, ThreatScore
 
 
 def test_zonal_power_matches_numpy_reference(monkeypatch):
-    monkeypatch.setattr(ForecastFidelity, "BANDS", ((1, 2), (3, 4)))
+    monkeypatch.setattr(SphericalBandPowerLoss, "BANDS", ((1, 2), (3, 4)))
     metric = ForecastFidelity(["x"], [6], (17, 32))
     rng = np.random.default_rng(1)
     field = rng.normal(size=(2, 1, 1, 17, 32)).astype("float32")
     weights = np.cos(np.linspace(-np.pi / 2, np.pi / 2, 17))
-    centered = field - field.mean(-1, keepdims=True)
-    power = (abs(np.fft.rfft(centered, axis=-1) / 32) ** 2 * weights[:, None]).sum(-2) / weights.sum()
+    x = field - field.mean(-1, keepdims=True)
+    power = (abs(np.fft.rfft(x, axis=-1) / 32) ** 2 * weights[:, None]).sum(-2) / weights.sum()
     expected = np.stack([power[..., 1:3].sum(-1), power[..., 3:5].sum(-1)], -1)
     np.testing.assert_allclose(metric._zonal_band_power(torch.from_numpy(field)).numpy(), expected, rtol=1e-5)
     metric.process({}, {"output": torch.from_numpy(field) * 2, "target": torch.from_numpy(field)})

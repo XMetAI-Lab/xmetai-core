@@ -4,11 +4,12 @@ import numpy as np
 import pytest
 import torch
 
+from xmetai.loss import SphericalBandPowerLoss
 from xmetai.metrics import ForecastFidelity
 
 
 def build_metric(monkeypatch):
-    monkeypatch.setattr(ForecastFidelity, "BANDS", ((1, 2), (3, 4)))
+    monkeypatch.setattr(SphericalBandPowerLoss, "BANDS", ((1, 2), (3, 4)))
     return ForecastFidelity(["z500"], [6, 12], (17, 32))
 
 
