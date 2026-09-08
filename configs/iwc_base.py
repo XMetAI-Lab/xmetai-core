@@ -11,9 +11,11 @@ from datetime import datetime
 import numpy as np
 
 from xmetai import (
+    METRICS,
     LazyConfig,
     get_data_info,
 )
+from xmetai.config import LazyCall as L
 from xmetai.recipes import recipe_path
 
 ######################################################################
@@ -74,7 +76,7 @@ accumid = data_info["accumid"]
 maskid = data_info["maskid"]
 buffers = data_info["buffers"]
 
-test_names = ["z500", "msl", "t2m", "sst", "ttr", "tp"]
+test_names = ["z500", "msl", "t2m", "sst", "ttr", "tp", "u850", "v850"]
 # test_names = ["z500", "t2m", "tp"]
 test_names = [ch for ch in test_names if ch in out_names]
 test_chans = [out_names.index(n) for n in test_names]
@@ -96,8 +98,8 @@ depths = [int(x) for x in depth_list.split(",") if x.strip().isdigit()]
 
 ######################################################################
 
-train_times = ("19500101-00", "20221231-18")
-test_times = ("20230101-18", "20231231-18")
+train_times = ("19500101-00", "20231231-18")
+test_times = ("20240101-18", "20261231-18")
 # test_times = ("20050101-18", "20250502-18")
 
 dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
@@ -113,6 +115,48 @@ dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
     test_frames=test_frames,
     freq=freq,
 )
+# Follow the shared RMSE channel/lead selection when a derived config overrides it.
+dataloader.evaluator.append(
+    L(METRICS.get("ForecastFidelity"))(
+        test_names="${..0.test_names}",
+        test_times="${..0.test_times}",
+        image_size=(int(180 / degree) + 1, int(360 / degree)),
+    )
+)
+# Physical TP is already in millimeters per 6 hours, matching the corrector loss.
+precip_mm_scale = 1.0
+# Expose as a config field (not just a python constant) so it can be overridden from the
+# CLI/yaml with a single key, e.g. "dataloader.precip_mm_scale=21.6", instead of having to
+# patch every appended evaluator entry individually.
+dataloader.precip_mm_scale = precip_mm_scale
+precip_thresholds_mm = (0.1, 10.0, 25.0, 50.0, 100.0, 250.0)
+precip_neighborhood_size = 1
+if "tp" in test_names:
+    for metric_name in ("ThreatScore", "ProbabilityOfDetection", "FalseAlarmRate", "FrequencyBias"):
+        dataloader.evaluator.append(
+            L(METRICS.get(metric_name))(
+                thresholds=precip_thresholds_mm,
+                composite_weights=(1.0,) * len(precip_thresholds_mm) if metric_name in ("ThreatScore", "FrequencyBias") else (),
+                test_times="${..0.test_times}",
+                neighborhood_size=precip_neighborhood_size,
+                channel_name="tp",
+                test_names="${..0.test_names}",
+                value_scale="${dataloader.precip_mm_scale}",
+            )
+        )
+    for window_size in (1, 3, 5, 15, 31, 63):
+        dataloader.evaluator.append(
+            L(METRICS.get("RadarFSS"))(
+                thresholds=(13.0,),
+                channel_name="tp",
+                metric_name=f"PrecipFSS_w{window_size}",
+                empty_score=float("nan"),
+                test_times="${..0.test_times}",
+                test_names="${..0.test_names}",
+                neighborhood_size=window_size,
+                value_scale="${dataloader.precip_mm_scale}",
+            )
+        )
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
 
@@ -121,13 +165,18 @@ if load_from_pretrain:
 
 export_onnx = False
 if export_onnx:
-    from xmetai.data import make_onnx
-
     train.use_ddp = False
     train.use_fsdp = False
     train.use_fsdp2 = False
     train.activation_checkpointing = False
     dataloader.test.total_batch_size = 1
+    dataloader.test.num_workers = 1
+    dataloader.test.pin_memory = False
+    dataloader.test.dataset.inference_only = True
+    dataloader.test.dataset.fcst_frames = [1]
+
+    from xmetai.data import make_onnx
+
     make_onnx(
         model=train,
         dataloader_cfg=dataloader.test,

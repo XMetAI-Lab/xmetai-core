@@ -129,12 +129,21 @@ function setup_environment() {
         exit 1
     fi
 
-    if [[ "$config_file_name" == *"s2s"* ]]; then # for s2s model tests
-        if [[ "$config_file_name" == *"cra"* ]]; then
-            export DATA_DIR="${data_dir}/xmetai-data/CRA/zarr/cra.1979_2024.c87.p25.h24/"
-        elif [[ "$config_file_name" == *"p25"* ]]; then
-            export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/era5.1959_2023.c87.p25.h24/"
+    if [[ "$config_file_name" == *"esfm"* ]]; then # coupled atmosphere-land-ocean model
+        export DATA_ROOT="${data_dir}/xmetai-data"
+        if grep -q "esfm_base" "${CONFIG_FILE_TMP}"; then
+            export BASE_CONFIG="${ROOT_DIR}/configs/esfm_base.py"
         else
+            export BASE_CONFIG="${CONFIG_FILE_TMP}"
+        fi
+    elif [[ "$config_file_name" == *"s2s"* ]]; then # for s2s model tests
+        if [[ "$config_file_name" == *"p25"* && "$config_file_name" == *"cra"* ]]; then # CRA 0.25 deg
+            export DATA_DIR="${data_dir}/xmetai-data/CRA/zarr/cra.1979_2024.c87.p25.h24/"
+        elif [[ "$config_file_name" == *"p25"* ]]; then # ERA 0.25 deg
+            export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/era5.1959_2023.c87.p25.h24/"
+        elif [[ "$config_file_name" == *"cra"* ]]; then # CRA 1.5 deg
+            export DATA_DIR="${data_dir}/xmetai-data/CRA/zarr/cra.1979_2025.c87.1p5.h24.new.zarr"
+        else # ERA 1.5 deg
             export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/s2s.1950-2026.c76/"
         fi
         # check if string s2s_base exist in ${CONFIG_FILE_TMP}
@@ -145,14 +154,14 @@ function setup_environment() {
         fi
     elif [[ "$config_file_name" == *"land"* ]]; then # for s2s model with land
         # Data dir is a dataset array, separated by colon
-        export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/s2s.1950-2024.c76:${data_dir}/xmetai-data/ERA5-Land/zarr/land.1950-2024.c8/"
+        export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/s2s.1950-2026.c76:${data_dir}/xmetai-data/ERA5-Land/zarr/land.1950-2024.c8/"
         if grep -q "land_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/land_base.py"
         else
             export BASE_CONFIG="${CONFIG_FILE_TMP}"
         fi
     elif [[ "$config_file_name" == *"ens"* || "$config_file_name" == *"iwc"* ]]; then
-        if [[ "$config_file_name" == *"cra"* ]]; then
+        if [[ "$config_file_name" == *"fdp"* || "$config_file_name" == *"cra"* ]]; then
             export DATA_DIR="${data_dir}/xmetai-data/CRA/zarr/cra.1979-2025.c71.p25.h6/"
         else
             export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/era5.1979-2024.c78.p25.h6/"

@@ -1,3 +1,4 @@
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -26,15 +27,25 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
         *,
         test_times: Sequence[int],
         neighborhood_size: int = 1,
+        composite_weights: Sequence[float] = (),
         channel_index: int = 0,
+        channel_name: str | None = None,
+        test_names: Sequence[str] = (),
         value_scale: float = 1.0,
         output_key: str = "output",
         target_key: str = "target",
     ) -> None:
         super().__init__()
         self.thresholds = tuple(float(v) for v in thresholds)
+        self.composite_weights = tuple(float(v) for v in composite_weights)
+        if self.composite_weights and (
+            len(self.composite_weights) != len(self.thresholds)
+            or any(not math.isfinite(v) or v < 0 for v in self.composite_weights)
+            or sum(self.composite_weights) <= 0
+        ):
+            raise ValueError("composite_weights must match thresholds, be finite/nonnegative, and have positive sum")
         self.neighborhood_size = int(neighborhood_size)
-        self.channel_index = int(channel_index)
+        self.channel_index = list(test_names).index(channel_name) if channel_name is not None else int(channel_index)
         self.value_scale = float(value_scale)
         self.output_key = output_key
         self.target_key = target_key
@@ -125,6 +136,21 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
                 false_alarm = frame_counts[threshold]["false_alarm"]
                 miss = frame_counts[threshold]["miss"]
                 results[columns[threshold]].append(self._metric_value(hit, false_alarm, miss, eps))
+        if self.composite_weights:
+            composite = []
+            for index in range(len(self.test_times)):
+                valid = []
+                counts = counts_by_frame.get(index, self._empty_counts())
+                for threshold, weight in zip(self.thresholds, self.composite_weights):
+                    hit = counts[threshold]["hit"]
+                    miss = counts[threshold]["miss"]
+                    false_alarm = counts[threshold]["false_alarm"]
+                    denominator = hit + miss + (false_alarm if self.metric_prefix == "TS" else 0.0)
+                    if denominator > 0:
+                        valid.append((results[columns[threshold]][index], weight))
+                total_weight = sum(weight for _, weight in valid)
+                composite.append(sum(value * weight for value, weight in valid) / total_weight if total_weight > 0 else float("nan"))
+            results["Composite"] = composite
         return {self.metric_name: results}
 
 

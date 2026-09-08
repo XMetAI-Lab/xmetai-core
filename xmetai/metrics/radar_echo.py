@@ -92,7 +92,8 @@ def _fss_components(
     )
     diff_sq = (pred_fraction - obs_fraction) ** 2
     reference = pred_fraction**2 + obs_fraction**2
-    return float(diff_sq.sum().item()), float(reference.sum().item())
+    valid = torch.isfinite(pred) & torch.isfinite(target)
+    return float(diff_sq[valid].double().sum().item()), float(reference[valid].double().sum().item())
 
 
 def _resolve_data_range(pred: torch.Tensor, target: torch.Tensor, data_range: float | None) -> float:
@@ -294,15 +295,25 @@ class RadarFSS(_RadarEchoMetric):
         test_times: Sequence[int],
         neighborhood_size: int = 5,
         channel_index: int = 0,
+        channel_name: str | None = None,
+        test_names: Sequence[str] = (),
+        value_scale: float = 1.0,
+        metric_name: str = "RadarFSS",
+        empty_score: float = 1.0,
         output_key: str = "output",
         target_key: str = "target",
     ) -> None:
         super().__init__(
             test_times,
-            channel_index=channel_index,
+            channel_index=list(test_names).index(channel_name) if channel_name is not None else channel_index,
             output_key=output_key,
             target_key=target_key,
         )
+        if not 0 < value_scale < float("inf"):
+            raise ValueError("value_scale must be finite and positive")
+        self.value_scale = value_scale
+        self.metric_name = metric_name
+        self.empty_score = float(empty_score)
         self.thresholds = tuple(float(v) for v in thresholds)
         self.neighborhood_size = int(neighborhood_size)
         if len(self.thresholds) == 0:
@@ -320,6 +331,7 @@ class RadarFSS(_RadarEchoMetric):
 
     def process(self, inputs: Any, outputs: dict[str, Any]) -> None:
         pred, obs, frame_start = self._extract_frames(outputs)
+        pred, obs = pred.float() * self.value_scale, obs.float() * self.value_scale
         for frame_offset in range(pred.shape[1]):
             frame_index = frame_start + frame_offset
             pred_frame = pred[:, frame_offset : frame_offset + 1]
@@ -355,7 +367,7 @@ class RadarFSS(_RadarEchoMetric):
                 if not has_frame:
                     fss = 0.0
                 else:
-                    fss = 1.0 - diff_sq / (reference + eps) if reference > 0 else 1.0
+                    fss = 1.0 - diff_sq / (reference + eps) if reference > 0 else self.empty_score
                 results["Times"].append(lead_time)
                 results["Threshold"].append(threshold)
                 results[self.metric_prefix].append(fss)
