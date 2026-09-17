@@ -235,7 +235,7 @@ def do_train(args, cfg):
     train_loader = instantiate(cfg.dataloader.train)
     scheduler = instantiate(cfg.scheduler)
     if cfg.train.teacher_forcing.teach_iters <= 0:
-        cfg.train.teacher_forcing = dict(teach_iters=10000000, teach_steps=1, teach_start=1)
+        cfg.train.teacher_forcing = dict(teach_iters=1, teach_steps=1, teach_start=1)
     trainer = ExpandTrainer(
         model,
         train_loader,
