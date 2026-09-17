@@ -130,7 +130,7 @@ function setup_environment() {
     fi
 
     if [[ "$config_file_name" == *"esfm"* ]]; then # coupled atmosphere-land-ocean model
-        export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/s2s.1950-2024.c76:${data_dir}/xmetai-data/ERA5-Land/zarr/land.1950-2024.c8:${data_dir}/xmetai-data/ORAS5/zarr/oras5.1993-2024.c88.1p5.h24"
+        export DATA_DIR="${data_dir}/xmetai-data/ERA/zarr/s2s.1950-2026.c76:${data_dir}/xmetai-data/ERA5-Land/zarr/land.1950-2024.c8:${data_dir}/xmetai-data/ORAS5/zarr/oras5.1993-2024.c88.1p5.h24"
         if grep -q "esfm_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/esfm_base.py"
         else

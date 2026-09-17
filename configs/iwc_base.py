@@ -76,7 +76,7 @@ accumid = data_info["accumid"]
 maskid = data_info["maskid"]
 buffers = data_info["buffers"]
 
-test_names = ["z500", "msl", "t2m", "sst", "ttr", "tp", "u850", "v850"]
+test_names = ["z500", "msl", "t2m", "sst", "ttr", "tp"]
 # test_names = ["z500", "t2m", "tp"]
 test_names = [ch for ch in test_names if ch in out_names]
 test_chans = [out_names.index(n) for n in test_names]
@@ -111,7 +111,6 @@ dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
     test_workers=1,
     test_pin_memory=False,
     test_interval=16,
-    test_target_names=test_names,
     eval_test_names=test_names,
     test_frames=test_frames,
     freq=freq,

@@ -24,7 +24,6 @@ try:
         ExpandTrainer,
         FSDPCheckpointer,
         LRMultiplier,
-        SimpleTrainer,
         create_ddp_model,
         create_fsdp2_model,
         create_fsdp_model,
@@ -235,21 +234,20 @@ def do_train(args, cfg):
     optimizer = instantiate(cfg.optimizer)
     train_loader = instantiate(cfg.dataloader.train)
     scheduler = instantiate(cfg.scheduler)
-    if cfg.train.teacher_forcing.teach_iters > 0:
-        trainer = ExpandTrainer(
-            model,
-            train_loader,
-            optimizer,
-            teacher_forcing=cfg.train.teacher_forcing,
-            use_ema=cfg.train.use_ema,
-            ens_train=cfg.train.ens_train,
-            zero_grad_before_forward=True,
-            segmented_backward=cfg.train.segmented_backward,
-            rollout_segment_size=cfg.train.rollout_segment_size,
-            use_fsdp2=cfg.train.use_fsdp2,
-        )
-    else:
-        trainer = SimpleTrainer(model, train_loader, optimizer, use_ema=cfg.train.use_ema)
+    if cfg.train.teacher_forcing.teach_iters <= 0:
+        cfg.train.teacher_forcing = dict(teach_iters=1, teach_steps=1, teach_start=1)
+    trainer = ExpandTrainer(
+        model,
+        train_loader,
+        optimizer,
+        teacher_forcing=cfg.train.teacher_forcing,
+        use_ema=cfg.train.use_ema,
+        ens_train=cfg.train.ens_train,
+        zero_grad_before_forward=True,
+        segmented_backward=cfg.train.segmented_backward,
+        rollout_segment_size=cfg.train.rollout_segment_size,
+        use_fsdp2=cfg.train.use_fsdp2,
+    )
 
     checkpointer = FSDPCheckpointer(model, save_dir=cfg.train.output_dir, trainer=trainer)
     lr_scheduler = LRMultiplier(optimizer, scheduler, cfg.train.max_iter)

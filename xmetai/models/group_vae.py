@@ -28,7 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from xmetai.layers import AdaptiveLN, EarthConvTranspose2d, set_lora_step
+from xmetai.layers import AdaptiveLN, EarthConv2d, EarthConvTranspose2d, set_lora_step
 from xmetai.loss import SphericalBandPowerLoss, charbonnier_loss, field_dynamics_consistency_loss
 from xmetai.registries import MODELS
 from xmetai.utils import get_event_storage
@@ -40,6 +40,7 @@ from .utransformer import UTransformer
 __all__ = [
     "GroupVAEPredictor",
     "FeatureGroupVAEPredictor",
+    "JointFieldCorrection",
 ]
 
 LEVELS_13 = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
@@ -480,6 +481,25 @@ class LatentMixerPredictor(UTransformer):
         return outputs
 
 
+class JointFieldCorrection(nn.Module):
+    """Shared residual correction for reconstructed and forecast full fields."""
+
+    def __init__(self, out_chans: int, kernel_size: int = 3):
+        super().__init__()
+        if not isinstance(kernel_size, int) or kernel_size < 1 or kernel_size % 2 == 0:
+            raise ValueError("JointFieldCorrection requires a positive odd kernel_size")
+        self.proj = EarthConv2d(out_chans, out_chans, kernel_size=kernel_size, padding=kernel_size // 2)
+        nn.init.zeros_(self.proj.conv.weight)
+        nn.init.zeros_(self.proj.conv.bias)
+
+    def forward(self, field: torch.Tensor) -> torch.Tensor:
+        if field.ndim != 5:
+            raise ValueError(f"Expected field shape (B,T,C,H,W), got {tuple(field.shape)}.")
+        batch_size, frames, channels, height, width = field.shape
+        correction = self.proj(field.reshape(batch_size * frames, channels, height, width))
+        return field + correction.reshape_as(field)
+
+
 class _BaseGroupVAE(BasePredictor):
     def __init__(
         self,
@@ -513,7 +533,10 @@ class _BaseGroupVAE(BasePredictor):
         latent_dyn_weight: float = 0.0,
         spectral_loss_weight: float = 0.0,
         spectral_loss_names: tuple[str, ...] = (),
+        spectral_image_size: tuple[int, int] | None = None,
         spectral_loss_bands: tuple[tuple[int, int], ...] | None = None,
+        use_joint_correction: bool = False,
+        joint_kernel_size: int = 3,
         rollout_max: int = 50,
         pretrain: bool = False,
         pretrain_mask_ratio: float = 0.15,
@@ -551,7 +574,8 @@ class _BaseGroupVAE(BasePredictor):
             if set(spectral_indices).intersection(self.logid):
                 raise ValueError("Spectral loss expects linearly normalized channels, not log-transformed channels")
             self.register_buffer("spectral_channel_indices", torch.tensor(spectral_indices, dtype=torch.long), persistent=False)
-            self.spectral_loss = SphericalBandPowerLoss(image_size, bands=spectral_loss_bands)
+            spectral_image_size = image_size if spectral_image_size is None else spectral_image_size
+            self.spectral_loss = SphericalBandPowerLoss(spectral_image_size, bands=spectral_loss_bands)
             self.logger.info(f"Spectral loss: weight={self.spectral_loss_weight}, channels={spectral_loss_names}, bands={self.spectral_loss.bands}")
         self.const_chans = const_chans
         self.rollout_max = rollout_max
@@ -655,6 +679,7 @@ class _BaseGroupVAE(BasePredictor):
         self.vae_encoder_group = nn.ModuleList(vae_encoder_list)
         self.posterior_encoder_group = nn.ModuleList(posterior_encoder_list)
         self.decoder_group = nn.ModuleList(decoder_list)
+        self.joint_output_correction = JointFieldCorrection(self.out_chans, kernel_size=joint_kernel_size) if use_joint_correction else nn.Identity()
 
         self.latent_mixer = LatentMixerPredictor(
             image_size=(image_size[0] // patch_size, image_size[1] // patch_size),
@@ -701,18 +726,18 @@ class _BaseGroupVAE(BasePredictor):
             self.freeze(("posterior_encoder_group",))
 
     def _configure_pretrain_trainable(self) -> None:
-        """Keep only posterior encoder and decoder trainable during pretraining.
+        """Train the posterior encoder, decoder and optional correction.
 
         `forward_pre_stage` does not use the prior encoder or latent mixer. Freezing
         the unused branches avoids DDP unused-parameter reduction errors while
-        matching the intended posterior-encoder + decoder pretraining objective.
+        keeping the complete reconstruction path trainable.
         """
         for param in self.parameters():
             param.requires_grad = False
-        for module in (self.posterior_encoder_group, self.decoder_group):
+        for module in (self.posterior_encoder_group, self.decoder_group, self.joint_output_correction):
             for param in module.parameters():
                 param.requires_grad = True
-        self.logger.info("Pretrain mode: only posterior_encoder_group and decoder_group are trainable.")
+        self.logger.info("Pretrain mode: posterior_encoder_group, decoder_group and enabled joint_output_correction are trainable.")
 
     def _apply_residual(self, pred: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
         if self.residual_vae_index.numel() == 0:
@@ -845,7 +870,7 @@ class _BaseGroupVAE(BasePredictor):
         reference_input: torch.Tensor,
         target_hw: tuple[int, int] | None = None,
     ) -> torch.Tensor:
-        """Reassemble decoded group outputs to full field and apply residual.
+        """Reassemble, apply residual, then correct reconstruction or forecast.
 
         Args:
             decoded_groups: List of decoded outputs from _decode_all_groups
@@ -853,14 +878,14 @@ class _BaseGroupVAE(BasePredictor):
             target_hw: Optional target height/width for resizing
 
         Returns:
-            Full-field output with residual applied (B, out_frames, C, H, W)
+            Full-field output with residual and optional correction applied (B, out_frames, C, H, W)
         """
         full_output = self._reassemble(decoded_groups, reference_input)
         if target_hw is None:
             target_hw = (int(reference_input.shape[-2]), int(reference_input.shape[-1]))
         full_output = self._resize_pred(full_output, target_hw)
         output = self._apply_residual(full_output, reference_input[:, -1:])
-        return output
+        return self.joint_output_correction(output)
 
     @final
     def _predict_next(self, input: torch.Tensor, times: Any, t: int, const: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
