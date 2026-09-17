@@ -722,6 +722,8 @@ class _BaseGroupVAE(BasePredictor):
         )
         if self.pretrain:
             self._configure_pretrain_trainable()
+        elif not self.compute_posterior_vae:
+            self.freeze(("posterior_encoder_group",))
 
     def _configure_pretrain_trainable(self) -> None:
         """Train the posterior encoder, decoder and optional correction.
