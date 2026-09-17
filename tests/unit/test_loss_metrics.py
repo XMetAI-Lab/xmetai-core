@@ -7,6 +7,197 @@ import pytest
 import torch
 
 
+class TestMultiscaleAFCRPS:
+    @pytest.mark.parametrize("members", [2, 3, 8, 16])
+    def test_contraction_matches_gap_score_and_gradients(self, members):
+        from xmetai.loss.crps_loss import _afcrps_from_members
+
+        generator = torch.Generator().manual_seed(42)
+        outputs = torch.randn(members, 2, 1, 3, 9, 16, generator=generator, dtype=torch.float64, requires_grad=True)
+        target = torch.randn(2, 1, 3, 9, 16, generator=generator, dtype=torch.float64, requires_grad=True)
+        weight = torch.rand(9, 1, generator=generator, dtype=torch.float64, requires_grad=True)
+        ordered = outputs.sort(dim=0).values
+        index = torch.arange(1, members, dtype=outputs.dtype)
+        gap_weights = (index * (members - index)).view(-1, 1, 1, 1, 1, 1)
+        spread = ((ordered[1:] - ordered[:-1]) * gap_weights).sum(0) / (members * (members - 1))
+        expected = (((outputs - target).abs().mean(0) - (1 - 0.05 / members) * spread) * weight).mean()
+        actual = _afcrps_from_members(outputs, target, weight, 0.95)
+        torch.testing.assert_close(actual, expected)
+        for actual_grad, expected_grad in zip(torch.autograd.grad(actual, (outputs, target, weight)), torch.autograd.grad(expected, (outputs, target, weight))):
+            torch.testing.assert_close(actual_grad, expected_grad)
+
+    @staticmethod
+    def _reference(outputs, target, weight=None, alpha=0.95):
+        members = outputs.shape[0]
+        error = (outputs - target).abs().mean(dim=0)
+        pairwise = (outputs[:, None] - outputs[None, :]).abs().sum(dim=(0, 1))
+        score = error - (1 - (1 - alpha) / members) * pairwise / (2 * members * (members - 1))
+        return (score * weight).mean() if weight is not None else score.mean()
+
+    @pytest.mark.parametrize("scales", [[]])
+    def test_original_score(self, monkeypatch, scales):
+        from xmetai.loss import crps_loss
+
+        outputs = torch.randn(3, 1, 1, 2, 9, 16, requires_grad=True)
+        target = torch.randn_like(outputs[0])
+        weight = torch.rand(9, 1)
+        monkeypatch.setattr(crps_loss, "all_gather_grad", lambda output: outputs)
+        actual = crps_loss.afcrps_loss_lite(outputs[0], target, weight, filter_scales=scales)
+        torch.testing.assert_close(actual, self._reference(outputs, target, weight))
+        actual.backward()
+        assert torch.isfinite(outputs.grad).all()
+        assert outputs.grad.abs().sum() > 0
+
+    @pytest.mark.parametrize("scales", [[8.0], [8.0, 2.0], [2.0, 8.0]])
+    def test_scale_partition_and_gradients(self, monkeypatch, scales):
+        from xmetai.loss import crps_loss
+        from xmetai.loss.crps_loss import _gaussian_filter_global
+
+        outputs = torch.randn(3, 1, 1, 2, 9, 16, requires_grad=True)
+        target = torch.randn_like(outputs[0])
+        weight = torch.rand(9, 1)
+        calls = []
+
+        def gather(output):
+            calls.append(output)
+            return outputs
+
+        monkeypatch.setattr(crps_loss, "all_gather_grad", gather)
+        actual = crps_loss.afcrps_loss_lite(outputs[0], target, weight, filter_scales=scales)
+        ordered = sorted(scales, reverse=True)
+        output_parts = [_gaussian_filter_global(outputs, scale) for scale in ordered] + [outputs]
+        target_parts = [_gaussian_filter_global(target, scale) for scale in ordered] + [target]
+        expected = self._reference(output_parts[0], target_parts[0], weight)
+        reconstructed = output_parts[0]
+        for index in range(1, len(output_parts)):
+            detail = output_parts[index] - output_parts[index - 1]
+            reconstructed = reconstructed + detail
+            expected = expected + self._reference(detail, target_parts[index] - target_parts[index - 1], weight)
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(reconstructed, outputs)
+        assert len(calls) == 1
+        expected_grad = torch.autograd.grad(expected, outputs)[0]
+        actual.backward()
+        torch.testing.assert_close(outputs.grad, expected_grad)
+        assert torch.isfinite(outputs.grad).all()
+        assert outputs.grad.abs().sum() > 0
+
+    def test_filter_constants_and_longitude_periodicity(self):
+        from xmetai.loss.crps_loss import _gaussian_filter_global
+
+        constant = torch.ones(2, 9, 16)
+        torch.testing.assert_close(_gaussian_filter_global(constant, 8), constant)
+        field = torch.randn_like(constant)
+        smooth = _gaussian_filter_global(field, 2)
+        torch.testing.assert_close(_gaussian_filter_global(field.roll(3, dims=-1), 2), smooth.roll(3, dims=-1))
+
+    @pytest.mark.parametrize("sigma", [1, 2, 8])
+    def test_gaussian_frequency_response(self, sigma):
+        from xmetai.loss.crps_loss import _gaussian_filter_global
+
+        longitude = torch.arange(32, dtype=torch.float32)
+        angular_frequency = 4 * torch.pi / 32
+        wave = (angular_frequency * longitude).cos().expand(9, -1)
+        offsets = torch.arange(-4 * sigma, 4 * sigma + 1, dtype=torch.float32)
+        weights = torch.exp(-0.5 * (offsets / sigma).square())
+        response = (weights * (angular_frequency * offsets).cos()).sum() / weights.sum()
+        torch.testing.assert_close(_gaussian_filter_global(wave, sigma), wave * response, atol=1e-6, rtol=1e-5)
+
+    @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+    @pytest.mark.parametrize("autocast_enabled", [False, True])
+    def test_multiscale_preserves_precision(self, monkeypatch, dtype, autocast_enabled):
+        from xmetai.loss import crps_loss
+        from xmetai.loss.crps_loss import _gaussian_filter_global
+
+        outputs = torch.randn(3, 1, 1, 1, 9, 16, dtype=dtype, requires_grad=True)
+        target = torch.randn_like(outputs[0])
+        filtered_dtypes = []
+
+        def filter_field(field, sigma):
+            result = _gaussian_filter_global(field, sigma)
+            filtered_dtypes.append(result.dtype)
+            assert field.dtype == dtype
+            return result
+
+        monkeypatch.setattr(crps_loss, "all_gather_grad", lambda output: outputs)
+        monkeypatch.setattr(crps_loss, "_gaussian_filter_global", filter_field)
+        expected = crps_loss.afcrps_loss_lite(outputs[0], target, filter_scales=[8, 2])
+        with torch.autocast("cpu", dtype=dtype, enabled=autocast_enabled):
+            actual = crps_loss.afcrps_loss_lite(outputs[0], target, filter_scales=[8, 2])
+        assert actual.dtype == dtype
+        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+        actual.backward()
+        assert set(filtered_dtypes) == {dtype}
+        assert outputs.grad.dtype == dtype
+        assert torch.isfinite(outputs.grad).all()
+        assert outputs.grad.abs().sum() > 0
+
+    @pytest.mark.parametrize("time_steps", [1, 2])
+    def test_checkpoint_retains_only_input_storage(self, monkeypatch, time_steps):
+        from xmetai.loss import crps_loss
+        from xmetai.loss.crps_loss import _gaussian_filter_global, _multiscale_afcrps_field
+
+        outputs = torch.randn(3, 2, time_steps, 3, 9, 16, requires_grad=True)
+        target = torch.randn_like(outputs[0], requires_grad=True)
+        weight = torch.rand(1, 1, 3, 9, 1, requires_grad=True)
+        input_storages = {field.untyped_storage().data_ptr() for field in (outputs, target, weight)}
+        retained_storages = {}
+
+        def pack(tensor):
+            if tensor.numel():
+                storage = tensor.untyped_storage()
+                retained_storages[storage.data_ptr()] = storage.nbytes()
+            return tensor
+
+        with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+            expanded_weight = weight.expand_as(target)
+            expected = torch.stack(
+                [
+                    _multiscale_afcrps_field(outputs[:, b, t, c], target[b, t, c], expanded_weight[b, t, c], 0.95, [8.0, 2.0])
+                    for b in range(2)
+                    for t in range(time_steps)
+                    for c in range(3)
+                ]
+            ).mean()
+        baseline_extra_bytes = sum(size for pointer, size in retained_storages.items() if pointer not in input_storages)
+        expected_grads = torch.autograd.grad(expected, (outputs, target, weight))
+        retained_storages.clear()
+        filtered_shapes = []
+
+        def filter_field(field, sigma):
+            filtered_shapes.append(tuple(field.shape))
+            assert field.shape in (outputs.shape, target.shape)
+            return _gaussian_filter_global(field, sigma)
+
+        monkeypatch.setattr(crps_loss, "all_gather_grad", lambda output: outputs)
+        monkeypatch.setattr(crps_loss, "_gaussian_filter_global", filter_field)
+        with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+            actual = crps_loss.afcrps_loss_lite(outputs[0], target, weight, filter_scales=[8, 2])
+        assert baseline_extra_bytes > 0
+        assert set(retained_storages).issubset(input_storages)
+        torch.testing.assert_close(actual, expected)
+        forward_filter_calls = len(filtered_shapes)
+        assert forward_filter_calls == 4
+        actual_grads = torch.autograd.grad(actual, (outputs, target, weight))
+        assert len(filtered_shapes) > forward_filter_calls
+        for actual_grad, expected_grad in zip(actual_grads, expected_grads):
+            torch.testing.assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.parametrize("scales", [[0.0], [-1.0], [8.0, 0.0], [8.0, 8.0], [float("nan")], [float("inf")]])
+    def test_invalid_scales(self, scales):
+        from xmetai.loss.crps_loss import afcrps_loss_lite
+
+        field = torch.zeros(1, 1, 1, 9, 16)
+        with pytest.raises(ValueError, match="filter_scales"):
+            afcrps_loss_lite(field, field, filter_scales=scales)
+
+    def test_single_process_stays_zero(self):
+        from xmetai.loss.crps_loss import afcrps_loss_lite
+
+        field = torch.zeros(1, 1, 1, 9, 16)
+        assert afcrps_loss_lite(field, field, filter_scales=[8]).item() == 0
+
+
 class TestCRPSLoss:
     """Test Continuous Ranked Probability Score loss."""
 
