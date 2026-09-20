@@ -107,6 +107,7 @@ dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
     train_times=train_times,
     test_times=test_times,
     eval_test_names=test_names,
+    test_target_names=test_names,
     total_batch_size=total_batch_size,
 )
 if load_from_pretrain:

@@ -112,6 +112,7 @@ dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
     test_pin_memory=False,
     test_interval=16,
     eval_test_names=test_names,
+    test_target_names=test_names,
     test_frames=test_frames,
     freq=freq,
 )
