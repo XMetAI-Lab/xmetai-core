@@ -163,7 +163,7 @@ def _dtensor_ema_worker(rank, world_size, init_file):
 
         ema(model)
         first_decay = min(0.5, 2.0 / 11.0)
-        expected_ema = initial.clone().mul_(first_decay).add_(updated, alpha=(1.0 - first_decay))
+        expected_ema = initial.lerp(updated, 1.0 - first_decay)
 
         ema.reverse(model)
         torch.testing.assert_close(model.weight.to_local(), expected_ema, rtol=0, atol=0)
@@ -205,7 +205,7 @@ def test_ema_update_reverse_restore():
     first_decay = min(0.5, 2.0 / 11.0)
     expected_ema = {name: tensor.clone() for name, tensor in initial.items()}
     for name in expected_ema:
-        expected_ema[name].mul_(first_decay).add_(updated[name], alpha=(1.0 - first_decay))
+        expected_ema[name].lerp_(updated[name], 1.0 - first_decay)
 
     ema.reverse(model)
     _assert_parameters_equal(model, expected_ema, atol=1e-7)
@@ -235,6 +235,40 @@ def test_ema_keeps_existing_state_dict_semantics():
     ema = EMA(model)
 
     assert set(ema.state_dict()) == {"decay", "num_updates"}
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float64])
+def test_ema_matches_scalar_lerp_with_warmup(dtype):
+    model = TinyModel().to(dtype=dtype)
+    # Include mixed dtypes and multiple tensors of the same dtype.
+    model.scale = torch.nn.Parameter(model.scale.float())
+    ema = EMA(model, decay=0.9)
+    expected = {name: value.clone() for name, value in ema.ema_params.items()}
+    for step in range(100):
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                param.add_(0.125)
+                decay = min(float(ema.decay.item()), (2.0 + step) / (11.0 + step))
+                expected[name].lerp_(param, 1.0 - decay)
+        ema(model)
+        for name, value in expected.items():
+            torch.testing.assert_close(ema.ema_params[name], value, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("decay", [0.0, 0.9, 1.0])
+def test_ema_fixed_decay_without_warmup(decay):
+    model = TinyModel()
+    ema = EMA(model, decay=decay)
+    ema.num_updates.fill_(-1)
+    initial = {name: value.clone() for name, value in ema.ema_params.items()}
+    with torch.no_grad():
+        for param in model.parameters():
+            param.add_(1.0)
+    ema(model)
+    assert ema.num_updates.item() == -1
+    for name, param in model.named_parameters():
+        expected = initial[name].lerp(param, 1.0 - float(ema.decay.item()))
+        torch.testing.assert_close(ema.ema_params[name], expected, rtol=0, atol=0)
 
 
 def test_simple_trainer_updates_ema_after_optimizer_step():

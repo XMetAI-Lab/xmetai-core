@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 import torch
 
@@ -113,3 +115,28 @@ def test_lr_factor_scales_matching_parameter_groups_through_nested_fsdp_wrappers
 
     assert _group_lr(params, backbone.weight) == pytest.approx(5e-5)
     assert _group_lr(params, model.head.weight) == pytest.approx(5e-4)
+
+
+def test_merged_adamw_groups_preserve_updates_and_roundtrip():
+    model = torch.nn.Sequential(BackboneModel(), BackboneModel())
+    reference = copy.deepcopy(model)
+    kwargs = dict(base_lr=5e-4, weight_decay=0.1, weight_decay_norm=0.0, overrides={"0.backbone": {"lr_factor": 0.5}})
+    groups = get_default_optimizer_params(model, **kwargs)
+    assert len(groups) == 4
+    assert sum(len(group["params"]) for group in groups) == len(list(model.parameters()))
+    assert len({id(p) for group in groups for p in group["params"]}) == len(list(model.parameters()))
+    singleton_groups = [{**group, "params": [param]} for group in get_default_optimizer_params(reference, **kwargs) for param in group["params"]]
+    optimizer = torch.optim.AdamW(groups, foreach=True)
+    reference_optimizer = torch.optim.AdamW(singleton_groups, foreach=True)
+    for step in range(3):
+        for param, ref in zip(model.parameters(), reference.parameters()):
+            param.grad = torch.full_like(param, 0.25 + step)
+            ref.grad = param.grad.clone()
+        optimizer.step()
+        reference_optimizer.step()
+        for param, ref in zip(model.parameters(), reference.parameters()):
+            torch.testing.assert_close(param, ref)
+    restored = torch.optim.AdamW(get_default_optimizer_params(model, **kwargs), foreach=True)
+    restored.load_state_dict(copy.deepcopy(optimizer.state_dict()))
+    for param in model.parameters():
+        torch.testing.assert_close(restored.state[param], optimizer.state[param])

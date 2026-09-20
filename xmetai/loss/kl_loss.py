@@ -18,8 +18,10 @@ def kl_entropy_loss(dist_p, dist_q, w=1e-4, entropy_weight=1e-5, min_std=1e-3, t
     std_q = torch.clamp(dist_q.stddev, min=min_std)
 
     # 2. Replace distributions with stabilized versions
-    dist_p = torch.distributions.Normal(dist_p.mean, std_p)
-    dist_q = torch.distributions.Normal(dist_q.mean, std_q)
+    # Avoid rescanning full-resolution fields and synchronizing CUDA to Python.
+    # The training loop checks finite losses; keep the stabilized KL unchanged.
+    dist_p = torch.distributions.Normal(dist_p.mean, std_p, validate_args=False)
+    dist_q = torch.distributions.Normal(dist_q.mean, std_q, validate_args=False)
 
     # 3. KL divergence
     kl = kl_divergence(dist_q, dist_p)  # KL(q || p)

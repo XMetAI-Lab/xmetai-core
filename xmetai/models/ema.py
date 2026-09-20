@@ -14,6 +14,7 @@ from torch import nn
 from torch.distributed.fsdp import FSDPModule
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.tensor import DTensor
+from torch.optim.swa_utils import get_ema_multi_avg_fn
 
 __all__ = ["EMA"]
 
@@ -120,11 +121,20 @@ class EMA(nn.Module):
             decay_val = min(decay_val, (1.0 + n) / (10.0 + n))
         _reshard_fsdp2(model)
         with _get_fsdp_context(model):
+            targets: list[torch.Tensor] = []
+            sources: list[torch.Tensor] = []
             for name, param in model.named_parameters():
-                if name in self.ema_params:
-                    current_param = _local_tensor(param).detach()
-                    _validate_local_tensor_pair(self.ema_params[name], current_param, name)
-                    self.ema_params[name].mul_(decay_val).add_(current_param, alpha=(1.0 - decay_val))
+                if name not in self.ema_params:
+                    continue
+                current_param = _local_tensor(param).detach()
+                ema_param = self.ema_params[name]
+                _validate_local_tensor_pair(ema_param, current_param, name)
+                targets.append(ema_param)
+                sources.append(current_param)
+            if not targets:
+                return
+
+            get_ema_multi_avg_fn(decay_val)(targets, sources, n)
 
     @torch.no_grad()
     def reverse(self, model: torch.nn.Module) -> None:
