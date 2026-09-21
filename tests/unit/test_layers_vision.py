@@ -9,14 +9,9 @@ import torch
 import torch.nn as nn
 
 from xmetai.layers.gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer, GatedDeltaNet2Mixer
+from xmetai.layers.mamba_vision import MambaVisionLayer
 from xmetai.layers.rotary_attention import precompute_freqs_cis
 from xmetai.layers.swin import SwinBlock, SwinLayer
-
-HAS_MAMBA = find_spec("mamba_ssm") is not None
-if HAS_MAMBA:
-    from xmetai.layers.mamba_vision import MambaVisionLayer
-else:
-    MambaVisionLayer = None
 
 
 class FakeGatedDeltaNet2(nn.Module):
@@ -168,7 +163,7 @@ class TestGatedDeltaNet2Layer:
 class TestBlock:
     """Test Block (Vision Transformer block with optional Mamba/Attention)."""
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     @pytest.mark.gpu
     def test_block_standard_attention(self, torch_seed):
         """Test Block with standard attention."""
@@ -188,7 +183,7 @@ class TestBlock:
         output = block(x)
         assert output.shape == x.shape
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     @pytest.mark.gpu
     def test_block_rotary_attention(self, torch_seed, sample_freqs_cis):
         """Test Block with rotary attention."""
@@ -209,7 +204,7 @@ class TestBlock:
         output = block(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
         assert output.shape == x.shape
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     @pytest.mark.gpu
     def test_block_windowed_rotary_attention(self, torch_seed, sample_freqs_cis):
         """Test Block with windowed rotary attention."""
@@ -241,7 +236,7 @@ class TestBlock:
         except AssertionError:
             pytest.skip("RotaryAttention requires matching precompute layout; skipping if incompatible")
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     def test_block_mamba_mixer(self, torch_seed):
         """Test Block with Mamba mixer."""
         from xmetai.layers.mamba_vision import Block
@@ -264,7 +259,7 @@ class TestBlock:
         output = block(x)
         assert output.shape == x.shape
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     def test_mamba_mixer_conv_bias_flag(self, torch_seed):
         """Test Mamba mixer honors the conv bias flag."""
         from xmetai.layers.mamba_vision import MambaVisionMixer
@@ -281,7 +276,7 @@ class TestBlock:
 class TestMambaVisionLayer:
     """Test complete MambaVisionLayer with depth > 1."""
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     @pytest.mark.gpu
     def test_mamba_vision_layer_basic(self, torch_seed):
         """Test MambaVisionLayer basic forward pass."""
@@ -347,7 +342,7 @@ class TestMambaVisionLayer:
         output = layer(x, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
         assert output.shape == x.shape
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     def test_mamba_vision_layer_preserves_mamba_init(self, torch_seed):
         """Test layer construction does not clobber Mamba mixer initialization."""
         from xmetai.layers.mamba_vision import MambaVisionMixer

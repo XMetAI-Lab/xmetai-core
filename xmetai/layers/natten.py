@@ -1,6 +1,6 @@
 """Neighborhood Attention (Hourglass-NATTEN) with 3D RoPE and temporal remapping.
 
-Requires the ``Hourglass-NATTEN`` package (CUDA kernel). Conditionally imported.
+Neighborhood attention loads the ``Hourglass-NATTEN`` CUDA backend at construction.
 """
 
 from __future__ import annotations
@@ -13,11 +13,6 @@ from einops import rearrange
 from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
-
-try:
-    import natten  # Hourglass-NATTEN
-except ImportError:
-    natten = None
 
 from .norm import SpatialAdaLN, _zero_init
 from .rotary_attention import apply_rotary_3d_batched, freqs_cis_3d_per_sample
@@ -44,8 +39,11 @@ class NattenSelfAttention3D(nn.Module):
         cosine_sim_scale: bool = True,
     ):
         super().__init__()
-        if natten is None:
-            raise ModuleNotFoundError("Hourglass-NATTEN is required. `pip install Hourglass-NATTEN`")
+        try:
+            from natten.functional import neighborhood_attention_generic
+        except ImportError as exc:
+            raise ImportError("NattenSelfAttention3D requires a working Hourglass-NATTEN installation.") from exc
+        self.neighborhood_attention = neighborhood_attention_generic
         if dim % num_heads != 0:
             raise ValueError(f"{dim=} must be divisible by {num_heads=}")
         if (dim // num_heads) % 8 != 0:
@@ -93,9 +91,7 @@ class NattenSelfAttention3D(nn.Module):
         v = v.contiguous()
 
         attn_scale = 1.0 if self.cosine_sim_scale else self.head_dim**-0.5
-        out = natten.functional.neighborhood_attention_generic(
-            q, k, v, kernel_size=self.kernel_size_thw, stride=1, dilation=1, is_causal=False, scale=attn_scale
-        )
+        out = self.neighborhood_attention(q, k, v, kernel_size=self.kernel_size_thw, stride=1, dilation=1, is_causal=False, scale=attn_scale)
         out = rearrange(out, "b t h w nh hd -> b t h w (nh hd)")
         return self.out(self.drop(out)) + skip
 

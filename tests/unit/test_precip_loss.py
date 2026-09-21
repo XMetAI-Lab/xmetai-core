@@ -43,7 +43,7 @@ def test_occurrence_and_distribution_are_scalar_and_differentiable():
     assert output.grad.abs().sum() > 0
 
 
-def test_distribution_loss_matches_spatial_rain_mass():
+def test_distribution_loss_penalizes_errors_at_rain_locations():
     target = torch.zeros(1, 1, C, 6, 6)
     target[:, :, TP_INDEX, 1, 1] = 5.0
     target[:, :, TP_INDEX, 4, 3] = 3.0
@@ -72,6 +72,22 @@ def test_distribution_loss_matches_spatial_rain_mass():
 
     assert same_loss.item() < 1e-4
     assert shifted_loss.item() > same_loss.item() + 0.1
+
+
+def test_distribution_loss_weights_heavier_target_rain_more():
+    target = torch.zeros(1, 1, C, 2, 2)
+    target[:, :, TP_INDEX, 0, 0] = 1.0
+    target[:, :, TP_INDEX, 0, 1] = 5.0
+
+    light_error = target.clone()
+    light_error[:, :, TP_INDEX, 0, 0] += 1.0
+    heavy_error = target.clone()
+    heavy_error[:, :, TP_INDEX, 0, 1] += 1.0
+
+    light_loss = precip_loss(light_error, target, [TP_INDEX], threshold=0.1, coefficients={"distribution": 1.0})["loss_distribution"]
+    heavy_loss = precip_loss(heavy_error, target, [TP_INDEX], threshold=0.1, coefficients={"distribution": 1.0})["loss_distribution"]
+
+    assert heavy_loss.item() > light_loss.item()
 
 
 def test_distribution_loss_zero_for_all_dry_target():

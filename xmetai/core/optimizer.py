@@ -337,7 +337,7 @@ def get_default_optimizer_params(  # type: ignore[no-untyped-def]
                 logger.info(f"override {full_param_name}: override={override}, before={before_override}, after={hyperparams}")
             params.append({"params": [value], **hyperparams})
 
-    return params
+    return reduce_param_groups(params)
 
 
 def get_muon_params_group(  # type: ignore[no-untyped-def]
@@ -392,7 +392,7 @@ def reduce_param_groups(params: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # re-group all parameter groups by their hyperparams
     groups = defaultdict(list)
     for item in params:
-        cur_params = tuple((x, y) for x, y in item.items() if x != "params")
+        cur_params = tuple(sorted((x, y) for x, y in item.items() if x != "params"))
         groups[cur_params].extend(item["params"])
     ret = []
     for param_keys, param_values in groups.items():

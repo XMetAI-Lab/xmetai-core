@@ -28,6 +28,14 @@ class Meta(nn.Module, metaclass=ABCMeta):
         self.logger = logging.getLogger(__name__)
         self._frozen_names: set[str] = set()
 
+    def parallelize(self) -> tuple[Optional[tuple[type[nn.Module], ...]], Optional[tuple[type[nn.Module], ...]]]:
+        """Return model AC/FSDP defaults; None inherits the recipe, () selects no modules.
+
+        Explicit training mods override these defaults. Overrides may also install
+        model-specific checkpointing independently of the common AC switch.
+        """
+        return None, None
+
     def params(self) -> int:
         return sum(map(lambda x: x.numel(), self.parameters()))
 

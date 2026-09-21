@@ -28,11 +28,6 @@ from torch import Tensor, nn
 from xmetai.layers.embed import PatchMerge2D, PatchSplit2D
 from xmetai.layers.natten import TransformerLayer3D
 
-try:
-    import natten  # noqa: F401  # Hourglass-NATTEN
-except ImportError:
-    natten = None
-
 __all__ = ["BackBone", "Natten3DBackbone"]
 
 
@@ -70,9 +65,6 @@ class Natten3DBackbone(BackBone):
         cosine_sim_scale: bool = True,
     ) -> None:
         super().__init__()
-        if natten is None:
-            raise ModuleNotFoundError("Hourglass-NATTEN is required. `pip install Hourglass-NATTEN`")
-
         self.cosine_sim_scale = cosine_sim_scale
         self.dim = int(dim)
         # modality emb + state emb(observed/missing/...;入口加到 level0 token)

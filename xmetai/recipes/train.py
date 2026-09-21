@@ -5,6 +5,48 @@ Description: Reusable training-related LazyConfig recipe
 Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
 
+import torch
+
+from xmetai.layers import (
+    GatedDeltaNet2Block,
+    GatedDeltaNet2HybridLayer,
+    GatedDeltaNet2Layer,
+    GraphCastDecoder,
+    GraphCastEncoder,
+    GraphCastLayer,
+    MambaVisionLayer,
+    SwinLayer,
+)
+from xmetai.layers.darknet_unet import DarknetBlock, DarknetConv
+from xmetai.layers.natten import TransformerLayer3D
+from xmetai.layers.swin import SwinBlock
+
+# Model hooks may refine these defaults. An explicit mods list overrides them.
+ac_mods: tuple[type[torch.nn.Module], ...] = (
+    MambaVisionLayer,
+    DarknetBlock,
+    DarknetConv,
+    SwinLayer,
+    GatedDeltaNet2Layer,
+    GatedDeltaNet2HybridLayer,
+    torch.nn.TransformerEncoderLayer,
+    GraphCastLayer,
+    GraphCastEncoder,
+    GraphCastDecoder,
+    TransformerLayer3D,
+)
+fsdp_mods: tuple[type[torch.nn.Module], ...] = (
+    MambaVisionLayer,
+    DarknetBlock,
+    DarknetConv,
+    SwinBlock,
+    GatedDeltaNet2Block,
+    torch.nn.TransformerEncoderLayer,
+    GraphCastLayer,
+    GraphCastEncoder,
+    GraphCastDecoder,
+)
+
 train = dict(
     output_dir="",
     init_checkpoint="",
@@ -18,7 +60,10 @@ train = dict(
         fp16_compression=False,
         static_graph=False,
     ),
+    ac=dict(enable=True, mods=None, default_mods=ac_mods, preserve_rng_state=True),
     fsdp=dict(  # options for FullyShardedDataParallel
+        mods=None,
+        default_mods=fsdp_mods,
         cpu_offload=False,
         auto_wrap_policy=None,  # None means no auto wrapping
         precision=dict(param_dtype="bf16", reduce_dtype="bf16", buffer_dtype="fp32"),
@@ -36,7 +81,6 @@ train = dict(
     use_ddp=True,  # Use DDP or not, default is True (use DDP)
     use_fsdp=False,  # Use FSDP or not, default is False (use DDP)
     use_fsdp2=False,  # Use FSDP2 or not, default is False (use DDP)
-    activation_checkpointing=True,  # Use activation checkpointing or not, default is True
     use_ema=True,  # Use Exponential Moving Average (EMA) for model weights, default is True
     segmented_backward=False,  # Backward rollout losses in bounded-size segments.
     rollout_segment_size=1,  # Number of contiguous physical rollout blocks per backward.

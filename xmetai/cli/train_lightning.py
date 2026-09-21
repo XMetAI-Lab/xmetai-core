@@ -5,7 +5,6 @@ Description: Training script for PyTorch Lightning
 Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
-import os
 import sys
 from typing import Any
 
@@ -14,16 +13,6 @@ from torch.distributed.fsdp import MixedPrecision
 from typing_extensions import override
 
 try:
-    from xmetai.config import LazyConfig, instantiate
-    from xmetai.core import default_argument_parser, default_setup
-    from xmetai.layers import HAS_MAMBA, SwinLayer
-
-    if HAS_MAMBA:
-        from xmetai.layers import MambaVisionLayer
-    from xmetai.utils import ensure_torchvision_nms_schema
-
-    ensure_torchvision_nms_schema()
-
     import pytorch_lightning as pl
     from pytorch_lightning.callbacks import (
         Callback,
@@ -32,8 +21,10 @@ try:
         ModelCheckpoint,
         TQDMProgressBar,
     )
-    from pytorch_lightning.strategies import DDPStrategy, FSDPStrategy
+    from pytorch_lightning.strategies import DDPStrategy, FSDPStrategy, ModelParallelStrategy
 
+    from xmetai.config import LazyConfig, instantiate
+    from xmetai.core import default_argument_parser, default_setup
     from xmetai.lightning import Lightning_Model_Wrapper
 except ImportError as e:
     print(f"Failed to import required modules: {e}")
@@ -124,7 +115,6 @@ class EMACallback(Callback):
 
 
 def main(args):
-    ensure_torchvision_nms_schema()
     torch.set_float32_matmul_precision("medium")
     cfg = LazyConfig.load(args.config_file)
     cfg = LazyConfig.apply_overrides(cfg, args.opts)
@@ -174,28 +164,22 @@ def main(args):
         "default_root_dir": cfg.train.output_dir,
     }
 
-    # 启用 activation_checkpointing 和 配置 strategy
-    mods = {SwinLayer, torch.nn.Conv2d, torch.nn.TransformerEncoderLayer, torch.nn.ConvTranspose2d, torch.nn.Linear}
-    if HAS_MAMBA:
-        mods.add(MambaVisionLayer)
-    ac_policy = mods if cfg.train.activation_checkpointing else None
-
+    # configure_model applies AC once; Lightning owns distributed setup and checkpoint IO.
     current_strategy = trainer_args["strategy"]
-    if getattr(cfg.train, "use_fsdp", False):
+    if cfg.train.use_fsdp and cfg.train.use_fsdp2:
+        raise ValueError("Select only one of train.use_fsdp and train.use_fsdp2")
+    if cfg.train.use_fsdp2:
+        trainer_args["strategy"] = ModelParallelStrategy(data_parallel_size=args.num_gpus * args.num_machines, tensor_parallel_size=1)
+        trainer_args["precision"] = "32-true"
+    elif cfg.train.use_fsdp:
+        precision = cfg.train.fsdp.precision
+        dtype = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
         fsdp_mp = MixedPrecision(
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.bfloat16,
-            buffer_dtype=torch.float32,
+            param_dtype=dtype[precision.param_dtype], reduce_dtype=dtype[precision.reduce_dtype], buffer_dtype=dtype[precision.buffer_dtype]
         )
-        trainer_args["strategy"] = FSDPStrategy(
-            cpu_offload=False,
-            mixed_precision=fsdp_mp,
-            activation_checkpointing_policy=ac_policy,
-        )
-    elif getattr(cfg.train, "use_fsdp2", False):
-        raise NotImplementedError("FSDP2 strategy is not yet implemented in this script.")
-    elif current_strategy == "ddp" or getattr(cfg.train, "use_ddp", False):
-        trainer_args["strategy"] = DDPStrategy(find_unused_parameters=getattr(cfg.train, "find_unused_parameters", False))
+        trainer_args["strategy"] = FSDPStrategy(cpu_offload=cfg.train.fsdp.cpu_offload, mixed_precision=fsdp_mp)
+    elif current_strategy == "ddp" or cfg.train.use_ddp:
+        trainer_args["strategy"] = DDPStrategy(find_unused_parameters=cfg.train.ddp.find_unused_parameters)
 
     # 添加 EMA 回调
     use_ema = getattr(cfg.train, "use_ema", False)
@@ -204,23 +188,14 @@ def main(args):
 
     trainer = pl.Trainer(**trainer_args)
     model = Lightning_Model_Wrapper(
-        cfg.model,
-        cfg.dataloader.evaluator,
-        lr=cfg.optimizer.lr,
-        max_iter=cfg.train.max_iter,
-        warmup_rate=cfg.scheduler.warmup_length,
+        cfg.model, cfg.dataloader.evaluator, lr=cfg.optimizer.lr, max_iter=cfg.train.max_iter, warmup_rate=cfg.scheduler.warmup_length, train_cfg=cfg.train
     )
-    if os.path.exists(cfg.train.init_checkpoint):
-        if cfg.train.init_checkpoint.endswith(".pth"):
-            state_dict = torch.load(cfg.train.init_checkpoint, map_location="cpu", weights_only=False)
-            model.model.load_state_dict(state_dict["model"], strict=True)
-        elif cfg.train.init_checkpoint.endswith(".ckpt"):
-            model = model.__class__.load_from_checkpoint(cfg.train.init_checkpoint)
-
+    # Lightning restores .ckpt files/directories after configure_model and strategy setup.
+    ckpt_path = cfg.train.init_checkpoint if cfg.train.init_checkpoint and not cfg.train.init_checkpoint.endswith(".pth") else None
     if args.eval:
-        trainer.test(model, dataloaders=val_loader)
+        trainer.test(model, dataloaders=val_loader, ckpt_path=ckpt_path, weights_only=False)
     else:
-        trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader, ckpt_path=ckpt_path, weights_only=False)
 
 
 def cli():

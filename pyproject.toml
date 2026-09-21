@@ -50,7 +50,7 @@ gpu = [
   "mamba-ssm>=2.2.0",
 ]
 lightning = [
-  "pytorch-lightning>=2.0.0",
+  "pytorch-lightning>=2.6.0",
   "typing-extensions>=4.4.0",
 ]
 export = [
@@ -85,7 +85,7 @@ dev = [
 ]
 all = [
   "mamba-ssm>=2.2.0",
-  "pytorch-lightning>=2.0.0",
+  "pytorch-lightning>=2.6.0",
   "typing-extensions>=4.4.0",
   "onnx>=1.14.0",
   "onnxruntime-gpu>=1.15.0",

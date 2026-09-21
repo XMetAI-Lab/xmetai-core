@@ -7,20 +7,17 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.layers import (
-    HAS_MAMBA,
     CubeEmbed,
     GatedDeltaNet2HybridLayer,
     GatedDeltaNet2Layer,
     LayerNorm,
+    MambaVisionLayer,
     MCDropout,
     StepEncoding,
     SwinLayer,
     TimestepEmbed,
     precompute_freqs_cis,
 )
-
-if HAS_MAMBA:
-    from xmetai.layers import MambaVisionLayer
 
 from .pred_head import PLSFHead
 
@@ -197,8 +194,6 @@ class UTransformer(nn.Module):
                         with_embedding=with_embedding,
                     )
             elif layer_lower.find("mamba") > -1:
-                if not HAS_MAMBA:
-                    raise ImportError("MambaVisionLayer requires mamba-ssm. " "Install it with: pip install '.[gpu]' or pip install mamba-ssm")
                 with_embedding = "embed" in layer_lower
                 mamba_version = "mamba3" if "mamba3" in layer_lower else ("mamba2" if "mamba2" in layer_lower else "mamba")
                 mamba_type = f"{mamba_version}_met" if "_met" in layer_lower else mamba_version

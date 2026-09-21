@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Optional, Sequence
 
 import torch
@@ -36,19 +37,13 @@ def spatial_distribution_loss(
     eps: float = 1e-6,
     reduction: str = "mean",
 ) -> torch.Tensor:
-    """Match normalized spatial precipitation mass for each sample/time/channel."""
-    scale = float(occurrence_scale)
-    pred_amount = F.softplus((output - float(threshold)) * scale) / scale
-    target_amount = F.relu(target - float(threshold))
-
-    pred_mass = pred_amount.sum(dim=(-2, -1), keepdim=True)
-    target_mass = target_amount.sum(dim=(-2, -1), keepdim=True)
-    pred_prob = pred_amount / pred_mass.clamp_min(eps)
-    target_prob = target_amount / target_mass.clamp_min(eps)
-
-    valid_target = (target_mass > eps).to(output).squeeze(-1).squeeze(-1)
-    loss = 0.5 * (pred_prob - target_prob).abs().sum(dim=(-2, -1))
-    loss = loss * valid_target
+    """Target-intensity-weighted Charbonnier loss above a rain threshold."""
+    del occurrence_scale
+    intensity_weight = F.relu(target - float(threshold))
+    point_loss = torch.sqrt((output - target).square() + eps) - math.sqrt(eps)
+    weighted_sum = (point_loss * intensity_weight).sum(dim=(-2, -1))
+    weight_sum = intensity_weight.sum(dim=(-2, -1))
+    loss = torch.where(weight_sum > eps, weighted_sum / weight_sum.clamp_min(eps), torch.zeros_like(weighted_sum))
     if reduction == "mean":
         return loss.mean()
     if reduction == "sum":

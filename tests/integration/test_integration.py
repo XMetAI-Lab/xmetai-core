@@ -13,8 +13,6 @@ import torch
 from xmetai.layers.attention import Attention
 from xmetai.models.utransformer import UTransformer
 
-HAS_MAMBA = find_spec("mamba_ssm") is not None
-
 
 class TestForwardPass:
     """Test complete forward pass through models."""
@@ -47,7 +45,7 @@ class TestForwardPass:
             except NotImplementedError:
                 pytest.skip("Model forward not fully implemented")
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     def test_utransformer_mamba_forward(self, sample_input_4d, torch_seed):
         """Test UTransformer with Mamba layers."""
         B, T, C, H, W = sample_input_4d.shape
@@ -73,7 +71,7 @@ class TestForwardPass:
             output = model.patch_embed(sample_input_4d)
             assert output.shape[0] == B
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     def test_utransformer_rotary_forward(self, sample_input_4d, torch_seed):
         """Test UTransformer with rotary attention."""
         B, T, C, H, W = sample_input_4d.shape
@@ -264,7 +262,7 @@ class TestONNXExport:
 
             assert onnx_path.exists()
 
-    @pytest.mark.skipif(not HAS_MAMBA, reason="mamba-ssm not installed")
+    @pytest.mark.skipif(find_spec("mamba_ssm") is None, reason="mamba-ssm not installed")
     def test_onnx_export_selective_scan(self):
         """Test ONNX export with custom selective scan op."""
         from xmetai.layers.mamba_vision import MambaMetMixer, symbolic_selective_scan_fn

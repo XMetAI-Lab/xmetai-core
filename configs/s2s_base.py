@@ -54,7 +54,7 @@ if os.path.exists(f"{output_dir}/model_final.pth"):
     scheduler.scheduler.end_value = 1e-2
     # scheduler = LazyConfig.load(recipe_path("schedule")).const_lr
 
-train.activation_checkpointing = True
+train.ac.enable = True
 train.max_iter = max_iter
 train.output_dir = output_dir
 optimizer.lr = lr
@@ -107,6 +107,7 @@ dataloader = LazyConfig.load(recipe_path("dataloader"), "zarr_dataloader")(
     train_times=train_times,
     test_times=test_times,
     eval_test_names=test_names,
+    test_target_names=test_names,
     total_batch_size=total_batch_size,
 )
 if load_from_pretrain:
@@ -119,7 +120,7 @@ if export_onnx:
     train.use_ddp = False
     train.use_fsdp = False
     train.use_fsdp2 = False
-    train.activation_checkpointing = False
+    train.ac.enable = False
     dataloader.test.total_batch_size = 1
     dataloader.test.num_workers = 1
     dataloader.test.pin_memory = False
