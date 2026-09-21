@@ -52,9 +52,13 @@ def apply_model_activation_checkpointing(model: torch.nn.Module, ac: DictConfig)
 
     def wrap(module: torch.nn.Module) -> torch.nn.Module:
         reentrant = getattr(module, "activation_checkpoint_reentrant", False)
-        return checkpoint_wrapper(module, checkpoint_impl=CheckpointImpl.REENTRANT if reentrant else CheckpointImpl.NO_REENTRANT, preserve_rng_state=ac.preserve_rng_state)
+        return checkpoint_wrapper(
+            module, checkpoint_impl=CheckpointImpl.REENTRANT if reentrant else CheckpointImpl.NO_REENTRANT, preserve_rng_state=ac.preserve_rng_state
+        )
 
-    apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap, check_fn=lambda module: isinstance(module, mods) and any(param.requires_grad for param in module.parameters()))
+    apply_activation_checkpointing(
+        model, checkpoint_wrapper_fn=wrap, check_fn=lambda module: isinstance(module, mods) and any(param.requires_grad for param in module.parameters())
+    )
 
 
 def create_fsdp_model(model, **kwargs):

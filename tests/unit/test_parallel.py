@@ -86,7 +86,11 @@ def test_fsdp2_uses_selected_units_then_root(monkeypatch, shard_outer):
     monkeypatch.setattr(mesh_module, "init_device_mesh", lambda *args, **kwargs: None)
     monkeypatch.setattr(fsdp_module, "fully_shard", lambda module, **kwargs: calls.append((module, kwargs)))
     monkeypatch.setattr("xmetai.core.defaults.comm.get_world_size", lambda: 1)
-    create_fsdp2_model(model, mods=(torch.nn.Linear, torch.nn.Sequential) if shard_outer else (torch.nn.Linear,), precision=OmegaConf.create(dict(param_dtype="bf16", reduce_dtype="fp32")))
+    create_fsdp2_model(
+        model,
+        mods=(torch.nn.Linear, torch.nn.Sequential) if shard_outer else (torch.nn.Linear,),
+        precision=OmegaConf.create(dict(param_dtype="bf16", reduce_dtype="fp32")),
+    )
     assert [m for m, _ in calls] == expected
     assert calls[-1][1]["reshard_after_forward"] is False
 

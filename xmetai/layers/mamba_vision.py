@@ -333,7 +333,9 @@ class MambaMetMixer(MambaVisionMixer):
             C_proj = C_proj.float()
 
         # Forward scan (Top-Left to Bottom-Right)
-        y_fwd = self.selective_scan_fn(x, dt, A, B_proj, C_proj, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
+        y_fwd = self.selective_scan_fn(
+            x, dt, A, B_proj, C_proj, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False
+        )
 
         # Backward scan (Bottom-Right to Top-Left)
         x_bwd = torch.flip(x, dims=[-1])
@@ -341,7 +343,9 @@ class MambaMetMixer(MambaVisionMixer):
         B_bwd = torch.flip(B_proj, dims=[-1])
         C_bwd = torch.flip(C_proj, dims=[-1])
 
-        y_bwd = self.selective_scan_fn(x_bwd, dt_bwd, A, B_bwd, C_bwd, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
+        y_bwd = self.selective_scan_fn(
+            x_bwd, dt_bwd, A, B_bwd, C_bwd, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False
+        )
         y_bwd = torch.flip(y_bwd, dims=[-1])
 
         # Bidirectional fusion (averaging preserves scale and maintains numerical stability)

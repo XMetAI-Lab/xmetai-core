@@ -13,11 +13,6 @@ from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-try:
-    from torch_harmonics import InverseRealSHT, RealSHT
-except ImportError as exc:
-    raise ImportError("EarthSpectralConv2d requires torch-harmonics. " "Install with: pip install 'torch-harmonics==0.8.0' --no-build-isolation") from exc
-
 __all__ = ["EarthSpectralConv2d"]
 
 
@@ -54,6 +49,10 @@ class EarthSpectralConv2d(nn.Module):
         mmax: Optional[int] = None,
     ):
         super().__init__()
+        try:
+            from torch_harmonics import InverseRealSHT, RealSHT
+        except ImportError as exc:
+            raise ImportError("EarthSpectralConv2d requires a working torch-harmonics installation.") from exc
 
         if groups <= 0:
             raise ValueError(f"groups must be a positive integer, got {groups}")
