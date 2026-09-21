@@ -16,10 +16,7 @@ from typing_extensions import override
 try:
     from xmetai.config import LazyConfig, instantiate
     from xmetai.core import default_argument_parser, default_setup
-    from xmetai.layers import HAS_MAMBA, SwinLayer
-
-    if HAS_MAMBA:
-        from xmetai.layers import MambaVisionLayer
+    from xmetai.layers import MambaVisionLayer, SwinLayer
     from xmetai.utils import ensure_torchvision_nms_schema
 
     ensure_torchvision_nms_schema()
@@ -176,9 +173,8 @@ def main(args):
 
     # 启用 activation_checkpointing 和 配置 strategy
     mods = {SwinLayer, torch.nn.Conv2d, torch.nn.TransformerEncoderLayer, torch.nn.ConvTranspose2d, torch.nn.Linear}
-    if HAS_MAMBA:
-        mods.add(MambaVisionLayer)
-    ac_policy = mods if cfg.train.activation_checkpointing else None
+    mods.add(MambaVisionLayer)
+    ac_policy = mods if cfg.train.ac.enable else None
 
     current_strategy = trainer_args["strategy"]
     if getattr(cfg.train, "use_fsdp", False):

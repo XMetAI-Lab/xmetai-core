@@ -11,7 +11,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
-from mamba_ssm.ops.selective_scan_interface import SelectiveScanFn, selective_scan_fn
 
 from .attention import Attention, WindowAttention, WindowAttentionV2
 from .drop import DropPath
@@ -57,9 +56,6 @@ def symbolic_selective_scan_fn(
     return node
 
 
-setattr(SelectiveScanFn, "symbolic", symbolic_selective_scan_fn)
-
-
 class Mamba3SisoOnnxFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, adt, dt, trap, q_bias, k_bias, angles, d, z, chunk_size, has_d, has_z):
@@ -92,10 +88,7 @@ class Mamba3SisoOnnxFn(torch.autograd.Function):
 
 
 def _register_mamba3_siso_symbolic():
-    try:
-        from mamba_ssm.modules import mamba3 as mamba3_module
-    except ImportError:
-        return
+    from mamba_ssm.modules import mamba3 as mamba3_module
 
     rmsnorm_cls = getattr(mamba3_module, "RMSNormGated", None)
     if rmsnorm_cls is not None and not getattr(rmsnorm_cls, "_xmetai_onnx_export_registered", False):
@@ -220,6 +213,13 @@ class MambaVisionMixer(nn.Module):
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
+        # Import the CUDA backend only when this mixer is actually selected.
+        try:
+            from mamba_ssm.ops.selective_scan_interface import SelectiveScanFn, selective_scan_fn
+        except ImportError as exc:
+            raise ImportError("MambaVisionMixer requires a working mamba-ssm installation.") from exc
+        SelectiveScanFn.symbolic = symbolic_selective_scan_fn
+        self.selective_scan_fn = selective_scan_fn
         self.d_model = d_model
         self.d_state = d_state
         self.d_conv = d_conv
@@ -295,7 +295,7 @@ class MambaVisionMixer(nn.Module):
             dt = dt.float()
             B = B.float()
             C = C.float()
-        y = selective_scan_fn(x, dt, A, B, C, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
+        y = self.selective_scan_fn(x, dt, A, B, C, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
         if torch.onnx.is_in_onnx_export():
             y = y.to(z)
         y = torch.cat([y, z], dim=1)
@@ -333,9 +333,7 @@ class MambaMetMixer(MambaVisionMixer):
             C_proj = C_proj.float()
 
         # Forward scan (Top-Left to Bottom-Right)
-        y_fwd = selective_scan_fn(
-            x, dt, A, B_proj, C_proj, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False
-        )
+        y_fwd = self.selective_scan_fn(x, dt, A, B_proj, C_proj, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
 
         # Backward scan (Bottom-Right to Top-Left)
         x_bwd = torch.flip(x, dims=[-1])
@@ -343,9 +341,7 @@ class MambaMetMixer(MambaVisionMixer):
         B_bwd = torch.flip(B_proj, dims=[-1])
         C_bwd = torch.flip(C_proj, dims=[-1])
 
-        y_bwd = selective_scan_fn(
-            x_bwd, dt_bwd, A, B_bwd, C_bwd, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False
-        )
+        y_bwd = self.selective_scan_fn(x_bwd, dt_bwd, A, B_bwd, C_bwd, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
         y_bwd = torch.flip(y_bwd, dims=[-1])
 
         # Bidirectional fusion (averaging preserves scale and maintains numerical stability)
@@ -469,15 +465,15 @@ class Block(nn.Module):
                 if mamba_type.startswith("mamba3"):
                     try:
                         from mamba_ssm.modules.mamba3 import Mamba3
-                    except ImportError:
-                        raise ImportError("Mamba3 requires latest mamba_ssm. Please install mamba-ssm.")
+                    except ImportError as exc:
+                        raise ImportError("Mamba3 requires mamba-ssm with mamba_ssm.modules.mamba3 available.") from exc
                     _register_mamba3_siso_symbolic()
                     mixer_inst = Mamba3(d_model=dim, d_state=64, d_conv=3, expand=2, headdim=headdim)
                 else:
                     try:
                         from mamba_ssm.modules.mamba2 import Mamba2
-                    except ImportError:
-                        raise ImportError("Mamba2 requires mamba_ssm>=2.0.0. Please install mamba-ssm.")
+                    except ImportError as exc:
+                        raise ImportError("Mamba2 requires mamba-ssm with mamba_ssm.modules.mamba2 available.") from exc
                     mixer_inst = Mamba2(d_model=dim, d_state=64, d_conv=3, expand=2, headdim=headdim)
 
                 if mamba_type.endswith("_met"):
@@ -639,6 +635,7 @@ class MambaVisionLayer(nn.Module):
         super().__init__()
         transformer_blocks = [] if transformer_blocks is None else transformer_blocks
         self.mamba_type = mamba_type
+        self.activation_checkpoint_reentrant = mamba_type.startswith("mamba3")
         self.with_embedding = with_embedding
         if self.with_embedding:
             self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim, 6 * dim, bias=True))

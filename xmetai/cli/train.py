@@ -12,11 +12,7 @@ os.environ.setdefault(
 )
 
 import torch
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-    CheckpointImpl,
-    apply_activation_checkpointing,
-    checkpoint_wrapper,
-)
+from omegaconf import OmegaConf
 
 try:
     from xmetai.config import LazyConfig, instantiate
@@ -34,24 +30,8 @@ try:
         inference_on_dataset,
         launch,
     )
-    from xmetai.layers import (
-        HAS_MAMBA,
-        GatedDeltaNet2Block,
-        GatedDeltaNet2HybridLayer,
-        GatedDeltaNet2Layer,
-        GraphCastDecoder,
-        GraphCastEncoder,
-        GraphCastLayer,
-        SwinLayer,
-        apply_lora_to_model,
-        merge_lora_weights,
-    )
-    from xmetai.layers.darknet_unet import DarknetBlock, DarknetConv
-    from xmetai.layers.natten import TransformerLayer3D
-    from xmetai.layers.swin import SwinBlock
-
-    if HAS_MAMBA:
-        from xmetai.layers import MambaVisionLayer
+    from xmetai.core.defaults import apply_model_activation_checkpointing
+    from xmetai.layers import apply_lora_to_model, merge_lora_weights
     from xmetai.utils import comm
 except ImportError as e:
     print(f"ImportError: {e}. You can do this by running `pip install -e .` in the root directory.")
@@ -85,59 +65,15 @@ def build_model(cfg):
         logger.info("Model parameters: {:.3f}M".format(model.params() / 1e6))
     model.freeze(cfg.train.freeze)
     model.to(cfg.train.device_type)
-    checkpoint_mods = [
-        DarknetBlock,
-        DarknetConv,
-        SwinLayer,
-        GatedDeltaNet2Layer,
-        GatedDeltaNet2HybridLayer,
-        torch.nn.TransformerEncoderLayer,
-        GraphCastLayer,
-        GraphCastEncoder,
-        GraphCastDecoder,
-        TransformerLayer3D,
-    ]
-    fsdp_mods = list(checkpoint_mods)
-    if cfg.train.use_fsdp2:
-        # Keep activation checkpointing at layer granularity, but shard the
-        # large hybrid layers block-by-block to reduce FSDP2 all-gather peaks.
-        fsdp_mods = [
-            DarknetBlock,
-            DarknetConv,
-            SwinBlock,
-            GatedDeltaNet2Block,
-            torch.nn.TransformerEncoderLayer,
-            GraphCastLayer,
-            GraphCastEncoder,
-            GraphCastDecoder,
-        ]
-    # checkpoint_mods += [WindowAttention, WindowAttentionV2, RotaryAttention, Attention]
-    if HAS_MAMBA:
-        checkpoint_mods.append(MambaVisionLayer)
-        fsdp_mods.append(MambaVisionLayer)
-    checkpoint_mods = tuple(checkpoint_mods)
-    cfg.train.fsdp.mods = tuple(fsdp_mods)
-    # Apply activation checkpointing
-    if cfg.train.activation_checkpointing:
-
-        def uses_mamba3_checkpoint(module):
-            return HAS_MAMBA and isinstance(module, MambaVisionLayer) and getattr(module, "mamba_type", "").startswith("mamba3")
-
-        def wrap_f1(module):
-            checkpoint_impl = CheckpointImpl.REENTRANT if uses_mamba3_checkpoint(module) else CheckpointImpl.NO_REENTRANT
-            return checkpoint_wrapper(
-                module,
-                checkpoint_impl=checkpoint_impl,
-                preserve_rng_state=True,
-            )
-
-        def has_trainable_params(module):
-            return any(p.requires_grad for p in module.parameters())
-
-        def check_fn(submodule):
-            return isinstance(submodule, checkpoint_mods) and has_trainable_params(submodule)
-
-        apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap_f1, check_fn=check_fn)
+    # Resolve interpolations before detaching the runtime policies from cfg.
+    ac = OmegaConf.create(OmegaConf.to_container(cfg.train.ac, resolve=True), flags={"allow_objects": True})
+    fsdp = OmegaConf.create(OmegaConf.to_container(cfg.train.fsdp, resolve=True), flags={"allow_objects": True})
+    ac_mods, fsdp_mods = model.parallelize()
+    if ac.mods is None:
+        ac.mods = ac.default_mods if ac_mods is None else ac_mods
+    if fsdp.mods is None:
+        fsdp.mods = fsdp.default_mods if fsdp_mods is None else fsdp_mods
+    apply_model_activation_checkpointing(model, ac)
 
     # Apply LoRA if enabled (BEFORE checkpoint loading so LoRA params can be loaded)
     if hasattr(cfg.train, "lora") and cfg.train.lora.get("enabled", False):
@@ -176,11 +112,11 @@ def build_model(cfg):
         model.apply(clear_grad)
         model = create_ddp_model(model, **cfg.train.ddp)
     elif cfg.train.use_fsdp:
-        logger.info(f"fsdp for mods:{cfg.train.fsdp.mods}")
-        model = create_fsdp_model(model, **cfg.train.fsdp)
+        logger.info(f"fsdp for mods:{fsdp.mods}")
+        model = create_fsdp_model(model, **fsdp)
     elif cfg.train.use_fsdp2:
-        logger.info(f"fsdp2 for mods:{cfg.train.fsdp.mods}")
-        model = create_fsdp2_model(model, **cfg.train.fsdp)
+        logger.info(f"fsdp2 for mods:{fsdp.mods}")
+        model = create_fsdp2_model(model, **fsdp)
     else:
         logger.warning("Neither DDP nor FSDP is enabled, using single GPU training.")
     model.device = cfg.train.device_type

@@ -16,7 +16,8 @@ import sys
 from typing import Optional
 
 import torch
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointImpl, CheckpointWrapper, apply_activation_checkpointing, checkpoint_wrapper
 from torch.distributed.fsdp import (
     BackwardPrefetch,
     CPUOffload,
@@ -31,6 +32,7 @@ from xmetai.config import CfgNode, LazyConfig
 from xmetai.utils import CommonMetricPrinter, JSONWriter, PathManager, TensorboardXWriter, collect_env_info, comm, seed_all_rng, setup_logger
 
 __all__ = [
+    "apply_model_activation_checkpointing",
     "create_ddp_model",
     "create_fsdp_model",
     "create_fsdp2_model",
@@ -38,6 +40,21 @@ __all__ = [
     "default_setup",
     "default_writers",
 ]
+
+
+def apply_model_activation_checkpointing(model: torch.nn.Module, ac: DictConfig) -> None:
+    """Apply the resolved AC policy without knowing the concrete model family."""
+    mods = tuple(ac.mods)
+    if any(not isinstance(mod, type) or not issubclass(mod, torch.nn.Module) for mod in mods):
+        raise TypeError("mods must contain torch.nn.Module classes")
+    if not ac.enable:
+        return
+
+    def wrap(module: torch.nn.Module) -> torch.nn.Module:
+        reentrant = getattr(module, "activation_checkpoint_reentrant", False)
+        return checkpoint_wrapper(module, checkpoint_impl=CheckpointImpl.REENTRANT if reentrant else CheckpointImpl.NO_REENTRANT, preserve_rng_state=ac.preserve_rng_state)
+
+    apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap, check_fn=lambda module: isinstance(module, mods) and any(param.requires_grad for param in module.parameters()))
 
 
 def create_fsdp_model(model, **kwargs):
@@ -105,9 +122,17 @@ def create_fsdp2_model(model, **kwargs):
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.fsdp import (
         CPUOffloadPolicy,
+        FSDPModule,
         MixedPrecisionPolicy,
         fully_shard,
     )
+
+    # Resolve wrapper boundaries before creating the process group or mutating modules.
+    mods = tuple(kwargs.get("mods", ()))
+    if any(not isinstance(mod, type) or not issubclass(mod, torch.nn.Module) for mod in mods):
+        raise TypeError("mods must contain torch.nn.Module classes")
+    modules = list(model.modules())
+    wrapped = {id(module._checkpoint_wrapped_module) for module in modules if isinstance(module, CheckpointWrapper)}
 
     # device mesh
     world_size = comm.get_world_size()
@@ -121,22 +146,16 @@ def create_fsdp2_model(model, **kwargs):
     precision = kwargs.get("precision", None)
     if precision is None:
         raise ValueError("You must provide precision={param_dtype, reduce_dtype}")
-    mp_policy = MixedPrecisionPolicy(
-        param_dtype=dtype_dict[precision.param_dtype],
-        reduce_dtype=dtype_dict[precision.reduce_dtype],
-    )
+    mp_policy = MixedPrecisionPolicy(param_dtype=dtype_dict[precision.param_dtype], reduce_dtype=dtype_dict[precision.reduce_dtype])
     # cpu offload
     cpu_offload_flag = kwargs.get("cpu_offload", False)
     cpu_offload = CPUOffloadPolicy() if cpu_offload_flag else None
-    # get mods to tuple for isinstance check
-    mods = tuple(set(kwargs.get("mods", ())))
-    fsdp_kwargs = dict(
-        mesh=device_mesh,
-        mp_policy=mp_policy,
-        offload_policy=cpu_offload,
-    )
-    for module in model.modules():
-        if isinstance(module, mods):
+    fsdp_kwargs = dict(mesh=device_mesh, mp_policy=mp_policy, offload_policy=cpu_offload)
+    for module in reversed(modules[1:]):
+        if id(module) in wrapped or isinstance(module, FSDPModule):
+            continue
+        original = module._checkpoint_wrapped_module if isinstance(module, CheckpointWrapper) else module
+        if isinstance(original, mods):
             fully_shard(module, **fsdp_kwargs)
     fully_shard(model, **fsdp_kwargs, reshard_after_forward=False)
     model.dtype = mp_policy.param_dtype

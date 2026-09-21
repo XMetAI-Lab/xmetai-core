@@ -460,9 +460,8 @@ class GatedDeltaNet2HybridLayer(nn.Module):
         del kwargs
         gdn2_time_embedding = self.adaLN_modulation(time_embedding) if self.with_embedding and time_embedding is not None else None
 
-        for blk in self.blocks:
-            if isinstance(blk, GatedDeltaNet2Block):
-                x = blk(x, time_embedding=gdn2_time_embedding, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
-            else:
-                x = blk(x, time_embedding=time_embedding, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
+        # Construction alternates GDN/Swin; AC/FSDP wrappers do not change that order.
+        for index, block in enumerate(self.blocks):
+            embedding = gdn2_time_embedding if index % 2 == 0 else time_embedding
+            x = block(x, time_embedding=embedding, freqs_cos=freqs_cos, freqs_sin=freqs_sin)
         return x

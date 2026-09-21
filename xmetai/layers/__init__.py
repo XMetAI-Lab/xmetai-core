@@ -14,6 +14,7 @@ from .gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, Gat
 from .graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
 from .helpers import kaming_init, to_1tuple
 from .lora import apply_lora_to_model, merge_lora_weights, set_lora_step
+from .mamba_vision import MambaVisionLayer
 from .norm import AdaptiveLN, AdaRMSNorm, LayerNorm, RMSNorm
 from .puyun_blocks import ConvLayerNorm, PuYunBlock
 from .rotary_attention import precompute_freqs_cis, precompute_freqs_cis_3d, precompute_freqs_cis_3d_remapped
@@ -27,14 +28,8 @@ from .tianquan_blocks import (
     Perceiver3DEncoder,
 )
 
-HAS_MAMBA = find_spec("mamba_ssm") is not None
 HAS_NATTEN = find_spec("natten") is not None
 HAS_TORCH_HARMONICS = find_spec("torch_harmonics") is not None
-
-MambaVisionLayer: Any = None
-if HAS_MAMBA:
-    _mamba_vision = import_module(".mamba_vision", package=__name__)
-    MambaVisionLayer = _mamba_vision.MambaVisionLayer
 
 EarthSpectralConv2d: Any = None
 if HAS_TORCH_HARMONICS:
@@ -75,7 +70,6 @@ __all__ = [
     "GraphCastDecoder",
     "GraphCastEncoder",
     "GraphCastLayer",
-    "HAS_MAMBA",
     "HAS_NATTEN",
     "HAS_TORCH_HARMONICS",
     "LayerNorm",
@@ -109,8 +103,6 @@ __all__ = [
 ]
 
 del import_module, find_spec
-if HAS_MAMBA:
-    del _mamba_vision
 if HAS_TORCH_HARMONICS:
     del _EarthSpectralConv2d
 if HAS_NATTEN:

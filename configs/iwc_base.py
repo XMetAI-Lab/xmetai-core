@@ -59,7 +59,7 @@ if os.path.exists(f"{output_dir}/model_final.pth"):
 
 train.max_iter = epochs * iters_per_epoch // total_batch_size  # max_steps with 60000 iterations per epoch
 train.output_dir = output_dir
-train.activation_checkpointing = True
+train.ac.enable = True
 train.use_fsdp2 = True
 train.use_fsdp = False
 train.use_ddp = False
@@ -168,7 +168,7 @@ if export_onnx:
     train.use_ddp = False
     train.use_fsdp = False
     train.use_fsdp2 = False
-    train.activation_checkpointing = False
+    train.ac.enable = False
     dataloader.test.total_batch_size = 1
     dataloader.test.num_workers = 1
     dataloader.test.pin_memory = False
