@@ -139,8 +139,9 @@ def create_fsdp2_model(model, **kwargs):
     wrapped = {id(module._checkpoint_wrapped_module) for module in modules if isinstance(module, CheckpointWrapper)}
 
     # device mesh
-    world_size = comm.get_world_size()
-    device_mesh = init_device_mesh("cuda", mesh_shape=(world_size,), mesh_dim_names=("dp",))
+    device_mesh = kwargs.get("device_mesh")
+    if device_mesh is None:
+        device_mesh = init_device_mesh("cuda", mesh_shape=(comm.get_world_size(),), mesh_dim_names=("dp",))
     # mix precision
     dtype_dict = {
         "fp32": torch.float32,
