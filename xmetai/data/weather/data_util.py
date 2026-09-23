@@ -208,11 +208,8 @@ def get_data_info(data_dirs, ignore_names=[]):
             stores.append(store)
 
             if "channel" not in store.coords:
-                raise ValueError(f"{data_dir} does not have channel"
-                )
-            store_channel_names.append(
-                    store.coords["channel"].values.tolist()
-            )     
+                raise ValueError(f"{data_dir} does not have channel")
+            store_channel_names.append(store.coords["channel"].values.tolist())
 
         ori_in_names = sum(store_channel_names, [])
         in_names = [name for name in ori_in_names if name not in ignore_names]
@@ -236,35 +233,26 @@ def get_data_info(data_dirs, ignore_names=[]):
         print(f"Channel weights: {channel_weights}")
 
         buffers = {"channel_weights": channel_weights.reshape((-1, 1, 1))}
-        for key in ["mean", "std", "weight", "mask",  "const"]:
+        for key in ["mean", "std", "weight", "mask", "const"]:
             for data_dir, data_names, store in zip(data_dirs, store_channel_names, stores):
                 file_name = os.path.join(data_dir, f"{key}.nc")
                 npy_name = os.path.join(data_dir, f"{key}.npy")
 
                 if key in {"mean", "std"}:
                     if key not in store:
-                            raise ValueError(
-                                  f"{key} not found in {data_dir}")
+                        raise ValueError(f"{key} not found in {data_dir}")
                     values = store[key].values
                 elif key == "mask" and "mask" in store:
 
-                    mask_names = (
-                        store["mask_channel"]
-                        .values
-                        .tolist()
-                    )
+                    mask_names = store["mask_channel"].values.tolist()
 
                     mask = store["mask"].values
 
                     if "sea_mask" in mask_names:
-                        buffers["mask"] = mask[
-                            mask_names.index("sea_mask")
-                        ]
+                        buffers["mask"] = mask[mask_names.index("sea_mask")]
 
                     if "land_mask" in mask_names:
-                        buffers["land_mask"] = mask[
-                            mask_names.index("land_mask")
-                        ]
+                        buffers["land_mask"] = mask[mask_names.index("land_mask")]
 
                     continue
                 elif os.path.exists(file_name):
