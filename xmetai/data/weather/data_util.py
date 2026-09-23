@@ -207,10 +207,12 @@ def get_data_info(data_dirs, ignore_names=[]):
                 store = xr.open_zarr(data_dir, consolidated=False)
             stores.append(store)
 
-            coord = "level" if "level" in store.coords else "channel"
-            if coord not in store.coords:
-                raise ValueError(f"Zarr store {data_dir} has neither a 'level' nor a 'channel' coordinate.")
-            store_channel_names.append(store.coords[coord].values.tolist())
+            if "channel" not in store.coords:
+                raise ValueError(f"{data_dir} does not have channel"
+                )
+            store_channel_names.append(
+                    store.coords["channel"].values.tolist()
+            )     
 
         ori_in_names = sum(store_channel_names, [])
         in_names = [name for name in ori_in_names if name not in ignore_names]
@@ -234,46 +236,42 @@ def get_data_info(data_dirs, ignore_names=[]):
         print(f"Channel weights: {channel_weights}")
 
         buffers = {"channel_weights": channel_weights.reshape((-1, 1, 1))}
-        for key in ["mean", "std", "weight", "mask", "land_mask", "const"]:
+        for key in ["mean", "std", "weight", "mask",  "const"]:
             for data_dir, data_names, store in zip(data_dirs, store_channel_names, stores):
                 file_name = os.path.join(data_dir, f"{key}.nc")
                 npy_name = os.path.join(data_dir, f"{key}.npy")
 
                 if key in {"mean", "std"}:
-                    values = None
-                    if os.path.exists(file_name):
-                        with xr.open_dataarray(file_name) as data_array:
-                            if "channel" in data_array.coords:
-                                sidecar_names = data_array.coords["channel"].values.tolist()
-                                if all(name in sidecar_names for name in data_names):
-                                    values = data_array.sel(channel=data_names).values
-                            if values is None and data_array.size == len(data_names):
-                                values = data_array.values.reshape(-1)
-                    elif os.path.exists(npy_name):
-                        sidecar_values = np.load(npy_name).reshape(-1)
-                        if sidecar_values.size == len(data_names):
-                            values = sidecar_values
-
-                    if values is None:
-                        if "data" not in store or key not in store["data"].attrs:
-                            raise ValueError(f"Cannot align {key!r} statistics for {data_dir}: no matching sidecar or data attribute.")
-                        attr_values = np.asarray(store["data"].attrs[key], dtype=np.float32).reshape(-1)
-                        if attr_values.size % len(data_names) != 0:
+                    if key not in store:
                             raise ValueError(
-                                f"Cannot align {key!r} statistics for {data_dir}: attribute length {attr_values.size} "
-                                f"is not a multiple of {len(data_names)} channels."
-                            )
-                        blocks = attr_values.reshape(-1, len(data_names))
-                        if blocks.shape[0] > 1 and not np.allclose(blocks, blocks[:1], rtol=0.0, atol=0.0):
-                            raise ValueError(f"Cannot align {key!r} statistics for {data_dir}: repeated attribute blocks are inconsistent.")
-                        values = blocks[0]
+                                  f"{key} not found in {data_dir}")
+                    values = store[key].values
+                elif key == "mask" and "mask" in store:
+
+                    mask_names = (
+                        store["mask_channel"]
+                        .values
+                        .tolist()
+                    )
+
+                    mask = store["mask"].values
+
+                    if "sea_mask" in mask_names:
+                        buffers["mask"] = mask[
+                            mask_names.index("sea_mask")
+                        ]
+
+                    if "land_mask" in mask_names:
+                        buffers["land_mask"] = mask[
+                            mask_names.index("land_mask")
+                        ]
+
+                    continue
                 elif os.path.exists(file_name):
                     with xr.open_dataarray(file_name) as data_array:
                         values = data_array.values
                 elif os.path.exists(npy_name):
                     values = np.load(npy_name)
-                elif key in store:
-                    values = store[key].values
                 else:
                     print(f"File {file_name} or Zarr variable '{key}' not found, using default value for {key}.")
                     continue
