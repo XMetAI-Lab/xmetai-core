@@ -239,21 +239,51 @@ def get_data_info(data_dirs, ignore_names=[]):
                 npy_name = os.path.join(data_dir, f"{key}.npy")
 
                 if key in {"mean", "std"}:
-                    if key not in store:
-                        raise ValueError(f"{key} not found in {data_dir}")
-                    values = store[key].values
+                    values = None
+
+                    # 1. 新 Zarr 格式：mean/std 作为变量（优先）
+                    if key in store:
+                        values = store[key].values
+
+                    # 2. 兼容旧格式：mean.nc/std.nc
+                    elif os.path.exists(file_name):
+                        with xr.open_dataarray(file_name) as data_array:
+                            if "channel" in data_array.coords:
+                                sidecar_names = data_array.coords["channel"].values.tolist()
+                                if all(name in sidecar_names for name in data_names):
+                                    values = data_array.sel(channel=data_names).values
+
+                            if values is None and data_array.size == len(data_names):
+                                values = data_array.values.reshape(-1)
+
+                    # 3. 兼容旧格式：mean.npy/std.npy
+                    elif os.path.exists(npy_name):
+                        values = np.load(npy_name).reshape(-1)
+
+                    if values is None:
+                        if "data" not in store or key not in store["data"].attrs:
+                            raise ValueError(f"Cannot align {key!r} statistics for {data_dir}: no matching sidecar or data attribute.")
+                        attr_values = np.asarray(store["data"].attrs[key], dtype=np.float32).reshape(-1)
+                        if attr_values.size % len(data_names) != 0:
+                            raise ValueError(
+                                f"Cannot align {key!r} statistics for {data_dir}: attribute length {attr_values.size} "
+                                f"is not a multiple of {len(data_names)} channels."
+                            )
+                        blocks = attr_values.reshape(-1, len(data_names))
+                        if blocks.shape[0] > 1 and not np.allclose(blocks, blocks[:1], rtol=0.0, atol=0.0):
+                            raise ValueError(f"Cannot align {key!r} statistics for {data_dir}: repeated attribute blocks are inconsistent.")
+                        values = blocks[0]
+                        # raise ValueError(f"{key} not found in {data_dir}")
+
                 elif key == "mask" and "mask" in store:
-
+                    if "mask_channel" not in store:
+                        raise ValueError(f"{data_dir} has mask but no mask_channel")
                     mask_names = store["mask_channel"].values.tolist()
-
                     mask = store["mask"].values
-
                     if "sea_mask" in mask_names:
                         buffers["mask"] = mask[mask_names.index("sea_mask")]
-
                     if "land_mask" in mask_names:
                         buffers["land_mask"] = mask[mask_names.index("land_mask")]
-
                     continue
                 elif os.path.exists(file_name):
                     with xr.open_dataarray(file_name) as data_array:
