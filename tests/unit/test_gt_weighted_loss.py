@@ -3,14 +3,16 @@ import math
 import pytest
 import torch
 
-from xmetai.loss import GTWeightedLoss
-from xmetai.recipes.gt_loss import gt_loss_profiles
+if not torch.cuda.is_available():
+    pytest.skip("GTWeightedLoss requires CUDA", allow_module_level=True)
+pytest.importorskip("triton", reason="GTWeightedLoss requires Triton")
+
+from xmetai.loss import GTWeightedLoss  # noqa: E402
+from xmetai.recipes.gt_loss import gt_loss_profiles  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def cuda_device():
-    if not torch.cuda.is_available():
-        pytest.skip("GTWeightedLoss requires CUDA")
     with torch.device("cuda"):
         yield
 

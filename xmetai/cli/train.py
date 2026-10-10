@@ -247,7 +247,7 @@ def do_export(
     batch_size = max(2, input_tensors[0].shape[0])
     dynamic_shapes = []
     for i, name in enumerate(input_names):
-        if i == 0 or name in {"step", "hour", "doy"}:
+        if i == 0 or name in {"step", "hour", "doy", "perturb_std_scale"}:
             # Dynamo specializes dimensions of size 1; trace with at least two
             # samples so the same graph also supports batch 1 at inference.
             if input_tensors[i].shape[0] == 1:
