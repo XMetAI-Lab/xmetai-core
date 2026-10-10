@@ -69,6 +69,11 @@ accumid = data_info["accumid"]
 maskid = data_info["maskid"]
 buffers = data_info["buffers"]
 
+# Measured annual global GT thresholds; child configs select their dataset key.
+# CRA: cra_s2s/cra_daily_p25; high-resolution ERA: era_daily_p25.
+gt_loss_profiles = LazyConfig.load(recipe_path("gt_loss"), "gt_loss_profiles")
+gt_loss_features = gt_loss_profiles["era_s2s"].features
+
 test_names = ["z500", "u200", "u850", "msl", "t2m", "sst", "ttr", "tp"]
 # test_names = ["z500", "t2m", "msl", "tp"]
 test_chans = [out_names.index(n) for n in test_names]
