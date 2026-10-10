@@ -44,6 +44,10 @@ def spatial_distribution_loss(
     remains responsible for their errors. Weights are not normalized per scene.
     """
     del occurrence_scale
+    if output.dtype in (torch.float16, torch.bfloat16):
+        output = output.float()
+    if target.dtype in (torch.float16, torch.bfloat16):
+        target = target.float()
     target = target.detach()
     intensity_weight = F.relu(target - float(threshold)).clamp_max(10.0)
     point_loss = torch.sqrt((output - target).square() + eps) - math.sqrt(eps)
