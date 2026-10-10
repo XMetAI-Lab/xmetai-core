@@ -184,8 +184,8 @@ dataloader.evaluator = [
 ]
 
 dataloader.train = L(build_train_loader)(
-    dataset=L(DATASETS.get("ERA5"))(
-        data_name=data_dir, hist_frames=in_frames, fcst_frames=2, interval=1, freq=freq, training=True, years=train_times, in_names=tianquan_vars_2
+    dataset=L(DATASETS.get("MultiZarrDataset"))(
+        data_paths=[data_dir], hist_frames=in_frames, fcst_frames=2, interval=1, freq=freq, training=True, years=train_times, in_names=tianquan_vars_2
     ),
     total_batch_size=total_batch_size,
     num_workers=1,  # 训练集 DataLoader 进程数
@@ -193,8 +193,8 @@ dataloader.train = L(build_train_loader)(
 )
 
 dataloader.test = L(build_test_loader)(
-    dataset=L(DATASETS.get("ERA5"))(
-        data_name=data_dir,
+    dataset=L(DATASETS.get("MultiZarrDataset"))(
+        data_paths=[data_dir],
         hist_frames=in_frames,
         fcst_frames=test_frames,
         interval=-1,

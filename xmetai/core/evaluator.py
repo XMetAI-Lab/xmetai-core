@@ -282,7 +282,8 @@ def inference_context(model: Any) -> Iterator[None]:
     """
     training_mode = model.training
     model.eval()
-    with torch.inference_mode():
+    # FSDP may cache parameters during eval; they must remain usable by later backward.
+    with torch.no_grad():
         yield
     model.train(training_mode)
     # for FSDP2 models, reshard after inference.

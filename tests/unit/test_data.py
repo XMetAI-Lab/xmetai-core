@@ -82,17 +82,6 @@ class TestDataUtils:
 class TestWeatherDataset:
     """Test weather dataset implementations."""
 
-    def test_era5_dataset_structure(self):
-        """Test ERA5 dataset basic structure."""
-        try:
-            from xmetai.data.weather.era5 import ERA5Dataset
-        except ImportError:
-            pytest.skip("ERA5 dataset not available")
-
-        # This would require actual data files
-        # Just test instantiation with mock data
-        pytest.skip("Requires actual data files")
-
     def test_multi_zarr_dataset_loading(self):
         """Test multi-dataset loading."""
         try:

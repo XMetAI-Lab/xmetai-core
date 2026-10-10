@@ -125,8 +125,8 @@ train_times = ("19500101-00", "20171231-18")
 test_times = ("20180101-18", "20181231-18")
 # test_times = ("20050101-18", "20250502-18")
 dataloader.train = L(build_train_loader)(
-    dataset=L(DATASETS.get("ERA5"))(
-        data_name=data_dir,
+    dataset=L(DATASETS.get("MultiZarrDataset"))(
+        data_paths=[data_dir],
         hist_frames=in_frames,
         fcst_frames=2,
         interval=1,
@@ -141,8 +141,8 @@ dataloader.train = L(build_train_loader)(
 )
 
 dataloader.test = L(build_test_loader)(
-    dataset=L(DATASETS.get("ERA5"))(
-        data_name=data_dir,
+    dataset=L(DATASETS.get("MultiZarrDataset"))(
+        data_paths=[data_dir],
         hist_frames=in_frames,
         fcst_frames=test_frames,
         interval=16,

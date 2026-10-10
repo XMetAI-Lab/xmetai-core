@@ -161,10 +161,16 @@ bash scripts/train.bash \
 # 导出为ONNX格式
 ./scripts/train.bash \
     --stage export \
-    --model configs/s2s_vit.py
+    --model configs/s2s_vit.py \
+    model.precision=fp32
 
 # 导出输出位置: ./output/6_6_12_12-s2s_vit-0.0005/model.onnx
 ```
+
+导出使用 `torch.onnx.export(..., dynamo=True)`，固定 opset 18；请安装 `pip install -e '.[export]'`（PyTorch ≥ 2.9、onnxscript）。按实际 ONNX protobuf 大小保存：小于 2 GiB 时使用单个 `.onnx`；达到该限制时使用同名 `.data`（例如 `model.onnx` 和 `model.data`），部署时需一并复制。导出报告保存在模型同目录。
+
+GDN2、Mamba（SelectiveScan）、Mamba3 同时保留旧 `autograd.Function.symbolic` 和 Dynamo symbolic 路径，domain/name/opset 及算子输入契约保持不变，运行时仍需加载对应 CUDA ONNX Runtime 插件。`do_export` 固定使用新导出器；直接调用 `torch.onnx.export(..., dynamo=False)` 仍可使用算子的旧 symbolic。导出前应关闭 activation checkpointing 和分布式包装。精度由 `model.precision` 控制；当前 GDN2 checkpoint 的 FP16 残差会溢出，使用 `model.precision=fp32`，不修改模型残差计算。
+
 
 ### 参数说明
 

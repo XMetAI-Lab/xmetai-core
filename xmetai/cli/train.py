@@ -222,7 +222,6 @@ def do_export(
     save_name: str = "model.onnx",
     forward_name: str = "onnx_export",
     device: str = "cuda",
-    opset_version: int = 17,
 ) -> None:
     model.eval()
 
@@ -243,38 +242,56 @@ def do_export(
         input_names.append(k)
         logger.info(f"input:{k} with shape:{input_tensors[-1].shape} and dtype:{input_tensors[-1].dtype} on device:{input_tensors[-1].device}")
 
-    torch.onnx.export(
+    batch = torch.export.Dim("batch", min=1)
+    batch_size = max(2, input_tensors[0].shape[0])
+    dynamic_shapes = []
+    for i, name in enumerate(input_names):
+        if i == 0 or name in {"step", "hour", "doy"}:
+            # Dynamo specializes dimensions of size 1; trace with at least two
+            # samples so the same graph also supports batch 1 at inference.
+            if input_tensors[i].shape[0] == 1:
+                input_tensors[i] = input_tensors[i].expand(batch_size, *input_tensors[i].shape[1:]).contiguous()
+            dynamic_shapes.append({0: batch})
+        else:
+            # Global controls (e.g. per-group perturbation scales) are not batched.
+            dynamic_shapes.append({})
+
+    program = torch.onnx.export(
         model,
         tuple(input_tensors),
-        save_name,
         export_params=True,
-        verbose=True if logging.DEBUG == logger.getEffectiveLevel() else False,
+        verbose=logger.getEffectiveLevel() == logging.DEBUG,
         input_names=input_names,
-        dynamo=False,
         output_names=["pred"],
-        opset_version=opset_version,
-        do_constant_folding=False,
-        custom_opsets={"xmetai_plugins": 1},
+        opset_version=18,
+        dynamo=True,
+        dynamic_shapes=tuple(dynamic_shapes),
+        report=True,
+        artifacts_dir=os.path.dirname(os.path.abspath(save_name)),
     )
-    logger.info(f"Exported model to {save_name}")
+    import onnx
+    from google.protobuf.message import EncodeError
 
-    type_size = torch.tensor([], dtype=model.dtype).element_size()
-    if model.params() * type_size > 2**31:  # 2GB limit
-        logger.warning(f"Model size {model.params() * type_size / 1e9:.2f}GB exceeds the ONNX limit of 2GB. Consider export params to one extra data file.")
-        import onnx
-
-        model_onnx = onnx.load(save_name, load_external_data=True)
-        location = os.path.basename(save_name).replace(".onnx", ".data")
+    onnx_model = program.model_proto
+    try:
+        external_data = onnx_model.ByteSize() >= onnx.checker.MAXIMUM_PROTOBUF
+    except EncodeError:
+        # Some protobuf backends cannot even compute ByteSize above 2 GiB.
+        # Externalize tensors before asking protobuf to serialize the graph.
+        external_data = True
+    if external_data:
+        data_name = os.path.splitext(os.path.basename(save_name))[0] + ".data"
+        # ONNX appends external tensors to existing files; start fresh on re-export.
+        data_path = os.path.join(os.path.dirname(save_name), data_name)
+        if os.path.exists(data_path):
+            os.remove(data_path)
         onnx.save_model(
-            model_onnx,
-            save_name,
-            save_as_external_data=True,
-            all_tensors_to_one_file=True,
-            location=location,
-            size_threshold=1024,
-            convert_attribute=True,
+            onnx_model, save_name, save_as_external_data=True, all_tensors_to_one_file=True, location=data_name, size_threshold=1024, convert_attribute=True
         )
-        logger.info(f"Exported model to {save_name} with external data file {location}")
+    else:
+        onnx.save_model(onnx_model, save_name)
+
+    logger.info(f"Exported model to {save_name}")
 
 
 def main(args):
