@@ -28,15 +28,18 @@ class ExportModel(nn.Module):
 
 
 @pytest.mark.parametrize("example_batch", [1, 2])
-def test_export_selected_forward_and_runtime(tmp_path, example_batch):
+@pytest.mark.parametrize("opset_version", [None, 19])
+def test_export_selected_forward_and_runtime(tmp_path, example_batch, opset_version):
     ort = pytest.importorskip("onnxruntime")
     model = ExportModel().eval()
     data = torch.randn(example_batch, 4)
     scale = np.array([2.0], dtype=np.float32)
     path = tmp_path / "model.onnx"
     expected = model.onnx_export(data, torch.from_numpy(scale)).detach().numpy()
-    do_export(model, {"input": data, "scale": scale}, save_name=str(path), device="cpu")
+    export_kwargs = {} if opset_version is None else {"opset_version": opset_version}
+    do_export(model, {"input": data, "scale": scale}, save_name=str(path), device="cpu", **export_kwargs)
     onnx.checker.check_model(str(path))
+    assert next(item.version for item in onnx.load(path).opset_import if item.domain == "") == (18 if opset_version is None else opset_version)
     assert not path.with_suffix(".onnx.data").exists()
     assert not path.with_suffix(".data").exists()
     assert all(item.data_location != onnx.TensorProto.EXTERNAL for item in onnx.load(path).graph.initializer)

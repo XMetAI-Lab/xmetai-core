@@ -222,6 +222,7 @@ def do_export(
     save_name: str = "model.onnx",
     forward_name: str = "onnx_export",
     device: str = "cuda",
+    opset_version: int = 18,
 ) -> None:
     model.eval()
 
@@ -263,7 +264,7 @@ def do_export(
         verbose=logger.getEffectiveLevel() == logging.DEBUG,
         input_names=input_names,
         output_names=["pred"],
-        opset_version=18,
+        opset_version=opset_version,
         dynamo=True,
         dynamic_shapes=tuple(dynamic_shapes),
         report=True,
