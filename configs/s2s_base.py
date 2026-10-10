@@ -75,7 +75,6 @@ gt_loss_profiles = LazyConfig.load(recipe_path("gt_loss"), "gt_loss_profiles")
 gt_loss_features = gt_loss_profiles["era_s2s"].features
 
 test_names = ["z500", "u200", "u850", "msl", "t2m", "sst", "ttr", "tp"]
-# test_names = ["z500", "t2m", "msl", "tp"]
 test_chans = [out_names.index(n) for n in test_names]
 test_frames = np.arange(1, 43).tolist()  # predict 1-42 days ahead
 step_range = [max(test_frames)]
