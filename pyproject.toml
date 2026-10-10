@@ -54,7 +54,9 @@ lightning = [
   "typing-extensions>=4.4.0",
 ]
 export = [
+  "torch>=2.9.0",
   "onnx>=1.14.0",
+  "onnxscript>=0.5.4",
 ]
 inference = [
   "onnx>=1.14.0",
@@ -84,6 +86,8 @@ dev = [
   "twine>=5.0",
 ]
 all = [
+  "torch>=2.9.0",
+  "onnxscript>=0.5.4",
   "mamba-ssm>=2.2.0",
   "pytorch-lightning>=2.6.0",
   "typing-extensions>=4.4.0",

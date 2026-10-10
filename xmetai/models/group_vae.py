@@ -29,7 +29,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.layers import AdaptiveLN, EarthConv2d, EarthConvTranspose2d, set_lora_step
-from xmetai.loss import SphericalBandPowerLoss, charbonnier_loss, field_dynamics_consistency_loss
+from xmetai.loss import SphericalAMSELoss, SphericalBandPowerLoss, charbonnier_loss, field_dynamics_consistency_loss
 from xmetai.registries import MODELS
 from xmetai.utils import get_event_storage
 from xmetai.utils.events import has_event_storage
@@ -531,6 +531,7 @@ class _BaseGroupVAE(BasePredictor):
         alpha: float = 1.0,
         loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
         latent_dyn_weight: float = 0.0,
+        amse_weight: float = 0.0,
         spectral_loss_weight: float = 0.0,
         spectral_loss_names: tuple[str, ...] = (),
         spectral_image_size: tuple[int, int] | None = None,
@@ -555,6 +556,10 @@ class _BaseGroupVAE(BasePredictor):
         if len(loss_weight) != 5:
             raise ValueError("loss_weight must contain five floats: (vae_input, vae_target, pred_rec, latent_reg, latent_pred)")
         self.loss_weight = loss_weight
+        self.amse_weight = float(amse_weight)
+        if not math.isfinite(self.amse_weight) or self.amse_weight < 0:
+            raise ValueError("amse_weight must be finite and nonnegative")
+        self.amse_loss = SphericalAMSELoss(image_size) if self.amse_weight > 0 else None
         self.latent_dyn_weight = float(latent_dyn_weight)
         self.spectral_loss_weight = float(spectral_loss_weight)
         if not math.isfinite(self.spectral_loss_weight) or self.spectral_loss_weight < 0:
@@ -1185,6 +1190,7 @@ class _BaseGroupVAE(BasePredictor):
         loss_latent_pred_rec = input.new_zeros(())
         loss_latent_reg = input.new_zeros(())
         loss_latent_dyn_consistency = input.new_zeros(())
+        loss_amse = input.new_zeros(())
         loss_spectral = input.new_zeros(())
         pinn_acc: dict[str, torch.Tensor] = {}
         precip_acc: dict[str, torch.Tensor] = {}
@@ -1239,6 +1245,8 @@ class _BaseGroupVAE(BasePredictor):
 
             group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames)
             output = self._assemble_prediction(group_outputs, input)
+            if self.amse_weight > 0:
+                loss_amse += block_weight * self.amse_loss(output, target)
             if self.compute_spectral_loss:
                 loss_spectral += block_weight * self.spectral_loss(
                     output.index_select(2, self.spectral_channel_indices),
@@ -1290,6 +1298,8 @@ class _BaseGroupVAE(BasePredictor):
             loss_dict["loss_latent_pred_rec"] = self.loss_weight[4] * loss_latent_pred_rec
         if self.compute_latent_dyn:
             loss_dict["loss_latent_dyn_consistency"] = self.latent_dyn_weight * loss_latent_dyn_consistency
+        if self.amse_weight > 0:
+            loss_dict["loss_amse"] = self.amse_weight * loss_amse
         if self.compute_spectral_loss:
             loss_dict["loss_spectral"] = self.spectral_loss_weight * loss_spectral
         loss_dict.update(pinn_acc)

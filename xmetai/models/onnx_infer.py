@@ -17,7 +17,7 @@ from xmetai.utils import get_local_rank
 from .base_predictor import BasePredictor
 
 logger = logging.getLogger(__name__)
-CUSTOM_OPS_LIB_PATH = "/workspace/cma/xmetai_onnx_plugins.cpython-311-x86_64-linux-gnu.so"
+CUSTOM_OPS_LIB_PATH = "/workspace/cma/xmetai_onnx_plugins.ort1_24.cuda12.so"
 
 try:
     import onnxruntime as ort
@@ -30,10 +30,11 @@ __all__ = ["OnnxInferModel"]
 
 @MODELS.register()
 class OnnxInferModel(BasePredictor):
-    def __init__(self, onnx_path, **kwargs):
+    def __init__(self, onnx_path, perturb_std_scale=1.0, **kwargs):
         self.gpu_mem_fraction = kwargs.pop("gpu_mem_fraction", 0.7)
         self.use_cpu_initializers = kwargs.pop("use_cpu_initializers", True)
         super().__init__(**kwargs)
+        self.perturb_std_scale = perturb_std_scale
         self.device_id = get_local_rank()
         self.logger.name = __name__
         self.load_model(onnx_path)
@@ -117,6 +118,8 @@ class OnnxInferModel(BasePredictor):
         model = self.session
         input_names = {node.name for node in model.get_inputs()}
         timestamp = self.get_timestamp(input, times, step)
+        if "perturb_std_scale" in input_names:
+            timestamp["perturb_std_scale"] = torch.as_tensor(self.perturb_std_scale, dtype=torch.float32, device=input.device).broadcast_to((input.shape[0],))
         output_meta = model.get_outputs()[0]
         output_shape = [1, *output_meta.shape[1:]]
         outputs = []
@@ -130,7 +133,7 @@ class OnnxInferModel(BasePredictor):
             )
 
             scalar_inputs = []
-            for name in ("step", "hour", "doy"):
+            for name in ("step", "hour", "doy", "perturb_std_scale"):
                 if name in input_names:
                     value = timestamp[name][batch_index : batch_index + 1].float().contiguous()
                     scalar_inputs.append(value)

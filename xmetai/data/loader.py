@@ -102,7 +102,10 @@ def build_test_loader(
         sampler=sampler,
         num_workers=num_workers,
         collate_fn=trivial_batch_collator,
-        persistent_workers=True,
+        # Evaluation may start workers after ORT/CUDA has initialized threads.
+        # Spawn avoids inheriting locks from that multithreaded parent.
+        multiprocessing_context="spawn" if num_workers > 0 else None,
+        persistent_workers=num_workers > 0,
         pin_memory=pin_memory,
         drop_last=True,
     )

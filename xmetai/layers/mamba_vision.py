@@ -56,9 +56,53 @@ def symbolic_selective_scan_fn(
     return node
 
 
+class SelectiveScanOnnxFn(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, u, delta, a, b, c, d, z, delta_bias, delta_softplus, return_last_state):
+        if return_last_state:
+            raise RuntimeError("SelectiveScanFn ONNX export does not support return_last_state")
+        if torch.compiler.is_compiling():
+            return torch.onnx.ops.symbolic(
+                "xmetai_plugins::SelectiveScanFn",
+                (u, delta, a, b, c, d, z, delta_bias),
+                {"delta_softplus": int(delta_softplus), "return_last_state": 0},
+                dtype=u.dtype,
+                shape=u.shape,
+                version=1,
+            ).to(device=u.device)
+        return torch.empty_like(u)
+
+    symbolic = staticmethod(symbolic_selective_scan_fn)
+
+
+def _selective_scan_onnx(u, delta, a, b, c, d=None, z=None, delta_bias=None, delta_softplus=False, return_last_state=False):
+    empty = u.new_empty((0,), dtype=torch.float32)
+    return SelectiveScanOnnxFn.apply(
+        u,
+        delta,
+        a,
+        b,
+        c,
+        d if d is not None else empty,
+        z if z is not None else empty,
+        delta_bias if delta_bias is not None else empty,
+        delta_softplus,
+        return_last_state,
+    )
+
+
 class Mamba3SisoOnnxFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, adt, dt, trap, q_bias, k_bias, angles, d, z, chunk_size, has_d, has_z):
+        if torch.compiler.is_compiling():
+            return torch.onnx.ops.symbolic(
+                "xmetai_plugins::Mamba3SisoFn",
+                (q, k, v, adt, dt, trap, q_bias, k_bias, angles, d, z),
+                {"chunk_size": int(chunk_size), "has_d": int(has_d), "has_z": int(has_z), "return_final_states": 0, "has_input_states": 0, "has_cu_seqlens": 0},
+                dtype=v.dtype,
+                shape=v.shape,
+                version=1,
+            ).to(device=v.device)
         return torch.empty_like(v)
 
     @staticmethod
@@ -295,7 +339,8 @@ class MambaVisionMixer(nn.Module):
             dt = dt.float()
             B = B.float()
             C = C.float()
-        y = self.selective_scan_fn(x, dt, A, B, C, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
+        scan_fn = _selective_scan_onnx if torch.onnx.is_in_onnx_export() else self.selective_scan_fn
+        y = scan_fn(x, dt, A, B, C, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
         if torch.onnx.is_in_onnx_export():
             y = y.to(z)
         y = torch.cat([y, z], dim=1)
@@ -333,9 +378,8 @@ class MambaMetMixer(MambaVisionMixer):
             C_proj = C_proj.float()
 
         # Forward scan (Top-Left to Bottom-Right)
-        y_fwd = self.selective_scan_fn(
-            x, dt, A, B_proj, C_proj, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False
-        )
+        scan_fn = _selective_scan_onnx if torch.onnx.is_in_onnx_export() else self.selective_scan_fn
+        y_fwd = scan_fn(x, dt, A, B_proj, C_proj, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False)
 
         # Backward scan (Bottom-Right to Top-Left)
         x_bwd = torch.flip(x, dims=[-1])
@@ -343,7 +387,7 @@ class MambaMetMixer(MambaVisionMixer):
         B_bwd = torch.flip(B_proj, dims=[-1])
         C_bwd = torch.flip(C_proj, dims=[-1])
 
-        y_bwd = self.selective_scan_fn(
+        y_bwd = scan_fn(
             x_bwd, dt_bwd, A, B_bwd, C_bwd, self.D.float(), z=None, delta_bias=self.dt_proj.bias.float(), delta_softplus=True, return_last_state=False
         )
         y_bwd = torch.flip(y_bwd, dims=[-1])

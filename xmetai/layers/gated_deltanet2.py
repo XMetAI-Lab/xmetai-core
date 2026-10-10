@@ -39,7 +39,22 @@ def _load_external_gdn2() -> Any:
 class GatedDeltaNet2OnnxFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q, k, v, g, b, w, initial_state, scale, use_qk_l2norm_in_kernel):
-        del ctx, q, k, g, b, w, initial_state, scale, use_qk_l2norm_in_kernel
+        if torch.compiler.is_compiling():
+            return torch.onnx.ops.symbolic(
+                "xmetai_plugins::GatedDeltaNet2Fn",
+                (q, k, v, g, b, w, initial_state),
+                {
+                    "scale": float(scale),
+                    "use_qk_l2norm_in_kernel": int(use_qk_l2norm_in_kernel),
+                    "output_final_state": 0,
+                    "use_gate_in_kernel": 0,
+                    "has_cu_seqlens": 0,
+                    "state_v_first": 0,
+                },
+                dtype=v.dtype,
+                shape=v.shape,
+                version=1,
+            ).to(device=v.device)
         return torch.empty_like(v)
 
     @staticmethod
@@ -135,17 +150,7 @@ def _gdn2_mixer_onnx_forward(mixer: nn.Module, hidden_states: torch.Tensor) -> t
 
     initial_state = q.new_empty((0,), dtype=torch.float32)
     scale = mixer.head_k_dim**-0.5
-    o = GatedDeltaNet2OnnxFn.apply(
-        q.float(),
-        k.float(),
-        v.float(),
-        decay.float(),
-        beta.float(),
-        w.float(),
-        initial_state,
-        float(scale),
-        True,
-    )
+    o = GatedDeltaNet2OnnxFn.apply(q.float(), k.float(), v.float(), decay.float(), beta.float(), w.float(), initial_state, float(scale), True)
     gate = _reshape_heads(mixer.g_proj(hidden_states), mixer.num_v_heads, mixer.head_v_dim)
     o = _rms_norm_gated_onnx(mixer.o_norm, o, gate)
     o = o.reshape(*o.shape[:-2], mixer.value_dim)

@@ -82,11 +82,17 @@ class SphericalBandPowerLoss(nn.Module):
         field = field.float().reshape(-1, *self.image_size)
         mean = (field.mean(dim=-1) * self.latitude_weights.float()).sum(dim=-1)
         field = field - mean[:, None, None]
+        real, imag = self._coefficients(field)
+        return ((real.square() + imag.square()) * self.multiplicity.float()).sum(dim=-1)
+
+    def _coefficients(self, field: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return uncentered spherical harmonic coefficients, retaining degree zero."""
+        field = field.float().reshape(-1, *self.image_size)
         fft = torch.fft.rfft(field, dim=-1, norm="forward")[..., : self.lmax + 1]
         basis = self.weighted_basis.float()
         real = torch.einsum("lmh,nhm->nlm", basis, fft.real)
         imag = torch.einsum("lmh,nhm->nlm", basis, fft.imag)
-        return ((real.square() + imag.square()) * self.multiplicity.float()).sum(dim=-1) * (2 * math.pi) ** 2
+        return real * (2 * math.pi), imag * (2 * math.pi)
 
     def band_power(self, field: torch.Tensor) -> torch.Tensor:
         """Return band energies with shape (*field.shape[:-2], number_of_bands)."""

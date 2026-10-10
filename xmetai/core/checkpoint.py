@@ -524,7 +524,9 @@ class FSDPCheckpointer(Checkpointer):
             with FSDP.summon_full_params(self.model, writeback=True, rank0_only=False, offload_to_cpu=False):
                 incompatible = self.model.load_state_dict(checkpoint_state_dict, strict=False)
         elif isinstance(self.model, FSDPModule):
-            self.model.to_empty(device="cpu")
+            # Keep non-persistent buffers (e.g. modality indices) initialized.
+            # They are not present in the checkpoint and cannot be restored by loading it.
+            self.model.to(device="cpu")
             incompatible = set_model_state_dict(
                 self.model,
                 checkpoint_state_dict,

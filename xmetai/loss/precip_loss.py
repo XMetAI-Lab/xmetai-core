@@ -37,13 +37,21 @@ def spatial_distribution_loss(
     eps: float = 1e-6,
     reduction: str = "mean",
 ) -> torch.Tensor:
-    """Target-intensity-weighted Charbonnier loss above a rain threshold."""
+    """Weight training-space errors by target excess above threshold, capped at 10.
+
+    Inputs and threshold use the same training space, including standardization.
+    Dry pixels receive no auxiliary weight; the global reconstruction loss
+    remains responsible for their errors. Weights are not normalized per scene.
+    """
     del occurrence_scale
-    intensity_weight = F.relu(target - float(threshold))
+    if output.dtype in (torch.float16, torch.bfloat16):
+        output = output.float()
+    if target.dtype in (torch.float16, torch.bfloat16):
+        target = target.float()
+    target = target.detach()
+    intensity_weight = F.relu(target - float(threshold)).clamp_max(10.0)
     point_loss = torch.sqrt((output - target).square() + eps) - math.sqrt(eps)
-    weighted_sum = (point_loss * intensity_weight).sum(dim=(-2, -1))
-    weight_sum = intensity_weight.sum(dim=(-2, -1))
-    loss = torch.where(weight_sum > eps, weighted_sum / weight_sum.clamp_min(eps), torch.zeros_like(weighted_sum))
+    loss = point_loss * intensity_weight
     if reduction == "mean":
         return loss.mean()
     if reduction == "sum":
@@ -70,7 +78,7 @@ def precip_loss(
         threshold: Wet/dry threshold in the same space as ``output`` and ``target``.
         coefficients: Mapping for ``occurrence`` and ``distribution`` terms.
         occurrence_scale: Logit scale for the wet/dry soft boundary.
-        eps: Numerical stability constant for distribution normalization.
+        eps: Smoothing constant inside the Charbonnier square root.
         reduction: ``"mean"`` or ``"sum"``.
     """
     if occurrence_scale <= 0:

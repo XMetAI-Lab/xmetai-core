@@ -1,7 +1,9 @@
+import math
+
 import pytest
 import torch
 
-from xmetai.loss.precip_loss import precip_loss
+from xmetai.loss.precip_loss import precip_loss, spatial_distribution_loss
 
 CHANNELS = ["z500", "tp", "t2m", "ncpcp"]
 B, T, C, H, W = 2, 1, len(CHANNELS), 8, 10
@@ -127,3 +129,47 @@ def test_coefficients_scale_occurrence_loss():
     )["loss_occurrence"]
 
     assert loss_large.item() == pytest.approx(loss_small.item() * 2)
+
+
+def test_distribution_uses_training_weights_across_separate_scenes():
+    target = torch.tensor([1.1, 10.1], dtype=torch.float64).reshape(2, 1, 1, 1, 1)
+    output = (target + 1.0).requires_grad_()
+    loss = spatial_distribution_loss(output, target, threshold=0.1)
+    point_loss = math.sqrt(1.0 + 1e-6) - math.sqrt(1e-6)
+    assert loss.item() == pytest.approx(point_loss * (1.0 + 10.0) / 2)
+    loss.backward()
+    assert output.grad[1].item() / output.grad[0].item() == pytest.approx(10.0)
+
+
+def test_distribution_extreme_rain_has_bounded_gradient():
+    target = torch.tensor([100.1, 1000.1], dtype=torch.float64).reshape(2, 1, 1, 1, 1)
+    output = (target + 1.0).requires_grad_()
+    loss = spatial_distribution_loss(output, target, threshold=0.1)
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert output.grad[0].item() == pytest.approx(output.grad[1].item())
+    assert output.grad.abs().max().item() <= 10.0 / target.numel()
+
+
+@pytest.mark.parametrize("reduction", ["mean", "sum"])
+def test_distribution_dry_pixels_have_no_auxiliary_gradient(reduction):
+    target = torch.tensor([-1.0, -0.5, 0.5], dtype=torch.float64).reshape(1, 1, 1, 1, 3)
+    output = (target + 1.0).requires_grad_()
+    loss = spatial_distribution_loss(output, target, threshold=-0.5, reduction=reduction)
+    point_loss = math.sqrt(1.0 + 1e-6) - math.sqrt(1e-6)
+    assert loss.item() == pytest.approx(point_loss / (3 if reduction == "mean" else 1))
+    loss.backward()
+    assert output.grad.flatten()[:2].abs().max().item() == pytest.approx(0.0, abs=1e-12)
+    assert output.grad.flatten()[2].item() > 0.0
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_distribution_extreme_training_target_has_finite_gradient(dtype):
+    target = torch.full((1, 1, 1, 1, 1), 100.0, dtype=dtype, requires_grad=True)
+    output = torch.full_like(target, 101.0, requires_grad=True)
+    loss = spatial_distribution_loss(output, target, threshold=0.1)
+    expected = (math.sqrt(1.0 + 1e-6) - math.sqrt(1e-6)) * 10.0
+    assert loss.item() == pytest.approx(expected, rel=1e-5)
+    loss.backward()
+    assert torch.isfinite(output.grad).all()
+    assert target.grad is None
