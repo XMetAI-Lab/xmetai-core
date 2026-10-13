@@ -8,12 +8,14 @@ Copyright (c) 2025 by XMetAI/douzsheng, All Rights Reserved.
 import logging
 import math
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
 import xarray as xr
+from torch import Tensor
 
 from xmetai.loss import ChannelRegistry, pinn_loss, precip_loss
 from xmetai.utils.events import get_event_storage, has_event_storage
@@ -21,6 +23,25 @@ from xmetai.utils.events import get_event_storage, has_event_storage
 from .meta import Meta
 
 __all__ = ["BasePredictor"]
+
+
+def replace_channels(input: Tensor, indices: Sequence[int], values: Tensor) -> Tensor:
+    """Replace channels in the given index order.
+
+    Eager execution updates input in place. ONNX export returns a new tensor
+    using Gather/Concat/Gather, keeping untouched channels in their original
+    positions. Indices must be unique, nonnegative, fixed channel indices.
+    """
+    if not torch.onnx.is_in_onnx_export():
+        input[:, :, indices] = values
+        return input
+    untouched = [index for index in range(input.shape[2]) if index not in indices]
+    order = list(indices) + untouched
+    restore = [order.index(index) for index in range(input.shape[2])]
+    untouched_index = torch.tensor(untouched, device=input.device, dtype=torch.long)
+    restore_index = torch.tensor(restore, device=input.device, dtype=torch.long)
+    combined = torch.cat([values, input.index_select(2, untouched_index)], dim=2)
+    return combined.index_select(2, restore_index)
 
 
 class BasePredictor(Meta):
@@ -241,7 +262,7 @@ class BasePredictor(Meta):
             # for tp should be exp-1.
             tp = x[:, :, logids].clamp(min=0.0, max=7.0)
             tp = tp.exp() - 1
-            x[:, :, logids] = tp
+            x = replace_channels(x, logids, tp)
         return x
 
     @torch.no_grad()
@@ -266,25 +287,22 @@ class BasePredictor(Meta):
             std = self.std.to(x)
 
         if len(logids) > 0:
-            x[:, :, logids] = torch.log1p(x[:, :, logids].clamp_min(0.0)).clamp_max(7.0)
+            tp = torch.log1p(x[:, :, logids].clamp_min(0.0)).clamp_max(7.0)
+            x = replace_channels(x, logids, tp)
         x = (x - mean) / std
         return x
 
     def reset_input(self, input):
         if len(self.accumid) > 0 and self.zero_accum:
-            input[:, :, self.accumid] *= 0
+            input = replace_channels(input, self.accumid, input[:, :, self.accumid] * 0)
         if len(self.maskid) > 0:
-            if hasattr(self, "mask_shift"):
-                input[:, :, self.maskid] *= self.mask_shift
-            else:
-                input[:, :, self.maskid] *= self.mask
+            mask = self.mask_shift if hasattr(self, "mask_shift") else self.mask
+            input = replace_channels(input, self.maskid, input[:, :, self.maskid] * mask)
         if len(self.landid) > 0:
-            if hasattr(self, "land_mask_shift"):
-                input[:, :, self.landid] *= self.land_mask_shift
-            else:
-                input[:, :, self.landid] *= self.land_mask
+            mask = self.land_mask_shift if hasattr(self, "land_mask_shift") else self.land_mask
+            input = replace_channels(input, self.landid, input[:, :, self.landid] * mask)
         if len(self.logid) > 0:
-            input[:, :, self.logid] = input[:, :, self.logid].clamp(min=0, max=7)
+            input = replace_channels(input, self.logid, input[:, :, self.logid].clamp(min=0, max=7))
         return input
 
     def process_data(self, data):

@@ -11,8 +11,10 @@ import uuid
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import is_dataclass
-from typing import List, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
+import numpy as np
+import torch
 import yaml  # type: ignore[import-untyped]
 from omegaconf import DictConfig, ListConfig, OmegaConf, SCMode
 
@@ -66,6 +68,23 @@ def _visit_dict_config(cfg, func):
     elif isinstance(cfg, ListConfig):
         for v in cfg:
             _visit_dict_config(v, func)
+
+
+def _summarize_arrays(value: Any, threshold: int) -> Any:
+    if isinstance(value, np.ndarray) and value.ndim >= 1 and sum(dim != 1 for dim in value.shape) <= 1:
+        return value.reshape(-1).tolist()
+    if isinstance(value, (np.ndarray, torch.Tensor)):
+        size = value.size if isinstance(value, np.ndarray) else value.numel()
+        if size > threshold:
+            return {"omitted": True, "type": "ndarray" if isinstance(value, np.ndarray) else "Tensor", "shape": list(value.shape), "dtype": str(value.dtype)}
+        return value
+    if isinstance(value, dict):
+        return {key: _summarize_arrays(item, threshold) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_summarize_arrays(item, threshold) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_summarize_arrays(item, threshold) for item in value)
+    return value
 
 
 def _validate_py_syntax(filename):
@@ -229,7 +248,7 @@ class LazyConfig:
             return ret
 
     @staticmethod
-    def save(cfg, filename: str):  # type: ignore[no-untyped-def]
+    def save(cfg, filename: str, *, array_threshold: Optional[int] = None):  # type: ignore[no-untyped-def]
         """
         Save a config object to a yaml file.
         Note that when the config dictionary contains complex objects (e.g. lambda),
@@ -239,8 +258,18 @@ class LazyConfig:
         Args:
             cfg: an omegaconf config object
             filename: yaml file name to save the config file
+            array_threshold: numpy arrays with at most one non-singleton dimension
+                are saved as flat lists. Other arrays with more than
+                this many elements are replaced by metadata before copying or
+                serializing. None preserves all values and types. A summarized
+                config is a record, not a runnable config.
         """
         logger = logging.getLogger(__name__)
+        if array_threshold is not None:
+            if array_threshold < 0:
+                raise ValueError("array_threshold must be non-negative")
+            container = OmegaConf.to_container(cfg, resolve=False, structured_config_mode=SCMode.INSTANTIATE)
+            cfg = OmegaConf.create(_summarize_arrays(container, array_threshold), flags={"allow_objects": True})
         try:
             cfg = deepcopy(cfg)
         except Exception:

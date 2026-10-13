@@ -104,7 +104,7 @@ model = L(MODELS.get(model_name))(
     pertub_mask=0.1,
 )
 
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.precision = "bf16"
 
 if load_from_pretrain:

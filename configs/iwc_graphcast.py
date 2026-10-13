@@ -74,7 +74,7 @@ model = L(MODELS.get("GraphCastPredictor"))(
     save_dir=output_dir + "/pred/",
 )
 
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.precision = "bf16"
 
 # Dataset settings

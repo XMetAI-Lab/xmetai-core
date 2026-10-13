@@ -336,7 +336,6 @@ case $STAGE in
         ;;
     export)
         echo "Starting export..."
-        export CUDA_VISIBLE_DEVICES=0
         sed -i "s/^export_onnx.*/export_onnx = True/g" "${BASE_CONFIG}"
         python -m xmetai.cli.train \
                --config-file "${CONFIG_FILE_TMP}" \

@@ -115,7 +115,7 @@ model = L(MODELS.get(model_name))(
 if load_from_pretrain:
     model.alpha = 1.1  # sequence loss exponential weight factor
 
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.precision = "bf16"
 
 if load_from_pretrain:

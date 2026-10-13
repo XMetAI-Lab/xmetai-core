@@ -109,7 +109,7 @@ model = L(MODELS.get(model_name))(
     pinn_use_denorm=True,
 )
 
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.precision = "bf16"
 
 if export_onnx:

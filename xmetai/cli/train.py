@@ -225,7 +225,7 @@ def do_export(
     opset_version: int = 18,
 ) -> None:
     model.eval()
-
+    logger.info(f"Export ONNX model with opset_version={opset_version}, save_name={save_name}, forward_name={forward_name}, device={device}")
     # Merge LoRA weights before export if LoRA is used
     model = merge_lora_weights(model, verbose=comm.is_main_process())
     if model.dtype != torch.float32:
@@ -244,10 +244,12 @@ def do_export(
         logger.info(f"input:{k} with shape:{input_tensors[-1].shape} and dtype:{input_tensors[-1].dtype} on device:{input_tensors[-1].device}")
 
     batch = torch.export.Dim("batch", min=1)
+    original_batch_size = input_tensors[0].shape[0]
     batch_size = max(2, input_tensors[0].shape[0])
     dynamic_shapes = []
     for i, name in enumerate(input_names):
-        if i == 0 or name in {"step", "hour", "doy", "perturb_std_scale"}:
+        batched_scale = name == "perturb_std_scale" and input_tensors[i].shape[0] in (1, original_batch_size)
+        if i == 0 or name in {"step", "hour", "doy"} or batched_scale:
             # Dynamo specializes dimensions of size 1; trace with at least two
             # samples so the same graph also supports batch 1 at inference.
             if input_tensors[i].shape[0] == 1:
@@ -310,7 +312,10 @@ def main(args):
         do_test(cfg, model)
         _maybe_destroy_process_group()
     elif args.export:
-        model = build_model(cfg)
+        cfg.train.export_kwargs.device = cfg.train.device_type
+        logger.info(f"ONNX export device: {cfg.train.device_type}")
+        with torch.device(cfg.train.device_type):
+            model = build_model(cfg)
         do_export(model, **cfg.train.export_kwargs)
     else:
         do_train(args, cfg)

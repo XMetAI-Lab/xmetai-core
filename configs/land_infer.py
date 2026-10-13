@@ -65,7 +65,7 @@ model = L(MODELS.get("OnnxInferModel"))(
 
 model.members = members
 model.step_range = step_range
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.zero_accum = zero_accum
 model.precision = "fp32"
 

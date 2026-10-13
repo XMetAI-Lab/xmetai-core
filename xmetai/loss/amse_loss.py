@@ -1,14 +1,18 @@
-"""Spectrally adjusted MSE from Subich et al. (arXiv:2501.19374, Eq. 6)."""
+"""
+Author: DouZesheng && douzsh@gmail.com
+Date: 2026-10-11 08:15:54
+Description: According to Subich et al. (arXiv:2501.19374, Eq. 6), this implements the spectrally adjusted mean squared error (AMSE) for spherical fields.
+Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
+"""
 
 import math
 
 import torch
-from torch import nn
 
 from xmetai.loss.spectral_loss import SphericalBandPowerLoss
 
 
-class SphericalAMSELoss(nn.Module):
+class SphericalAMSELoss(torch.nn.Module):
     """Compare global (..., H, W) fields using per-degree amplitude and coherence.
 
     The equiangular grid includes both poles and excludes duplicate longitude.
@@ -17,7 +21,9 @@ class SphericalAMSELoss(nn.Module):
     Unresolved degrees are not penalized. Sum over degrees / (4*pi) gives an
     area-mean squared-error scale; leading sample/frame/channel axes are averaged.
     Inputs should already be normalized across variables (including any log
-    transform); this loss does not apply masks or additional channel weights.
+    transform). Optional tensor weights multiply the loss directly: wavenumber
+    weights broadcast against (..., C, lmax+1), channel weights against (..., C)
+    after summing degrees. Omitted weights skip weighting; no masks are applied.
 
     For stable zero-energy gradients, eps is added to both powers and the cross
     spectrum, equivalent to augmenting both coefficient vectors with the same
@@ -39,17 +45,24 @@ class SphericalAMSELoss(nn.Module):
         self.image_size = tuple(image_size)
         self.eps = eps
 
-    def forward(self, output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, output: torch.Tensor, target: torch.Tensor, channel_weights: torch.Tensor | None = None, wavenumber_weights: torch.Tensor | None = None
+    ) -> torch.Tensor:
         if output.shape != target.shape or output.ndim < 2 or tuple(output.shape[-2:]) != self.image_size:
             raise ValueError(f"Expected matching (..., {self.image_size[0]}, {self.image_size[1]}) fields, got {output.shape}, {target.shape}")
-        with torch.autocast(device_type=output.device.type, enabled=False):
-            pred_real, pred_imag = self.transform._coefficients(output)
-            true_real, true_imag = self.transform._coefficients(target.detach())
-            multiplicity = self.transform.multiplicity.float()
-            pred_power = ((pred_real.square() + pred_imag.square()) * multiplicity).sum(-1) + self.eps
-            true_power = ((true_real.square() + true_imag.square()) * multiplicity).sum(-1) + self.eps
-            cross = ((pred_real * true_real + pred_imag * true_imag) * multiplicity).sum(-1) + self.eps
-            pred_amplitude, true_amplitude = pred_power.sqrt(), true_power.sqrt()
-            coherence = (cross / (pred_amplitude * true_amplitude)).clamp(-1, 1)
-            loss = (pred_amplitude - true_amplitude).square() + 2 * torch.maximum(pred_power, true_power) * (1 - coherence)
-            return loss.sum(-1).mean() / (4 * math.pi)
+        pred_real, pred_imag = self.transform._coefficients(output)
+        true_real, true_imag = self.transform._coefficients(target.detach())
+        multiplicity = self.transform.multiplicity.float()
+        pred_power = ((pred_real.square() + pred_imag.square()) * multiplicity).sum(-1) + self.eps
+        true_power = ((true_real.square() + true_imag.square()) * multiplicity).sum(-1) + self.eps
+        cross = ((pred_real * true_real + pred_imag * true_imag) * multiplicity).sum(-1) + self.eps
+        pred_amplitude, true_amplitude = pred_power.sqrt(), true_power.sqrt()
+        coherence = (cross / (pred_amplitude * true_amplitude)).clamp(-1, 1)
+        loss = (pred_amplitude - true_amplitude).square() + 2 * torch.maximum(pred_power, true_power) * (1 - coherence)
+        loss = loss.reshape(*output.shape[:-2], self.transform.lmax + 1) / (4 * math.pi)
+        if wavenumber_weights is not None:
+            loss = loss * wavenumber_weights
+        loss = loss.sum(-1)
+        if channel_weights is not None:
+            loss = loss * channel_weights
+        return loss.mean()

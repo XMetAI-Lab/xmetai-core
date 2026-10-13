@@ -145,7 +145,7 @@ model = L(MODELS.get("GroupVAEPredictor"))(
 
 model.members = members
 model.step_range = step_range
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.precision = "bf16"
 
 if export_onnx:
