@@ -34,16 +34,6 @@ class ForecastFidelity(DatasetEvaluator):
     def reset(self) -> None:
         self.statistics: dict[tuple[str, int], NDArray[np.float64]] = {}
 
-    def _zonal_band_power(self, field: torch.Tensor) -> torch.Tensor:
-        # Reference vfc: remove each latitude circle's mean, then longitude rFFT.
-        with torch.autocast(device_type=field.device.type, enabled=False):
-            field = field.float() - field.float().mean(-1, keepdim=True)
-            power = torch.fft.rfft(field, dim=-1, norm="forward").abs().square()
-            latitude = torch.linspace(-torch.pi / 2, torch.pi / 2, field.shape[-2], device=field.device)
-            weights = latitude.cos().clamp_min(0)
-            power = (power * weights[:, None]).sum(-2) / weights.sum()
-            return torch.stack([power[..., low : high + 1].sum(-1) for low, high in self.spectrum.bands], -1)
-
     @torch.no_grad()
     def process(self, inputs: Any, outputs: dict[str, Any]) -> None:
         target = outputs["target"].detach().float()
@@ -73,8 +63,6 @@ class ForecastFidelity(DatasetEvaluator):
                         true_var[..., None],
                         pred_bands,
                         true_bands,
-                        self._zonal_band_power(prediction),
-                        self._zonal_band_power(target),
                     ],
                     dim=-1,
                 )
@@ -112,13 +100,7 @@ class ForecastFidelity(DatasetEvaluator):
 
             metrics = [values[..., 1] / values[..., 0], np.sqrt(ratio(values[..., 2], values[..., 3]))]
             metrics.extend(ratio(values[..., 4 + i], values[..., 4 + nbands + i]) for i in range(nbands))
-            metric_names = list(names)
-            for i, (low, high) in enumerate(self.spectrum.bands):
-                pred = values[..., 4 + 2 * nbands + i]
-                obs = values[..., 4 + 3 * nbands + i]
-                metric_names.extend([f"ZonalPowerPred_{low}_{high}", f"ZonalPowerObs_{low}_{high}", f"ZonalPowerRatio_{low}_{high}"])
-                metrics.extend([pred / values[..., 0], obs / values[..., 0], ratio(pred, obs)])
-            for name, metric in zip(metric_names, metrics):
+            for name, metric in zip(names, metrics):
                 key = f"{mode}/{name}" if mode else name
                 results[key] = {"Times": [self.test_times[index] for index in frames]}
                 results[key].update({channel: metric[:, i].tolist() for i, channel in enumerate(self.test_names)})
