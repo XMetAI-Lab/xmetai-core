@@ -1550,9 +1550,7 @@ class FeatureGroupVAEPredictor(_BaseGroupVAE):
         mode = self.group_modes[gi]
         if mode == "residual":
             if self.out_frames == 1:
-                out = x_group.clone()
-                out[:, 1:] = x_group[:, 1:] - x_group[:, :1]
-                return out  # [x_tm1, x_t - x_tm1]
+                return torch.cat([x_group[:, :1], x_group[:, 1:] - x_group[:, :1]], dim=1)
             curr = x_group[:, -1:]
             return torch.cat([curr, curr - torch.flip(x_group[:, :-1], dims=[1])], dim=1)
         if mode == "absolute":
