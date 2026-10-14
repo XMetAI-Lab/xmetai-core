@@ -244,12 +244,10 @@ def do_export(
         logger.info(f"input:{k} with shape:{input_tensors[-1].shape} and dtype:{input_tensors[-1].dtype} on device:{input_tensors[-1].device}")
 
     batch = torch.export.Dim("batch", min=1)
-    original_batch_size = input_tensors[0].shape[0]
     batch_size = max(2, input_tensors[0].shape[0])
     dynamic_shapes = []
     for i, name in enumerate(input_names):
-        batched_scale = name == "perturb_std_scale" and input_tensors[i].shape[0] in (1, original_batch_size)
-        if i == 0 or name in {"step", "hour", "doy"} or batched_scale:
+        if i == 0 or name in {"step", "hour", "doy", "perturb_std_scale"}:
             # Dynamo specializes dimensions of size 1; trace with at least two
             # samples so the same graph also supports batch 1 at inference.
             if input_tensors[i].shape[0] == 1:

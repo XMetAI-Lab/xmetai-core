@@ -58,25 +58,36 @@ class TimestampExportModel(nn.Module):
     dtype = torch.float32
 
     def onnx_export(self, data, step, hour, doy, perturb_std_scale):
-        return data * perturb_std_scale + (step + hour + doy)[:, None]
+        scale = perturb_std_scale[:, None] if perturb_std_scale.ndim == 1 else perturb_std_scale
+        return data * scale + (step + hour + doy)[:, None]
 
 
-def test_dynamic_batch_timestamps_keep_group_scales_static(tmp_path):
+@pytest.mark.parametrize("example_batch", [1, 2])
+@pytest.mark.parametrize("grouped", [False, True])
+def test_dynamic_batch_timestamps_and_per_sample_scales(tmp_path, example_batch, grouped):
     ort = pytest.importorskip("onnxruntime")
     model = TimestampExportModel().eval()
+
+    def make_scale(batch_size):
+        values = np.arange(1, batch_size * (3 if grouped else 1) + 1, dtype=np.float32)
+        return values.reshape(batch_size, 3) if grouped else values
+
     feed = {
-        "input": np.ones((1, 3), np.float32),
-        "step": np.zeros(1, np.float32),
-        "hour": np.zeros(1, np.float32),
-        "doy": np.zeros(1, np.float32),
-        "perturb_std_scale": np.array([1, 2, 3], np.float32),
+        "input": np.ones((example_batch, 3), np.float32),
+        "step": np.zeros(example_batch, np.float32),
+        "hour": np.zeros(example_batch, np.float32),
+        "doy": np.zeros(example_batch, np.float32),
+        "perturb_std_scale": make_scale(example_batch),
     }
     path = tmp_path / "timestamps.onnx"
     do_export(model, feed, save_name=str(path), device="cpu")
     session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
-    assert session.get_inputs()[-1].shape == [3]
+    scale_shape = session.get_inputs()[-1].shape
+    assert isinstance(scale_shape[0], str)
+    assert scale_shape[1:] == ([3] if grouped else [])
     for batch_size in (1, 2, 4):
         feed["input"] = np.arange(batch_size * 3, dtype=np.float32).reshape(batch_size, 3)
+        feed["perturb_std_scale"] = make_scale(batch_size)
         for name in ("step", "hour", "doy"):
             feed[name] = np.arange(batch_size, dtype=np.float32)
         expected = model.onnx_export(*(torch.from_numpy(v) for v in feed.values())).numpy()

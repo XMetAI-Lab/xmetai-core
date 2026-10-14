@@ -18,7 +18,6 @@ from xmetai.utils import get_local_rank
 from .base_predictor import BasePredictor
 
 logger = logging.getLogger(__name__)
-CUSTOM_OPS_LIB_PATH = "/workspace/cma/xmetai_onnx_plugins.ort1_24.cuda12.so"
 
 try:
     import onnxruntime as ort
@@ -37,7 +36,7 @@ class OnnxInferModel(BasePredictor):
         perturb_std_scale=1.0,
         onnx_batch_size=1,
         stream_ensemble=False,
-        custom_ops_library=CUSTOM_OPS_LIB_PATH,
+        custom_ops_library="",
         defer_metrics=True,
         **kwargs,
     ):
