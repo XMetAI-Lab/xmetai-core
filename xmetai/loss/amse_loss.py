@@ -50,8 +50,9 @@ class SphericalAMSELoss(torch.nn.Module):
     ) -> torch.Tensor:
         if output.shape != target.shape or output.ndim < 2 or tuple(output.shape[-2:]) != self.image_size:
             raise ValueError(f"Expected matching (..., {self.image_size[0]}, {self.image_size[1]}) fields, got {output.shape}, {target.shape}")
-        pred_real, pred_imag = self.transform._coefficients(output)
-        true_real, true_imag = self.transform._coefficients(target.detach())
+        with torch.autocast(device_type=output.device.type, enabled=False):
+            pred_real, pred_imag = self.transform._coefficients(output)
+            true_real, true_imag = self.transform._coefficients(target.detach())
         multiplicity = self.transform.multiplicity.float()
         pred_power = ((pred_real.square() + pred_imag.square()) * multiplicity).sum(-1) + self.eps
         true_power = ((true_real.square() + true_imag.square()) * multiplicity).sum(-1) + self.eps
@@ -64,5 +65,7 @@ class SphericalAMSELoss(torch.nn.Module):
             loss = loss * wavenumber_weights
         loss = loss.sum(-1)
         if channel_weights is not None:
-            loss = loss * channel_weights
+            if output.ndim < 3 or channel_weights.numel() != output.shape[-3]:
+                raise ValueError("channel_weights must contain one value per channel")
+            loss = loss * channel_weights.reshape(-1)
         return loss.mean()

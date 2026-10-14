@@ -13,11 +13,50 @@ from xmetai.models.correction import CorrectionModel
 from xmetai.models.onnx_infer import OnnxInferModel
 
 
-def _build_model(monkeypatch, correct_chans=(1, 3), test_frames=(1, 2), test_chans=None, in_names=None, logid=(), **model_kwargs):
-    def fake_load_model(self, onnx_path):
-        self.session = object()
+class FakeBinding:
+    def __init__(self):
+        self.inputs = {}
+        self.output = None
 
-    monkeypatch.setattr(OnnxInferModel, "load_model", fake_load_model)
+    def bind_input(self, name, shape, buffer_ptr, **kwargs):
+        self.inputs[name] = (tuple(shape), buffer_ptr)
+
+    def bind_output(self, name, shape, buffer_ptr, **kwargs):
+        self.output = (tuple(shape), buffer_ptr)
+
+
+class SingleBatchSession:
+    def __init__(self):
+        self.batch_shapes = []
+
+    def get_inputs(self):
+        return [SimpleNamespace(name="input", shape=[1, 2, 4, 8, 8])]
+
+    def get_outputs(self):
+        return [SimpleNamespace(name="output", shape=[1, 1, 4, 8, 8])]
+
+    def get_providers(self):
+        return ["CPUExecutionProvider"]
+
+    def io_binding(self):
+        return FakeBinding()
+
+    def run_with_iobinding(self, binding):
+        input_shape, input_ptr = binding.inputs["input"]
+        output_shape, output_ptr = binding.output
+        self.batch_shapes.append(input_shape)
+        source = np.ctypeslib.as_array((ctypes.c_float * int(np.prod(input_shape))).from_address(input_ptr)).reshape(input_shape)
+        destination = np.ctypeslib.as_array((ctypes.c_float * int(np.prod(output_shape))).from_address(output_ptr)).reshape(output_shape)
+        destination[:] = source[:, -1:] + 1.0
+
+
+def _build_model(monkeypatch, correct_chans=(1, 3), test_frames=(1, 2), test_chans=None, in_names=None, logid=(), **model_kwargs):
+    runtime = SimpleNamespace(
+        get_available_providers=lambda: ["CPUExecutionProvider"],
+        InferenceSession=lambda *args, **kwargs: SingleBatchSession(),
+    )
+    monkeypatch.setattr("xmetai.models.onnx_infer.ort", runtime)
+    monkeypatch.setattr(OnnxInferModel, "_build_session_options", lambda self: SimpleNamespace())
     channels = 4
     in_names = [f"c{index}" for index in range(channels)] if in_names is None else in_names
     test_chans = list(range(channels)) if test_chans is None else list(test_chans)
@@ -134,40 +173,9 @@ def test_precipitation_loss_requires_correcting_precipitation_channel(monkeypatc
 
 
 def test_onnx_step_runs_multi_batch_one_sample_at_a_time(monkeypatch):
-    class FakeBinding:
-        def __init__(self):
-            self.inputs = {}
-            self.output = None
-
-        def bind_input(self, name, shape, buffer_ptr, **kwargs):
-            self.inputs[name] = (tuple(shape), buffer_ptr)
-
-        def bind_output(self, name, shape, buffer_ptr, **kwargs):
-            self.output = (tuple(shape), buffer_ptr)
-
-    class SingleBatchSession:
-        def __init__(self):
-            self.batch_shapes = []
-
-        def get_inputs(self):
-            return [SimpleNamespace(name="input")]
-
-        def get_outputs(self):
-            return [SimpleNamespace(name="output", shape=[1, 1, 4, 8, 8])]
-
-        def io_binding(self):
-            return FakeBinding()
-
-        def run_with_iobinding(self, binding):
-            input_shape, input_ptr = binding.inputs["input"]
-            output_shape, output_ptr = binding.output
-            self.batch_shapes.append(input_shape)
-            source = np.ctypeslib.as_array((ctypes.c_float * int(np.prod(input_shape))).from_address(input_ptr)).reshape(input_shape)
-            destination = np.ctypeslib.as_array((ctypes.c_float * int(np.prod(output_shape))).from_address(output_ptr)).reshape(output_shape)
-            destination[:] = source[:, -1:] + 1.0
-
     model = _build_model(monkeypatch, test_frames=(1,))
-    model.session = SingleBatchSession()
+    assert model.fixed_batch_size == 1
+    assert model.runtime_batch_size == 1
     physical_input = torch.stack([torch.full((2, 4, 8, 8), float(index)) for index in range(3)])
     times = pd.to_datetime(["2026-01-01T00:00:00", "2026-01-01T06:00:00", "2026-01-01T12:00:00"])
 
@@ -189,10 +197,12 @@ def test_onnx_cascade_saves_relative_leads(monkeypatch, start_frames):
 
     model._run_onnx_step = fake_run_onnx_step
     inputs = torch.arange(4, dtype=torch.float32)[None, None, :, None, None].expand(1, 2, 4, 8, 8)
-    output = OnnxInferModel.test_cascade(model, {"input": inputs, "times": None})
+    times = pd.to_datetime(["2026-01-01T00:00:00"])
+    output = OnnxInferModel.test_cascade(model, {"input": inputs, "times": times})
 
     expected = inputs[:, :1, [1, 3]] + torch.tensor([1.0, 3.0])[None, :, None, None, None]
-    torch.testing.assert_close(output, expected.half())
+    assert output.dtype == torch.float32
+    torch.testing.assert_close(output, expected)
     assert steps == list(range(start_frames, start_frames + 3)) * model.members
 
 

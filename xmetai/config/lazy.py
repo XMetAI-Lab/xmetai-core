@@ -71,8 +71,6 @@ def _visit_dict_config(cfg, func):
 
 
 def _summarize_arrays(value: Any, threshold: int) -> Any:
-    if isinstance(value, np.ndarray) and value.ndim >= 1 and sum(dim != 1 for dim in value.shape) <= 1:
-        return value.reshape(-1).tolist()
     if isinstance(value, (np.ndarray, torch.Tensor)):
         size = value.size if isinstance(value, np.ndarray) else value.numel()
         if size > threshold:
@@ -84,6 +82,18 @@ def _summarize_arrays(value: Any, threshold: int) -> Any:
         return [_summarize_arrays(item, threshold) for item in value]
     if isinstance(value, tuple):
         return tuple(_summarize_arrays(item, threshold) for item in value)
+    return value
+
+
+def _restore_arrays(value: Any) -> Any:
+    if isinstance(value, dict):
+        if value.get("omitted") and value.get("type") == "ndarray":
+            return np.zeros(value["shape"], dtype=value["dtype"])
+        if value.get("omitted") and value.get("type") == "Tensor":
+            return torch.zeros(value["shape"], dtype=getattr(torch, value["dtype"].removeprefix("torch.")))
+        return {key: _restore_arrays(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_restore_arrays(item) for item in value)
     return value
 
 
@@ -226,7 +236,7 @@ class LazyConfig:
             ret = module_namespace
         else:
             with PathManager.open(filename) as f:
-                obj = yaml.unsafe_load(f)
+                obj = _restore_arrays(yaml.unsafe_load(f))
             ret = OmegaConf.create(obj, flags={"allow_objects": True})
 
         if has_keys:
@@ -258,11 +268,10 @@ class LazyConfig:
         Args:
             cfg: an omegaconf config object
             filename: yaml file name to save the config file
-            array_threshold: numpy arrays with at most one non-singleton dimension
-                are saved as flat lists. Other arrays with more than
-                this many elements are replaced by metadata before copying or
-                serializing. None preserves all values and types. A summarized
-                config is a record, not a runnable config.
+            array_threshold: arrays with more than this many elements are saved
+                as shape/dtype metadata and loaded as zero placeholders. Smaller
+                arrays preserve their values and types. None preserves all values.
+                Placeholder values must be restored through normal checkpoint loading.
         """
         logger = logging.getLogger(__name__)
         if array_threshold is not None:
