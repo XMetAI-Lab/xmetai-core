@@ -551,7 +551,7 @@ class TianQuan(BasePredictor):
             # 切片获取当前步的 target
             target = targets[:, k : k + self.out_frames]
 
-            self.reset_input(input)
+            input = self.reset_input(input)
             # 读取 climate_tensor
             curr_climate_time = self.replace_year_with_reference([t + pd.Timedelta(hours=k * self.freq) for t in times], year=1979)
             pred_climate_time = self.replace_year_with_reference([t + pd.Timedelta(hours=(k + 1) * self.freq) for t in times], year=1979)

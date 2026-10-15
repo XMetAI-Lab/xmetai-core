@@ -292,18 +292,18 @@ class BasePredictor(Meta):
         x = (x - mean) / std
         return x
 
-    def reset_input(self, input):
+    def reset_input(self, data: Tensor) -> Tensor:
         if len(self.accumid) > 0 and self.zero_accum:
-            input = replace_channels(input, self.accumid, input[:, :, self.accumid] * 0)
+            data = replace_channels(data, self.accumid, data[:, :, self.accumid] * 0)
         if len(self.maskid) > 0:
             mask = self.mask_shift if hasattr(self, "mask_shift") else self.mask
-            input = replace_channels(input, self.maskid, input[:, :, self.maskid] * mask)
+            data = replace_channels(data, self.maskid, data[:, :, self.maskid] * mask)
         if len(self.landid) > 0:
             mask = self.land_mask_shift if hasattr(self, "land_mask_shift") else self.land_mask
-            input = replace_channels(input, self.landid, input[:, :, self.landid] * mask)
+            data = replace_channels(data, self.landid, data[:, :, self.landid] * mask)
         if len(self.logid) > 0:
-            input = replace_channels(input, self.logid, input[:, :, self.logid].clamp(min=0, max=7))
-        return input
+            data = replace_channels(data, self.logid, data[:, :, self.logid].clamp(min=0, max=7))
+        return data
 
     def process_data(self, data):
         # convert inputs to proper dtype and device

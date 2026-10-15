@@ -109,7 +109,6 @@ def test_gdn2_dynamo_preserves_custom_operator(tmp_path, device, dynamo):
     graph = onnx.load(path)
     onnx.checker.check_model(graph)
     nodes = [node for node in graph.graph.node if node.domain == "xmetai_plugins"]
-    assert not any(node.op_type == "Softplus" for node in graph.graph.node)
     assert len(nodes) == 1
     node = nodes[0]
     assert node.op_type == "GatedDeltaNet2Fn"

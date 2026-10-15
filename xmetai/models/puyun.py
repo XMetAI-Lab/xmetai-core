@@ -230,7 +230,7 @@ class PuYunModel(BasePredictor):
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
             target = targets[:, k : k + self.out_frames]
-            self.reset_input(input)
+            input = self.reset_input(input)
             output = self.forward_step(input, const=const, times=times, step=t)
             step_losses = self.compute_step_loss(output, target, step=k, future_frames=future_frames)
             for k_loss, v_loss in step_losses.items():
@@ -290,7 +290,7 @@ class PuYunModel(BasePredictor):
         for num_step in self.step_range:
             curr_step = 0
             for step in range(num_step):
-                self.reset_input(input)
+                input = self.reset_input(input)
                 output = self.forward_step(input, const=const, times=times, step=step + self.start_frames)
                 input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
                 if step + 1 in steps:

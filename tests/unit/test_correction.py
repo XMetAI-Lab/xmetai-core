@@ -241,3 +241,29 @@ def test_cascade_only_stores_test_channels(monkeypatch):
     assert output.shape == (1, 2, 2, 8, 8)
     torch.testing.assert_close(output[:, 0], torch.ones(1, 2, 8, 8))
     torch.testing.assert_close(output[:, 1], torch.full((1, 2, 8, 8), 2.0))
+
+
+@pytest.mark.parametrize("defer_metrics", [False, True])
+@pytest.mark.parametrize("with_targets", [False, True])
+def test_onnx_stream_supports_optional_targets(monkeypatch, defer_metrics, with_targets):
+    model = _build_model(monkeypatch)
+    model.eval()
+    model.stream_ensemble = True
+    model.defer_metrics = defer_metrics
+    model.members = 3
+    data = _batch(future_steps=2)
+    if not with_targets:
+        del data["targets"]
+
+    results = list(OnnxInferModel.stream_test(model, data))
+
+    assert len(results) == 2
+    for index, result in enumerate(results):
+        assert result["frame_start"] == index
+        assert result["n_members"] == 3
+        assert result["ensemble_output"].shape == (1, 3, 4, 8, 8)
+        torch.testing.assert_close(result["output"], torch.full((1, 1, 4, 8, 8), float(index + 1)))
+        torch.testing.assert_close(result["output"], result["ensemble_output"].mean(1)[:, None])
+        assert ("target" in result) == with_targets
+        if with_targets:
+            torch.testing.assert_close(result["target"], data["targets"][:, index : index + 1])

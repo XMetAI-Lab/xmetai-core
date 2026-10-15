@@ -253,7 +253,7 @@ class GraphCastPredictor(BasePredictor):
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
             target = targets[:, k : k + self.out_frames]
-            self.reset_input(inputs)
+            inputs = self.reset_input(inputs)
             output = self.forward_step(inputs, times, graph, step=t)
             loss_rec += charbonnier_loss(output, target, weight=getattr(self, "weight", None))
             if self.pinn_enable:
@@ -340,7 +340,7 @@ class GraphCastPredictor(BasePredictor):
         for num_step in self.step_range:
             curr_step = 0
             for step in range(num_step):
-                self.reset_input(inputs)
+                inputs = self.reset_input(inputs)
                 output = self.forward_step(inputs, times, graph, step=step + self.start_frames)
                 inputs = torch.cat([inputs, output], dim=1)[:, -self.in_frames :]
                 if step + 1 in steps:
@@ -357,7 +357,7 @@ class GraphCastPredictor(BasePredictor):
         hour = hour.to(dtype=self.dtype)
         doy = doy.to(dtype=self.dtype)
 
-        self.reset_input(normed_input)
+        normed_input = self.reset_input(normed_input)
         batch_size = inputs.shape[0]
         timestamp = {
             "step": step.repeat(batch_size),

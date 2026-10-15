@@ -218,15 +218,15 @@ class OnnxInferModel(BasePredictor):
             if members is not None:
                 if not finite.item():
                     raise FloatingPointError(f"Non-finite ONNX output through forecast step={step}")
-                target = self.inv_normalize(batch["targets"][:, index : index + 1], self.test_chans)
                 result = {
                     "output": members.mean(1)[:, None],
-                    "target": target,
                     "frame_start": index,
                     "times": batch["times"],
                     "n_members": member_count,
                     "ensemble_output": members,
                 }
+                if "targets" in batch:
+                    result["target"] = self.inv_normalize(batch["targets"][:, index : index + 1], self.test_chans)
                 if "weight" in self._buffers:
                     result["weight"] = self.weight.float()
                 if self.defer_metrics:
@@ -235,7 +235,7 @@ class OnnxInferModel(BasePredictor):
                     )
                 else:
                     yield result
-                del members, target, result
+                del members, result
         # This same-stream scalar read also completes the queued CPU cache copies.
         if not finite.item():
             raise FloatingPointError("Non-finite ONNX output in the forecast trajectory")

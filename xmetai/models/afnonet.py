@@ -117,7 +117,7 @@ class AFNONet(BasePredictor):
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
             target = targets[:, k : k + self.out_frames]
-            self.reset_input(input)
+            input = self.reset_input(input)
             output = self.forward_step(input)
             step_losses = self.compute_step_loss(output, target)
             for k_loss, v_loss in step_losses.items():
@@ -182,7 +182,7 @@ class AFNONet(BasePredictor):
         for num_step in self.step_range:
             curr_step = 0
             for step in range(num_step):
-                self.reset_input(input)
+                input = self.reset_input(input)
                 output = self.forward_step(input)
                 input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
                 # save for output
@@ -202,11 +202,10 @@ class AFNONet(BasePredictor):
         normed_input = normed_input.to(dtype=self.dtype)
 
         # forward model
-        self.reset_input(normed_input)
+        normed_input = self.reset_input(normed_input)
 
         output = self.forward_step(normed_input)
 
         # inv normalize output with float32 precision
         output = self.inv_normalize(output)
-        output = torch.concat([input[:, -1:], output], dim=1)  # add the first input frame for output
         return output
