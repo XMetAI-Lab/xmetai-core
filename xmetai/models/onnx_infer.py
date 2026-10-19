@@ -7,6 +7,7 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 
 import logging
 import os
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
@@ -33,7 +34,7 @@ class OnnxInferModel(BasePredictor):
     def __init__(
         self,
         onnx_path,
-        perturb_std_scale=None,
+        perturb_std_scale=1.0,
         onnx_batch_size=1,
         stream_ensemble=False,
         custom_ops_library="",
@@ -43,7 +44,7 @@ class OnnxInferModel(BasePredictor):
         self.gpu_mem_fraction = kwargs.pop("gpu_mem_fraction", 0.7)
         self.use_cpu_initializers = kwargs.pop("use_cpu_initializers", True)
         super().__init__(**kwargs)
-        self.perturb_std_scale = {} if perturb_std_scale is None else perturb_std_scale
+        self.perturb_std_scale = 1.0 if perturb_std_scale is None else perturb_std_scale
         self.onnx_batch_size = int(onnx_batch_size)
         self.stream_ensemble = bool(stream_ensemble)
         self.custom_ops_library = custom_ops_library
@@ -141,7 +142,8 @@ class OnnxInferModel(BasePredictor):
         input = input.float()
         timestamp = self.get_timestamp(input, times, step)
         if "perturb_std_scale" in self.input_metadata:
-            timestamp["perturb_std_scale"] = input.new_full((input.shape[0],), self.perturb_std_scale.get(step, 1.0))
+            scale = self.perturb_std_scale.get(step, 1.0) if isinstance(self.perturb_std_scale, Mapping) else self.perturb_std_scale
+            timestamp["perturb_std_scale"] = input.new_full((input.shape[0],), scale)
         outputs = []
         for batch_index in range(0, input.shape[0], self.runtime_batch_size):
             batch_end = min(batch_index + self.runtime_batch_size, input.shape[0])

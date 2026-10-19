@@ -451,7 +451,7 @@ class SimpleTrainer(TrainerBase):
             value = loss_dict[name].detach()
             values.append(value.to_local() if isinstance(value, DTensor) else value)
         invalid = ~torch.isfinite(sum(values))
-        losses = torch.stack([value.to(dtype=torch.float64) for value in values])
+        losses = torch.stack([value.to(dtype=torch.float32) for value in values])
         invalid = invalid | ~torch.isfinite(losses).all()
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         # Only this rank fills its timing slot; SUM preserves all rank timings.

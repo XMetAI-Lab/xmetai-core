@@ -473,9 +473,7 @@ class BasePredictor(Meta):
         frames = self.test_frames[frame_start : frame_start + results["output"].shape[1]]
         suffix = f"_f{frames[0]:04d}-{frames[-1]:04d}" if "frame_start" in results else ""
         for batch_index, init_time in enumerate(times):
-            ymd_time = init_time.strftime("%Y%m%d")
-            if "frame_start" in results:
-                ymd_time = init_time.strftime("%Y%m%d_%H%M%S")
+            ymd_time = init_time.strftime("%Y%m%d_%H%M%S")
             pred_times = [init_time + pd.Timedelta(hours=self.freq * frame) for frame in frames]
             for key, prefix in (("output", "pred"), ("target", "obs")):
                 if key not in results:

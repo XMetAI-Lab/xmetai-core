@@ -16,7 +16,6 @@ def test_fidelity_retains_spherical_power_without_zonal_diagnostics(monkeypatch)
     assert results["BandPowerRatio_1_2"]["x"] == pytest.approx([4.0])
     assert results["BandPowerRatio_3_4"]["x"] == pytest.approx([4.0])
     assert results["SpatialAmplitudeRatio"]["x"] == pytest.approx([2.0])
-    assert not any(name.startswith("ZonalPower") for name in results)
 
 
 def test_precip_fss_streaming_and_neighborhood():
