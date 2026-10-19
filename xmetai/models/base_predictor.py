@@ -198,7 +198,9 @@ class BasePredictor(Meta):
         doy_arr = np.array(doy_list, dtype=np.float32)
         doy = input.new_tensor(doy_arr)
         step = input.new_full(input.shape[:1], t)
-        return dict(step=step, hour=hour, doy=doy)
+        # Center years to preserve annual resolution with BF16 inputs.
+        year = input.new_tensor([p.year - 2000 for p in times])
+        return dict(step=step, hour=hour, doy=doy, year=year)
 
     def build_loss_steps_and_weights(self, future_step: int, alpha: float, rollout_max: int) -> tuple:
         """Build per-iteration loss steps and normalized rolling weights.
@@ -458,45 +460,41 @@ class BasePredictor(Meta):
     @torch.no_grad()
     def test(self, data):
         data = self.process_data(data)
-        times = data["times"]
         outputs = self.test_cascade(data)
         results = self.process_output(outputs, data.get("targets", None))
-        if os.path.exists(self.save_dir):
-            ymd_time = times[0].strftime("%Y%m%d")
-            # get pred times start from ymd_time + self.freq * i, in self.test_frames
-            pred_times = [times[-1] + pd.Timedelta(hours=self.freq * i) for i in self.test_frames]
-            save_path = os.path.join(self.save_dir, f"pred_{ymd_time}.nc")
-            self.logger.info(f"Saving results to {save_path}")
-            # save results to netcdf
-            xr_output = xr.DataArray(
-                results["output"].squeeze().cpu().numpy(),
-                dims=["time", "channel", "lat", "lon"],
-                coords={
-                    "time": pred_times,
-                    "channel": self.test_names,
-                    "lat": np.linspace(90, -90, results["output"].shape[3]),
-                    "lon": np.linspace(0, 360, results["output"].shape[4] + 1)[:-1],  # ensure lon wraps around correctly
-                },
-                name="data",
-            )
-            xr_output.to_netcdf(save_path)
+        self.save_results(data["times"], results)
+        return results
 
-            # save target for comparison if available
-            if "target" in results:
-                save_path = os.path.join(self.save_dir, f"obs_{ymd_time}.nc")
+    def save_results(self, times, results):
+        """Save physical mean fields, using separate files for streamed chunks."""
+        if not os.path.exists(self.save_dir):
+            return
+        frame_start = int(results.get("frame_start", 0))
+        frames = self.test_frames[frame_start : frame_start + results["output"].shape[1]]
+        suffix = f"_f{frames[0]:04d}-{frames[-1]:04d}" if "frame_start" in results else ""
+        for batch_index, init_time in enumerate(times):
+            ymd_time = init_time.strftime("%Y%m%d")
+            if "frame_start" in results:
+                ymd_time = init_time.strftime("%Y%m%d_%H%M%S")
+            pred_times = [init_time + pd.Timedelta(hours=self.freq * frame) for frame in frames]
+            for key, prefix in (("output", "pred"), ("target", "obs")):
+                if key not in results:
+                    continue
+                field = results[key][batch_index]
+                save_path = os.path.join(self.save_dir, f"{prefix}_{ymd_time}{suffix}.nc")
+                self.logger.info(f"Saving results to {save_path}")
                 xr_output = xr.DataArray(
-                    results["target"].squeeze().cpu().numpy(),
+                    field.detach().float().cpu().numpy(),
                     dims=["time", "channel", "lat", "lon"],
                     coords={
                         "time": pred_times,
                         "channel": self.test_names,
-                        "lat": np.linspace(90, -90, results["target"].shape[3]),
-                        "lon": np.linspace(0, 360, results["target"].shape[4] + 1)[:-1],  # ensure lon wraps around correctly
+                        "lat": np.linspace(90, -90, field.shape[-2]),
+                        "lon": np.linspace(0, 360, field.shape[-1] + 1)[:-1],
                     },
                     name="data",
                 )
                 xr_output.to_netcdf(save_path)
-        return results
 
     def test_cascade(self, data):
         return NotImplemented

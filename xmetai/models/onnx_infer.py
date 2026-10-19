@@ -33,7 +33,7 @@ class OnnxInferModel(BasePredictor):
     def __init__(
         self,
         onnx_path,
-        perturb_std_scale=1.0,
+        perturb_std_scale=None,
         onnx_batch_size=1,
         stream_ensemble=False,
         custom_ops_library="",
@@ -43,7 +43,7 @@ class OnnxInferModel(BasePredictor):
         self.gpu_mem_fraction = kwargs.pop("gpu_mem_fraction", 0.7)
         self.use_cpu_initializers = kwargs.pop("use_cpu_initializers", True)
         super().__init__(**kwargs)
-        self.perturb_std_scale = perturb_std_scale
+        self.perturb_std_scale = {} if perturb_std_scale is None else perturb_std_scale
         self.onnx_batch_size = int(onnx_batch_size)
         self.stream_ensemble = bool(stream_ensemble)
         self.custom_ops_library = custom_ops_library
@@ -52,6 +52,7 @@ class OnnxInferModel(BasePredictor):
             raise ValueError("onnx_batch_size must be positive")
         self.device_id = get_local_rank()
         self.logger.name = __name__
+        self.logger.info("perturb_std_scale=%s, stream_ensemble=%s, defer_metrics=%s", self.perturb_std_scale, self.stream_ensemble, self.defer_metrics)
         self.load_model(onnx_path)
 
     def load_model(self, onnx_path):
@@ -140,7 +141,7 @@ class OnnxInferModel(BasePredictor):
         input = input.float()
         timestamp = self.get_timestamp(input, times, step)
         if "perturb_std_scale" in self.input_metadata:
-            timestamp["perturb_std_scale"] = input.new_full((input.shape[0],), self.perturb_std_scale)
+            timestamp["perturb_std_scale"] = input.new_full((input.shape[0],), self.perturb_std_scale.get(step, 1.0))
         outputs = []
         for batch_index in range(0, input.shape[0], self.runtime_batch_size):
             batch_end = min(batch_index + self.runtime_batch_size, input.shape[0])
@@ -229,6 +230,7 @@ class OnnxInferModel(BasePredictor):
                     result["target"] = self.inv_normalize(batch["targets"][:, index : index + 1], self.test_chans)
                 if "weight" in self._buffers:
                     result["weight"] = self.weight.float()
+                self.save_results(batch["times"], result)
                 if self.defer_metrics:
                     cached_results.append(
                         {key: value.detach().to("cpu", non_blocking=True) if isinstance(value, torch.Tensor) else value for key, value in result.items()}
