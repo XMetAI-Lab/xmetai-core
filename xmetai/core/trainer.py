@@ -10,9 +10,10 @@ from typing import Any, Dict, List, Mapping, Optional
 import numpy as np
 import torch
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
 
 from xmetai.models import EMA
-from xmetai.utils import EventStorage, gather, get_event_storage, get_rank, is_main_process
+from xmetai.utils import EventStorage, get_event_storage, get_rank, is_main_process
 
 __all__ = ["HookBase", "TrainerBase", "SimpleTrainer", "ExpandTrainer"]
 
@@ -416,6 +417,10 @@ class SimpleTrainer(TrainerBase):
             self.optimizer.zero_grad()
         losses.backward()
 
+        reduced_metrics = self._reduce_metrics(loss_dict, data_time)
+        if reduced_metrics is None:
+            return
+        loss_dict, data_time = reduced_metrics
         self.after_backward()
 
         if self.async_write_metrics:
@@ -433,6 +438,39 @@ class SimpleTrainer(TrainerBase):
         if self.use_ema:
             self.ema(self.model)
         self.after_optimizer(data)
+
+    def _reduce_metrics(self, loss_dict: Mapping[str, torch.Tensor], data_time: float) -> Optional[tuple[Dict[str, float], float]]:
+        """Reduce losses, timing and the skip flag with one collective per iteration.
+
+        Loss keys must match across ranks. Per-rank timing slots allow a SUM
+        reduction to retain maximum data time alongside mean losses.
+        """
+        names = sorted(loss_dict)
+        values = []
+        for name in names:
+            value = loss_dict[name].detach()
+            values.append(value.to_local() if isinstance(value, DTensor) else value)
+        invalid = ~torch.isfinite(sum(values))
+        losses = torch.stack([value.to(dtype=torch.float64) for value in values])
+        invalid = invalid | ~torch.isfinite(losses).all()
+        world_size = dist.get_world_size() if dist.is_initialized() else 1
+        # Only this rank fills its timing slot; SUM preserves all rank timings.
+        metrics = losses.new_zeros(len(names) + world_size + 1)
+        metrics[: len(names)] = losses / world_size
+        metrics[len(names) + get_rank()] = data_time
+        metrics[-1] = invalid
+        if dist.is_initialized():
+            dist.all_reduce(metrics, op=dist.ReduceOp.SUM)
+        reduced = metrics.cpu().tolist()
+        reduced_losses = dict(zip(names, reduced[: len(names)]))
+        if reduced[-1] or not np.isfinite(sum(reduced_losses.values())):
+            self.optimizer.zero_grad(set_to_none=True)
+            if is_main_process():
+                self.logger.warning("Skipping iteration=%d on all ranks: loss became NaN or Inf.", self.iter)
+            return None
+        if (self.iter + 1) % self.gather_metric_period == 0:
+            get_event_storage().put_scalar("rank_data_time", data_time, cur_iter=self.iter)
+        return reduced_losses, max(reduced[len(names) : -1])
 
     @property
     def _data_loader_iter(self):
@@ -453,7 +491,7 @@ class SimpleTrainer(TrainerBase):
 
     def _write_metrics(
         self,
-        loss_dict: Mapping[str, torch.Tensor],
+        loss_dict: Mapping[str, float],
         data_time: float,
         prefix: str = "",
         iter: Optional[int] = None,
@@ -468,44 +506,23 @@ class SimpleTrainer(TrainerBase):
 
     @staticmethod
     def write_metrics(
-        loss_dict: Mapping[str, torch.Tensor],
+        loss_dict: Mapping[str, float],
         data_time: float,
         cur_iter: int,
         prefix: str = "",
     ) -> None:
         """
         Args:
-            loss_dict (dict): dict of scalar losses
-            data_time (float): time taken by the dataloader iteration
+            loss_dict (dict): globally averaged scalar losses
+            data_time (float): maximum dataloader time across ranks
             prefix (str): prefix for logging keys
         """
-        metrics_dict = {k: v.detach().cpu().item() for k, v in loss_dict.items()}
-        metrics_dict["data_time"] = data_time
-
         storage = get_event_storage()
-        # Keep track of data time per rank
-        storage.put_scalar("rank_data_time", data_time, cur_iter=cur_iter)
-
-        # Gather metrics among all workers for logging
-        # This assumes we do DDP-style training, which is currently the only
-        # supported method in detectron2.
-        all_metrics_dict = gather(metrics_dict)
-
         if is_main_process():
-            # data_time among workers can have high variance. The actual latency
-            # caused by data_time is the maximum among workers.
-            data_time = np.max([x.pop("data_time") for x in all_metrics_dict])
             storage.put_scalar("data_time", data_time, cur_iter=cur_iter)
-
-            # average the rest metrics
-            metrics_dict = {k: np.mean([x[k] for x in all_metrics_dict]) for k in all_metrics_dict[0].keys()}
-            total_losses_reduced = sum(metrics_dict.values())
-            if not np.isfinite(total_losses_reduced):
-                raise FloatingPointError(f"Loss became infinite or NaN at iteration={cur_iter}!\n" f"loss_dict = {metrics_dict}")
-
-            storage.put_scalar("{}total_loss".format(prefix), total_losses_reduced, cur_iter=cur_iter)
-            if len(metrics_dict) > 1:
-                storage.put_scalars(cur_iter=cur_iter, **metrics_dict)
+            storage.put_scalar("{}total_loss".format(prefix), sum(loss_dict.values()), cur_iter=cur_iter)
+            if len(loss_dict) > 1:
+                storage.put_scalars(cur_iter=cur_iter, **loss_dict)
 
     def state_dict(self):
         ret = super().state_dict()
@@ -588,8 +605,8 @@ class ExpandTrainer(SimpleTrainer):
                 if first_segment and not self.zero_grad_before_forward:
                     self.optimizer.zero_grad()
 
-                self._set_fsdp2_backward_mode(is_last_segment)
                 losses = sum(segment_loss_dict.values())
+                self._set_fsdp2_backward_mode(is_last_segment)
                 losses.backward()
                 for name, value in segment_loss_dict.items():
                     total_loss_dict[name] = total_loss_dict.get(name, 0) + value.detach()
@@ -651,6 +668,10 @@ class ExpandTrainer(SimpleTrainer):
                 self.optimizer.zero_grad()
             losses.backward()
 
+        reduced_metrics = self._reduce_metrics(loss_dict, data_time)
+        if reduced_metrics is None:
+            return
+        loss_dict, data_time = reduced_metrics
         self.after_backward()
 
         if self.async_write_metrics:
