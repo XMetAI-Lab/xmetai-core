@@ -282,3 +282,32 @@ def test_rollout_returns_only_enabled_losses(weights, expected):
     assert set(model(_build_batch())) == expected
     losses, _, _ = model(_build_batch(), rollout_segment_size=1)
     assert set(losses) == expected
+
+
+@pytest.mark.parametrize("amse_weight", [0.0, 0.25, 1.0])
+def test_amse_weight_and_segmented_rollout(amse_weight):
+    model = _build_tiny_group_vae(0.0, amse_weight=amse_weight, alpha=0.7, rollout_max=-1).train()
+    model.eval()
+    model.training = True
+    batch = _build_batch()
+    losses = model(batch)
+    if amse_weight == 0:
+        assert "loss_amse" not in losses and model.amse_loss is None
+        return
+    full = losses["loss_amse"]
+    full.backward()
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.decoder_group.parameters())
+    model.amse_weight = 1.0
+    torch.testing.assert_close(full.detach(), amse_weight * model(batch)["loss_amse"].detach())
+    model.amse_weight = amse_weight
+    total, state, done = 0.0, None, False
+    while not done:
+        losses, state, done = model(batch if state is None else None, rollout_state=state, rollout_segment_size=1)
+        total = total + losses["loss_amse"].detach()
+    torch.testing.assert_close(total, full.detach())
+
+
+@pytest.mark.parametrize("weight", [-1.0, float("nan"), float("inf")])
+def test_invalid_amse_weight(weight):
+    with pytest.raises(ValueError, match="amse_weight"):
+        _build_tiny_group_vae(0.0, amse_weight=weight)

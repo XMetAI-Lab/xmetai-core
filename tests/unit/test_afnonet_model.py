@@ -1,8 +1,13 @@
 """Unit tests for FourcastNet."""
 
+from types import MethodType, SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 import torch
 
 from xmetai.models.afnonet import AFNONet
+from xmetai.models.base_predictor import BasePredictor
 
 
 def test_afnonet_forward_loss():
@@ -84,3 +89,28 @@ def test_afnonet_test_cascade():
     out = model.test_cascade(data)
     assert out.shape[1] == len(model.test_frames)
     assert out.shape[-2:] == (height, width)
+
+
+@pytest.mark.parametrize("exporting", [False, True])
+def test_export_returns_only_prediction_after_functional_reset(exporting):
+    model = SimpleNamespace(
+        dtype=torch.float32,
+        accumid=[0],
+        zero_accum=True,
+        maskid=[1],
+        mask=torch.tensor(0.5),
+        landid=[2],
+        land_mask=torch.tensor(0.25),
+        logid=[3],
+        normalize=lambda data: data.clone(),
+        inv_normalize=lambda data: data,
+        forward_step=lambda data: data[:, -1:] + 1,
+    )
+    model.reset_input = MethodType(BasePredictor.reset_input, model)
+    inputs = torch.tensor([2.0, 4.0, 8.0, 10.0]).reshape(1, 1, 4, 1, 1).expand(2, 2, 4, 2, 4).clone()
+    expected = torch.tensor([1.0, 3.0, 3.0, 8.0]).reshape(1, 1, 4, 1, 1).expand(2, 1, 4, 2, 4)
+
+    with patch("torch.onnx.is_in_onnx_export", return_value=exporting):
+        output = AFNONet.export_onnx(model, inputs)
+
+    torch.testing.assert_close(output, expected)

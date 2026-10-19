@@ -93,7 +93,7 @@ class ViTModel(BasePredictor):
         for t in range(self.start_frames, total_frames):
             k = t - self.start_frames
             target = targets[:, k : k + self.out_frames]
-            self.reset_input(input)
+            input = self.reset_input(input)
             output = self.forward_step(input, const=const, times=times, step=t)
             step_losses = self.compute_step_loss(output, target, step=k)
             for k_loss, v_loss in step_losses.items():
@@ -210,7 +210,7 @@ class ViTModel(BasePredictor):
         for num_step in self.step_range:
             curr_step = 0
             for step in range(num_step):
-                self.reset_input(input)
+                input = self.reset_input(input)
                 output = self.forward_step(input, const=const, times=times, step=step + self.start_frames)
                 input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
                 # save for output
@@ -239,7 +239,7 @@ class ViTModel(BasePredictor):
             const = torch.repeat_interleave(const.unsqueeze(0), repeats=batch_size, dim=0)
 
         # forward model
-        self.reset_input(normed_input)
+        normed_input = self.reset_input(normed_input)
         timestamp = {
             "step": step.repeat(batch_size),
             "hour": hour.repeat(batch_size),
@@ -249,5 +249,4 @@ class ViTModel(BasePredictor):
 
         # inv normalize output with float32 precision
         output = self.inv_normalize(output)
-        output = torch.concat([input[:, -1:], output], dim=1)  # add the first input frame for output
         return output

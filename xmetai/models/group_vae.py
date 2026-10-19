@@ -34,7 +34,7 @@ from xmetai.registries import MODELS
 from xmetai.utils import get_event_storage
 from xmetai.utils.events import has_event_storage
 
-from .base_predictor import BasePredictor
+from .base_predictor import BasePredictor, replace_channels
 from .utransformer import UTransformer
 
 __all__ = [
@@ -294,6 +294,7 @@ class GroupEncoder(UTransformer):
 class GroupDecoder(UTransformer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.output_features = False
         self.norm_layer = AdaptiveLN(self.embed_dim)
         if hasattr(self, "patch_embed"):
             del self.patch_embed
@@ -318,6 +319,8 @@ class GroupDecoder(UTransformer):
 
         h = self.norm_layer(h, embed) + shortcut
         h = rearrange(h, "n (h w) c -> n c h w", h=self.feat_size[0])
+        if self.output_features:
+            return h
         h = F.pad(h, (0, 0, 0, 1))
 
         pred = self.head(h, need_rearrange=False)
@@ -748,8 +751,7 @@ class _BaseGroupVAE(BasePredictor):
         if self.residual_vae_index.numel() == 0:
             return pred
         residual = pred.index_select(2, self.residual_vae_index) + ref.index_select(2, self.residual_vae_index)
-        pred.index_copy_(2, self.residual_vae_index, residual)
-        return pred
+        return replace_channels(pred, self.residual_vae_indices, residual)
 
     def _build_posterior_input(self, history: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Reset forecast history while preserving target observations for the posterior encoder."""
@@ -764,11 +766,7 @@ class _BaseGroupVAE(BasePredictor):
         return self._slice_group(x, gi)
 
     def _reassemble(self, group_outputs: list[torch.Tensor], x_ref: torch.Tensor) -> torch.Tensor:
-        first = group_outputs[0]
-        full = first.new_empty(*first.shape[:2], self.group_reassemble_map.numel(), *first.shape[3:])
-        for gi, out_group in enumerate(group_outputs):
-            full.index_copy_(2, getattr(self, f"group_indices_{gi}"), out_group)
-        return full
+        return torch.cat(group_outputs, dim=2).index_select(2, self.group_reassemble_map)
 
     @staticmethod
     def _resize_pred(pred: torch.Tensor, target_hw: tuple[int, int]) -> torch.Tensor:
@@ -1246,7 +1244,7 @@ class _BaseGroupVAE(BasePredictor):
             group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames)
             output = self._assemble_prediction(group_outputs, input)
             if self.amse_weight > 0:
-                loss_amse += block_weight * self.amse_loss(output, target)
+                loss_amse += block_weight * self.amse_loss(output, target, channel_weights=self.channel_weights if "channel_weights" in self._buffers else None)
             if self.compute_spectral_loss:
                 loss_spectral += block_weight * self.spectral_loss(
                     output.index_select(2, self.spectral_channel_indices),
@@ -1552,9 +1550,7 @@ class FeatureGroupVAEPredictor(_BaseGroupVAE):
         mode = self.group_modes[gi]
         if mode == "residual":
             if self.out_frames == 1:
-                out = x_group.clone()
-                out[:, 1:] = x_group[:, 1:] - x_group[:, :1]
-                return out  # [x_tm1, x_t - x_tm1]
+                return torch.cat([x_group[:, :1], x_group[:, 1:] - x_group[:, :1]], dim=1)
             curr = x_group[:, -1:]
             return torch.cat([curr, curr - torch.flip(x_group[:, :-1], dims=[1])], dim=1)
         if mode == "absolute":

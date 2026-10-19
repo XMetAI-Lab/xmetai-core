@@ -65,9 +65,10 @@ model = L(MODELS.get("OnnxInferModel"))(
 
 model.members = members
 model.step_range = step_range
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.zero_accum = zero_accum
 model.precision = "fp32"
+model.custom_ops_library = "/workspace/cma/xmetai_onnx_plugins.ort1_24.cuda12.so"
 
 ######################################################################
 # Data settings

@@ -161,7 +161,7 @@ model = L(MODELS.get(model_name))(
     climate_zarr="/mnt/d/cla.zarr",  # 气候态 zarr 路径
 )
 
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.precision = "bf16"  # 开启 BFloat16 半精度训练，防止 384 维度的模型显存溢出
 
 ######################################################################

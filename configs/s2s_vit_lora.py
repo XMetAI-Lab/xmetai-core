@@ -126,7 +126,7 @@ model = L(MODELS.get(model_name))(
     layer_type="mamba",  # Enable Mamba for better sequence modeling
 )
 
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.precision = "bf16"
 
 if load_from_pretrain:

@@ -343,16 +343,15 @@ def default_setup(cfg, args):
         if hasattr(args, "config_file") and args.config_file != "":
             logger.info(f"Contents of args.config_file={args.config_file}:\n{PathManager.open(args.config_file, 'r').read()}")
 
-        # Note: some of our scripts may expect the existence of
-        # config.yaml in output directory
+        # Note: some of our scripts may expect config.yaml in the output directory.
         path = os.path.join(output_dir, "config.yaml")
         if isinstance(cfg, CfgNode):
             logger.info(f"Running with full config:\n{cfg.dump()}")
             with PathManager.open(path, "w") as f:
                 f.write(cfg.dump())
         else:
-            LazyConfig.save(cfg, path)
-        logger.info(f"Full config saved to {path}")
+            LazyConfig.save(cfg, path, array_threshold=1024)
+        logger.info(f"Config saved to {path}; LazyConfig vector numpy arrays are saved as lists, other arrays with more than 1024 elements as metadata only.")
 
     # make sure each worker has a different, yet deterministic seed if specified
     seed = _try_get_key(cfg, "SEED", "train.seed", default=-1)

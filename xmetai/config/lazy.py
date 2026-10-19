@@ -11,8 +11,10 @@ import uuid
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import is_dataclass
-from typing import List, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
+import numpy as np
+import torch
 import yaml  # type: ignore[import-untyped]
 from omegaconf import DictConfig, ListConfig, OmegaConf, SCMode
 
@@ -66,6 +68,33 @@ def _visit_dict_config(cfg, func):
     elif isinstance(cfg, ListConfig):
         for v in cfg:
             _visit_dict_config(v, func)
+
+
+def _summarize_arrays(value: Any, threshold: int) -> Any:
+    if isinstance(value, (np.ndarray, torch.Tensor)):
+        size = value.size if isinstance(value, np.ndarray) else value.numel()
+        if size > threshold:
+            return {"omitted": True, "type": "ndarray" if isinstance(value, np.ndarray) else "Tensor", "shape": list(value.shape), "dtype": str(value.dtype)}
+        return value
+    if isinstance(value, dict):
+        return {key: _summarize_arrays(item, threshold) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_summarize_arrays(item, threshold) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_summarize_arrays(item, threshold) for item in value)
+    return value
+
+
+def _restore_arrays(value: Any) -> Any:
+    if isinstance(value, dict):
+        if value.get("omitted") and value.get("type") == "ndarray":
+            return np.zeros(value["shape"], dtype=value["dtype"])
+        if value.get("omitted") and value.get("type") == "Tensor":
+            return torch.zeros(value["shape"], dtype=getattr(torch, value["dtype"].removeprefix("torch.")))
+        return {key: _restore_arrays(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_restore_arrays(item) for item in value)
+    return value
 
 
 def _validate_py_syntax(filename):
@@ -207,7 +236,7 @@ class LazyConfig:
             ret = module_namespace
         else:
             with PathManager.open(filename) as f:
-                obj = yaml.unsafe_load(f)
+                obj = _restore_arrays(yaml.unsafe_load(f))
             ret = OmegaConf.create(obj, flags={"allow_objects": True})
 
         if has_keys:
@@ -229,7 +258,7 @@ class LazyConfig:
             return ret
 
     @staticmethod
-    def save(cfg, filename: str):  # type: ignore[no-untyped-def]
+    def save(cfg, filename: str, *, array_threshold: Optional[int] = None):  # type: ignore[no-untyped-def]
         """
         Save a config object to a yaml file.
         Note that when the config dictionary contains complex objects (e.g. lambda),
@@ -239,8 +268,17 @@ class LazyConfig:
         Args:
             cfg: an omegaconf config object
             filename: yaml file name to save the config file
+            array_threshold: arrays with more than this many elements are saved
+                as shape/dtype metadata and loaded as zero placeholders. Smaller
+                arrays preserve their values and types. None preserves all values.
+                Placeholder values must be restored through normal checkpoint loading.
         """
         logger = logging.getLogger(__name__)
+        if array_threshold is not None:
+            if array_threshold < 0:
+                raise ValueError("array_threshold must be non-negative")
+            container = OmegaConf.to_container(cfg, resolve=False, structured_config_mode=SCMode.INSTANTIATE)
+            cfg = OmegaConf.create(_summarize_arrays(container, array_threshold), flags={"allow_objects": True})
         try:
             cfg = deepcopy(cfg)
         except Exception:

@@ -8,12 +8,14 @@ Copyright (c) 2025 by XMetAI/douzsheng, All Rights Reserved.
 import logging
 import math
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
 import xarray as xr
+from torch import Tensor
 
 from xmetai.loss import ChannelRegistry, pinn_loss, precip_loss
 from xmetai.utils.events import get_event_storage, has_event_storage
@@ -21,6 +23,25 @@ from xmetai.utils.events import get_event_storage, has_event_storage
 from .meta import Meta
 
 __all__ = ["BasePredictor"]
+
+
+def replace_channels(input: Tensor, indices: Sequence[int], values: Tensor) -> Tensor:
+    """Replace channels in the given index order.
+
+    Eager execution updates input in place. ONNX export returns a new tensor
+    using Gather/Concat/Gather, keeping untouched channels in their original
+    positions. Indices must be unique, nonnegative, fixed channel indices.
+    """
+    if not torch.onnx.is_in_onnx_export():
+        input[:, :, indices] = values
+        return input
+    untouched = [index for index in range(input.shape[2]) if index not in indices]
+    order = list(indices) + untouched
+    restore = [order.index(index) for index in range(input.shape[2])]
+    untouched_index = torch.tensor(untouched, device=input.device, dtype=torch.long)
+    restore_index = torch.tensor(restore, device=input.device, dtype=torch.long)
+    combined = torch.cat([values, input.index_select(2, untouched_index)], dim=2)
+    return combined.index_select(2, restore_index)
 
 
 class BasePredictor(Meta):
@@ -177,7 +198,9 @@ class BasePredictor(Meta):
         doy_arr = np.array(doy_list, dtype=np.float32)
         doy = input.new_tensor(doy_arr)
         step = input.new_full(input.shape[:1], t)
-        return dict(step=step, hour=hour, doy=doy)
+        # Center years to preserve annual resolution with BF16 inputs.
+        year = input.new_tensor([p.year - 2000 for p in times])
+        return dict(step=step, hour=hour, doy=doy, year=year)
 
     def build_loss_steps_and_weights(self, future_step: int, alpha: float, rollout_max: int) -> tuple:
         """Build per-iteration loss steps and normalized rolling weights.
@@ -241,7 +264,7 @@ class BasePredictor(Meta):
             # for tp should be exp-1.
             tp = x[:, :, logids].clamp(min=0.0, max=7.0)
             tp = tp.exp() - 1
-            x[:, :, logids] = tp
+            x = replace_channels(x, logids, tp)
         return x
 
     @torch.no_grad()
@@ -266,26 +289,23 @@ class BasePredictor(Meta):
             std = self.std.to(x)
 
         if len(logids) > 0:
-            x[:, :, logids] = torch.log1p(x[:, :, logids].clamp_min(0.0)).clamp_max(7.0)
+            tp = torch.log1p(x[:, :, logids].clamp_min(0.0)).clamp_max(7.0)
+            x = replace_channels(x, logids, tp)
         x = (x - mean) / std
         return x
 
-    def reset_input(self, input):
+    def reset_input(self, data: Tensor) -> Tensor:
         if len(self.accumid) > 0 and self.zero_accum:
-            input[:, :, self.accumid] *= 0
+            data = replace_channels(data, self.accumid, data[:, :, self.accumid] * 0)
         if len(self.maskid) > 0:
-            if hasattr(self, "mask_shift"):
-                input[:, :, self.maskid] *= self.mask_shift
-            else:
-                input[:, :, self.maskid] *= self.mask
+            mask = self.mask_shift if hasattr(self, "mask_shift") else self.mask
+            data = replace_channels(data, self.maskid, data[:, :, self.maskid] * mask)
         if len(self.landid) > 0:
-            if hasattr(self, "land_mask_shift"):
-                input[:, :, self.landid] *= self.land_mask_shift
-            else:
-                input[:, :, self.landid] *= self.land_mask
+            mask = self.land_mask_shift if hasattr(self, "land_mask_shift") else self.land_mask
+            data = replace_channels(data, self.landid, data[:, :, self.landid] * mask)
         if len(self.logid) > 0:
-            input[:, :, self.logid] = input[:, :, self.logid].clamp(min=0, max=7)
-        return input
+            data = replace_channels(data, self.logid, data[:, :, self.logid].clamp(min=0, max=7))
+        return data
 
     def process_data(self, data):
         # convert inputs to proper dtype and device
@@ -440,45 +460,39 @@ class BasePredictor(Meta):
     @torch.no_grad()
     def test(self, data):
         data = self.process_data(data)
-        times = data["times"]
         outputs = self.test_cascade(data)
         results = self.process_output(outputs, data.get("targets", None))
-        if os.path.exists(self.save_dir):
-            ymd_time = times[0].strftime("%Y%m%d")
-            # get pred times start from ymd_time + self.freq * i, in self.test_frames
-            pred_times = [times[-1] + pd.Timedelta(hours=self.freq * i) for i in self.test_frames]
-            save_path = os.path.join(self.save_dir, f"pred_{ymd_time}.nc")
-            self.logger.info(f"Saving results to {save_path}")
-            # save results to netcdf
-            xr_output = xr.DataArray(
-                results["output"].squeeze().cpu().numpy(),
-                dims=["time", "channel", "lat", "lon"],
-                coords={
-                    "time": pred_times,
-                    "channel": self.test_names,
-                    "lat": np.linspace(90, -90, results["output"].shape[3]),
-                    "lon": np.linspace(0, 360, results["output"].shape[4] + 1)[:-1],  # ensure lon wraps around correctly
-                },
-                name="data",
-            )
-            xr_output.to_netcdf(save_path)
+        self.save_results(data["times"], results)
+        return results
 
-            # save target for comparison if available
-            if "target" in results:
-                save_path = os.path.join(self.save_dir, f"obs_{ymd_time}.nc")
+    def save_results(self, times, results):
+        """Save physical mean fields, using separate files for streamed chunks."""
+        if not os.path.exists(self.save_dir):
+            return
+        frame_start = int(results.get("frame_start", 0))
+        frames = self.test_frames[frame_start : frame_start + results["output"].shape[1]]
+        suffix = f"_f{frames[0]:04d}-{frames[-1]:04d}" if "frame_start" in results else ""
+        for batch_index, init_time in enumerate(times):
+            ymd_time = init_time.strftime("%Y%m%d_%H%M%S")
+            pred_times = [init_time + pd.Timedelta(hours=self.freq * frame) for frame in frames]
+            for key, prefix in (("output", "pred"), ("target", "obs")):
+                if key not in results:
+                    continue
+                field = results[key][batch_index]
+                save_path = os.path.join(self.save_dir, f"{prefix}_{ymd_time}{suffix}.nc")
+                self.logger.info(f"Saving results to {save_path}")
                 xr_output = xr.DataArray(
-                    results["target"].squeeze().cpu().numpy(),
+                    field.detach().float().cpu().numpy(),
                     dims=["time", "channel", "lat", "lon"],
                     coords={
                         "time": pred_times,
                         "channel": self.test_names,
-                        "lat": np.linspace(90, -90, results["target"].shape[3]),
-                        "lon": np.linspace(0, 360, results["target"].shape[4] + 1)[:-1],  # ensure lon wraps around correctly
+                        "lat": np.linspace(90, -90, field.shape[-2]),
+                        "lon": np.linspace(0, 360, field.shape[-1] + 1)[:-1],
                     },
                     name="data",
                 )
                 xr_output.to_netcdf(save_path)
-        return results
 
     def test_cascade(self, data):
         return NotImplemented

@@ -26,6 +26,7 @@ def test_fidelity_amplitude_bias_and_stream_aggregation(monkeypatch):
     prediction = 2 * target + 3
     metric.process({}, dict(output=prediction, target=target))
     full = metric.evaluate()
+    assert not any(name.startswith("ZonalPower") for name in full)
     assert full["Bias"]["z500"] == pytest.approx([3, 3])
     assert full["SpatialAmplitudeRatio"]["z500"] == pytest.approx([2, 2])
     assert full["BandPowerRatio_1_2"]["z500"] == pytest.approx([4, 4])

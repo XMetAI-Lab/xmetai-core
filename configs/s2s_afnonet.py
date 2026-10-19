@@ -84,7 +84,7 @@ model = L(MODELS.get(model_name))(
     in_names=in_names,
 )
 
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.precision = "bf16"
 
 if load_from_pretrain:

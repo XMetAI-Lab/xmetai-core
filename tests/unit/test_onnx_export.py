@@ -28,7 +28,7 @@ class ExportModel(nn.Module):
 
 
 @pytest.mark.parametrize("example_batch", [1, 2])
-@pytest.mark.parametrize("opset_version", [None, 19])
+@pytest.mark.parametrize("opset_version", [None, 18, 19, 23])
 def test_export_selected_forward_and_runtime(tmp_path, example_batch, opset_version):
     ort = pytest.importorskip("onnxruntime")
     model = ExportModel().eval()
@@ -58,25 +58,36 @@ class TimestampExportModel(nn.Module):
     dtype = torch.float32
 
     def onnx_export(self, data, step, hour, doy, perturb_std_scale):
-        return data * perturb_std_scale + (step + hour + doy)[:, None]
+        scale = perturb_std_scale[:, None] if perturb_std_scale.ndim == 1 else perturb_std_scale
+        return data * scale + (step + hour + doy)[:, None]
 
 
-def test_dynamic_batch_timestamps_keep_group_scales_static(tmp_path):
+@pytest.mark.parametrize("example_batch", [1, 2])
+@pytest.mark.parametrize("grouped", [False, True])
+def test_dynamic_batch_timestamps_and_per_sample_scales(tmp_path, example_batch, grouped):
     ort = pytest.importorskip("onnxruntime")
     model = TimestampExportModel().eval()
+
+    def make_scale(batch_size):
+        values = np.arange(1, batch_size * (3 if grouped else 1) + 1, dtype=np.float32)
+        return values.reshape(batch_size, 3) if grouped else values
+
     feed = {
-        "input": np.ones((1, 3), np.float32),
-        "step": np.zeros(1, np.float32),
-        "hour": np.zeros(1, np.float32),
-        "doy": np.zeros(1, np.float32),
-        "perturb_std_scale": np.array([1, 2, 3], np.float32),
+        "input": np.ones((example_batch, 3), np.float32),
+        "step": np.zeros(example_batch, np.float32),
+        "hour": np.zeros(example_batch, np.float32),
+        "doy": np.zeros(example_batch, np.float32),
+        "perturb_std_scale": make_scale(example_batch),
     }
     path = tmp_path / "timestamps.onnx"
     do_export(model, feed, save_name=str(path), device="cpu")
     session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
-    assert session.get_inputs()[-1].shape == [3]
+    scale_shape = session.get_inputs()[-1].shape
+    assert isinstance(scale_shape[0], str)
+    assert scale_shape[1:] == ([3] if grouped else [])
     for batch_size in (1, 2, 4):
         feed["input"] = np.arange(batch_size * 3, dtype=np.float32).reshape(batch_size, 3)
+        feed["perturb_std_scale"] = make_scale(batch_size)
         for name in ("step", "hour", "doy"):
             feed[name] = np.arange(batch_size, dtype=np.float32)
         expected = model.onnx_export(*(torch.from_numpy(v) for v in feed.values())).numpy()
@@ -93,7 +104,7 @@ def test_gdn2_dynamo_preserves_custom_operator(tmp_path, device, dynamo):
     model = GatedDeltaNet2Mixer(hidden_size=32, num_heads=2).eval().to(device)
     path = tmp_path / "gdn2.onnx"
     torch.onnx.export(
-        model, (torch.randn(1, 8, 32, device=device),), path, dynamo=dynamo, opset_version=18, custom_opsets=None if dynamo else {"xmetai_plugins": 1}
+        model, (torch.randn(1, 8, 32, device=device),), path, dynamo=dynamo, opset_version=23, custom_opsets=None if dynamo else {"xmetai_plugins": 1}
     )
     graph = onnx.load(path)
     onnx.checker.check_model(graph)
@@ -178,3 +189,87 @@ def test_mamba_exporters_preserve_same_operator_contract(tmp_path, model, op_typ
         # Every required operand remains connected to the real graph input.
         assert node.input[0] == graph.graph.input[0].name
     assert contracts[0] == contracts[1]
+
+
+class NativeAttentionExportModel(nn.Module):
+    dtype = torch.float32
+
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(32))
+        phase = torch.randn(17, 16)
+        self.register_buffer("cos", phase.cos())
+        self.register_buffer("sin", phase.sin())
+
+    def onnx_export(self, input):
+        from xmetai.layers.rotary_attention import apply_rotary_emb
+
+        q, k = apply_rotary_emb(input, input * 0.5, self.cos, self.sin)
+        value = torch.nn.functional.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), (q + 1).transpose(1, 2))
+        return torch.nn.functional.gelu(torch.nn.functional.rms_norm(value.float(), (32,), self.weight, eps=1e-5))
+
+
+@pytest.mark.parametrize("opset_version", [18, 23])
+def test_configured_opset_lowers_native_rope_rms_and_attention(tmp_path, opset_version):
+    ort = pytest.importorskip("onnxruntime")
+    model = NativeAttentionExportModel().eval()
+    input = torch.randn(2, 17, 2, 32)
+    path = tmp_path / f"native_{opset_version}.onnx"
+    do_export(model, {"input": input}, save_name=str(path), device="cpu", opset_version=opset_version)
+    graph = onnx.load(path)
+    onnx.checker.check_model(graph)
+    assert next(entry.version for entry in graph.opset_import if entry.domain == "") == opset_version
+    ops = {node.op_type for node in graph.graph.node}
+    fused = {"RotaryEmbedding", "RMSNormalization", "Attention", "Gelu"}
+    assert fused <= ops if opset_version == 23 else not (fused & ops)
+    session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    for batch_size in (1, 2, 3):
+        values = torch.randn(batch_size, 17, 2, 32)
+        expected = model.onnx_export(values).detach().numpy()
+        actual = session.run(["pred"], {"input": values.numpy()})[0]
+        np.testing.assert_allclose(actual, expected, rtol=3e-5, atol=3e-6)
+
+
+class GdnExportModel(nn.Module):
+    dtype = torch.float32
+
+    def __init__(self):
+        super().__init__()
+        self.mixer = GatedDeltaNet2Mixer(hidden_size=32, num_heads=2).eval()
+
+    def onnx_export(self, input):
+        return self.mixer(input)
+
+
+@pytest.mark.parametrize("opset_version", [18, 23])
+def test_opset_lowering_preserves_gdn_boundary(tmp_path, opset_version):
+    pytest.importorskip("fla")
+    path = tmp_path / f"gdn_{opset_version}.onnx"
+    do_export(GdnExportModel(), {"input": torch.randn(2, 8, 32)}, save_name=str(path), device="cpu", opset_version=opset_version)
+    graph = onnx.load(path)
+    onnx.checker.check_model(graph)
+    assert sum(node.op_type == "GatedDeltaNet2Fn" and node.domain == "xmetai_plugins" for node in graph.graph.node) == 1
+    assert not any(node.op_type == "RMSNormalization" for node in graph.graph.node)
+
+
+class GaussianExportModel(nn.Module):
+    dtype = torch.float32
+
+    def onnx_export(self, input):
+        mean = input.half()
+        return torch.normal(mean, torch.ones_like(mean))
+
+
+@pytest.mark.parametrize("opset_version,random_version", [(18, 1), (23, 22)])
+def test_configured_opset_selects_fp16_random_schema(tmp_path, opset_version, random_version):
+    path = tmp_path / f"gaussian_{opset_version}.onnx"
+    do_export(GaussianExportModel(), {"input": torch.ones(2, 3, 4)}, save_name=str(path), device="cpu", opset_version=opset_version)
+    graph = onnx.load(path)
+    onnx.checker.check_model(graph)
+    nodes = [node for node in graph.graph.node if node.op_type == "RandomNormalLike"]
+    assert len(nodes) == 1
+    actual_opset = next(entry.version for entry in graph.opset_import if entry.domain == "")
+    assert actual_opset == opset_version
+    assert onnx.defs.get_schema("RandomNormalLike", actual_opset).since_version == random_version
+    output = next(info for info in graph.graph.value_info if info.name == nodes[0].output[0])
+    assert output.type.tensor_type.elem_type == onnx.TensorProto.FLOAT16

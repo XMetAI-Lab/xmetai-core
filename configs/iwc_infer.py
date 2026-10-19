@@ -60,14 +60,18 @@ model = L(MODELS.get("OnnxInferModel"))(
     test_frames=test_frames,
     test_chans=test_chans,
     test_names=test_names,
+    onnx_batch_size=2,
+    stream_ensemble=True,
+    defer_metrics=False,  # Score each complete lead on GPU; retain only metric records.
     freq=6,  # 6-hourly data
 )
 
 model.members = members
 model.step_range = step_range
-model.buffers = buffers
+model.buffers = "${buffers}"
 model.zero_accum = zero_accum
 model.precision = "fp32"
+model.custom_ops_library = "/workspace/cma/xmetai_onnx_plugins.ort1_24.cuda12.so"
 
 ######################################################################
 # Data settings

@@ -56,3 +56,22 @@ def test_amse_symmetry_and_squared_units():
     torch.testing.assert_close(loss(output, target), loss(target, output))
     torch.testing.assert_close(loss(3 * output, 3 * target), 9 * loss(output, target))
     assert not loss.state_dict()
+
+
+def test_amse_channel_weights_match_individual_losses_and_gradients():
+    loss = SphericalAMSELoss((17, 32))
+    generator = torch.Generator().manual_seed(3)
+    output = torch.randn(2, 3, 4, 17, 32, generator=generator, requires_grad=True)
+    target = torch.randn(output.shape, generator=generator, requires_grad=True)
+    weights = torch.tensor([0.0, 0.5, 1.0, 2.0]).reshape(4, 1, 1)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        actual = loss(output, target, channel_weights=weights)
+    expected = torch.stack([loss(output[..., channel, :, :], target[..., channel, :, :]) * weight for channel, weight in enumerate(weights.flatten())]).mean()
+    torch.testing.assert_close(actual, expected)
+    expected_grad = torch.autograd.grad(expected, output)[0]
+    actual.backward()
+    torch.testing.assert_close(output.grad, expected_grad)
+    assert torch.count_nonzero(output.grad[..., 0, :, :]) == 0
+    assert target.grad is None
+    with pytest.raises(ValueError, match="one value per channel"):
+        loss(output, target, channel_weights=torch.ones(3))
