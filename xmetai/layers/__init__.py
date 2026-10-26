@@ -7,6 +7,16 @@ from .earth_conv import EarthConv2d, EarthConvTranspose2d
 from .earth_spectral_conv import EarthSpectralConv2d
 from .embed import CubeEmbed, TimestepEmbed
 from .encoding import CyclicTimesteps, StepEncoding, TimestepProjection
+from .fuxi_blocks import (
+    FuxiConstEmbed,
+    FuxiPatchEmbed,
+    FuxiSubpixelHead,
+    FuxiSwinBlock,
+    FuxiSwinLayer,
+    FuxiTimeEmbed,
+    FuxiVarHead,
+    SwiGLUFFN,
+)
 from .gated_deltanet2 import GatedDeltaNet2Block, GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer, GatedDeltaNet2Mixer
 from .graphcast_blocks import GraphCastDecoder, GraphCastEncoder, GraphCastLayer
 from .helpers import kaming_init, to_1tuple
@@ -39,6 +49,13 @@ __all__ = [
     "EarthConv2d",
     "EarthConvTranspose2d",
     "EarthSpectralConv2d",
+    "FuxiConstEmbed",
+    "FuxiPatchEmbed",
+    "FuxiSubpixelHead",
+    "FuxiSwinBlock",
+    "FuxiSwinLayer",
+    "FuxiTimeEmbed",
+    "FuxiVarHead",
     "GEGLU",
     "GatedDeltaNet2Block",
     "GatedDeltaNet2HybridLayer",
@@ -58,6 +75,7 @@ __all__ = [
     "SquaredReLU",
     "SwinLayer",
     "SwiGLU",
+    "SwiGLUFFN",
     "TimestepEmbed",
     "Perceiver3DEncoder",
     "Perceiver3DDecoder",
