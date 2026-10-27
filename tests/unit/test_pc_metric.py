@@ -19,6 +19,7 @@ import torch
 
 from xmetai.metrics import PC
 from xmetai.registries import METRICS
+from xmetai.core.evaluator import inference_on_dataset
 
 
 def test_temperature_pc_calculates_percent_within_tolerance():
@@ -30,7 +31,7 @@ def test_temperature_pc_calculates_percent_within_tolerance():
     results = metric.evaluate()
 
     assert results is not None
-    assert results == {"PC": {"Times": [360], "PC@2": [50.0], "Overall": 50.0}}
+    assert results == {"PC": {"Times": [360, "Overall"], "PC@2": [50.0, 50.0]}}
 
 
 def test_temperature_pc_returns_nan_when_no_grid_cells_are_valid():
@@ -42,7 +43,7 @@ def test_temperature_pc_returns_nan_when_no_grid_cells_are_valid():
 
     assert results is not None
     assert math.isnan(results["PC"]["PC@2"][0])
-    assert math.isnan(results["PC"]["Overall"])
+    assert math.isnan(results["PC"]["PC@2"][-1])
 
 
 def test_temperature_pc_selects_named_channel_and_respects_frame_start():
@@ -57,10 +58,10 @@ def test_temperature_pc_selects_named_channel_and_respects_frame_start():
     results = metric.evaluate()
 
     assert results is not None
-    assert results["PC"]["Times"] == [6, 12, 18]
+    assert results["PC"]["Times"] == [6, 12, 18, "Overall"]
     assert math.isnan(results["PC"]["PC@2"][0])
-    assert results["PC"]["PC@2"][1:] == pytest.approx([50.0, 50.0])
-    assert results["PC"]["Overall"] == pytest.approx(50.0)
+    assert results["PC"]["PC@2"][1:3] == pytest.approx([50.0, 50.0])
+    assert results["PC"]["PC@2"][-1] == pytest.approx(50.0)
 
 
 def test_temperature_pc_overall_uses_contest_lead_weights():
@@ -75,12 +76,33 @@ def test_temperature_pc_overall_uses_contest_lead_weights():
     results = metric.evaluate()
 
     assert results is not None
-    assert results["PC"]["PC@2"] == pytest.approx([100.0, 50.0])
-    assert results["PC"]["Overall"] == pytest.approx((5.0 * 100.0 + 4.0 * 50.0) / 9.0)
+    assert results["PC"]["PC@2"] == pytest.approx([100.0, 50.0, (5.0 * 100.0 + 4.0 * 50.0) / 9.0])
 
 
 def test_temperature_pc_is_registered():
     assert METRICS.get("PC") is PC
+
+
+def test_temperature_pc_renders_through_inference_reporting_path():
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.device = "cpu"
+            self.dtype = torch.bfloat16
+
+        def forward(self, inputs):
+            return {"output": inputs["prediction"], "target": inputs["targets"]}
+
+    target = torch.zeros(1, 1, 1, 1, 1)
+    prediction = target.clone()
+    result = inference_on_dataset(
+        Model(),
+        [{"inputs": torch.zeros(1), "prediction": prediction, "targets": target}],
+        PC(test_times=(360,), leads=(15,)),
+    )
+
+    assert result["PC"]["Times"] == [360, "Overall"]
+    assert result["PC"]["PC@2"] == [100.0, 100.0]
 
 
 @pytest.mark.parametrize("tol", [-1.0, float("inf"), float("nan")])

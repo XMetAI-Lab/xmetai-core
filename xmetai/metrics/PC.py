@@ -122,4 +122,4 @@ class PC(DatasetEvaluator):
         valid_scores = [(score, weight) for score, weight in zip(scores, self.lead_weights) if math.isfinite(score) and weight > 0]
         total_weight = sum(weight for _, weight in valid_scores)
         overall = sum(score * weight for score, weight in valid_scores) / total_weight if total_weight else float("nan")
-        return {"PC": {"Times": list(self.test_times), f"PC@{self.tol:g}": scores, "Overall": overall}}
+        return {"PC": {"Times": [*self.test_times, "Overall"], f"PC@{self.tol:g}": [*scores, overall]}}
