@@ -11,6 +11,7 @@ from xmetai.utils import comm
 
 __all__ = [
     "ThreatScore",
+    "ThreatScore_nan",
     "FalseAlarmRate",
     "ProbabilityOfDetection",
     "FrequencyBias",
@@ -145,7 +146,7 @@ class _ThresholdContingencyMetric(DatasetEvaluator):
                     hit = counts[threshold]["hit"]
                     miss = counts[threshold]["miss"]
                     false_alarm = counts[threshold]["false_alarm"]
-                    denominator = hit + miss + (false_alarm if self.metric_prefix == "TS" else 0.0)
+                    denominator = hit + miss + (false_alarm if self.metric_prefix in ("TS", "TS_nan") else 0.0)
                     if denominator > 0:
                         valid.append((results[columns[threshold]][index], weight))
                 total_weight = sum(weight for _, weight in valid)
@@ -161,6 +162,22 @@ class ThreatScore(_ThresholdContingencyMetric):
 
     def _metric_value(self, hit: float, false_alarm: float, miss: float, eps: float) -> float:
         return hit / (hit + false_alarm + miss + eps)
+
+
+@METRICS.register()
+class ThreatScore_nan(_ThresholdContingencyMetric):
+    """依据《第三届全国智能气候预测技术方法竞赛预测质量检验方法》计算逐日降水 TS 评分。
+
+    每个预报目标日的评分为 ``NA / (NA + NB + NC)``。当 ``NA + NB + NC = 0``
+    时返回 ``NaN``，以便 Python 后续计算能够将其作为缺失值处理。
+    """
+
+    metric_name = "ThreatScore_nan"
+    metric_prefix = "TS_nan"
+
+    def _metric_value(self, hit: float, false_alarm: float, miss: float, eps: float) -> float:
+        denominator = hit + false_alarm + miss
+        return hit / denominator if denominator > 0 else float("nan")
 
 
 @METRICS.register()
