@@ -60,10 +60,11 @@ class TestSortedCRPSEntrypoints:
         torch.testing.assert_close(output.grad, torch.full_like(output, 2.0 / output.numel()))
 
     @pytest.mark.parametrize("name", ["afcrps_loss", "multiscale_afcrps_loss"])
-    def test_single_member_zero_has_gradient(self, name):
+    @pytest.mark.parametrize("dtype,shape", [(torch.float32, (1, 1, 1, 9, 16)), (torch.float16, (1, 1, 1, 256, 256))])
+    def test_single_member_zero_has_gradient(self, name, dtype, shape):
         from xmetai import loss
 
-        output = torch.ones(1, 1, 1, 9, 16, requires_grad=True)
+        output = torch.ones(shape, dtype=dtype, requires_grad=True)
         actual = getattr(loss, name)(output, torch.zeros_like(output))
         assert actual.item() == 0
         actual.backward()

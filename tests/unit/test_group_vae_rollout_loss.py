@@ -6,8 +6,10 @@ import torch
 from xmetai.models.group_vae import _BaseGroupVAE
 
 
-def _build_tiny_group_vae(latent_dyn_weight: float, *, alpha: float = 1.0, rollout_max: int = 2, out_frames: int = 1, **kwargs) -> _BaseGroupVAE:
-    return _BaseGroupVAE(
+def _build_tiny_group_vae(
+    latent_dyn_weight: float, *, alpha: float = 1.0, rollout_max: int = 2, out_frames: int = 1, model_type: type[_BaseGroupVAE] = _BaseGroupVAE, **kwargs
+) -> _BaseGroupVAE:
+    return model_type(
         group_slice_indices=[[0]],
         embed_dim=8,
         image_size=kwargs.pop("image_size", (4, 4)),
@@ -87,6 +89,25 @@ def test_patch_shortcut_training_and_export_forward(patch_shortcut):
     value = torch.zeros(1)
     output = model.export_onnx(batch["inputs"].clone(), value, value, value)
     assert torch.isfinite(output).all()
+
+
+@pytest.mark.parametrize("out_frames,stride,expected", [(1, 1, [20, 20, 20, 20]), (2, 2, [20, 30, 20, 30]), (2, 1, [20, 25, 25, 25])])
+def test_pretrain_evaluation_targets_match_reconstructed_tail(monkeypatch, out_frames, stride, expected):
+    model = _build_tiny_group_vae(0.0, out_frames=out_frames, pretrain=True, forecast_stride=stride, members=2).eval()
+    model.test_frames = [1, 2, 3, 4]
+    model.ensemble_sizes = [2] * (model.start_frames + 4)
+    input = torch.arange(1, out_frames + 2, dtype=torch.float32).view(1, -1, 1, 1, 1).expand(1, -1, 1, 4, 4).clone() * 10
+    tail = input[:, -out_frames:].clone()
+    monkeypatch.setattr(model, "_encode_all_groups", lambda *args, **kwargs: [tail])
+    monkeypatch.setattr(model, "_decode_all_groups", lambda *args, **kwargs: [tail])
+    monkeypatch.setattr(model, "_assemble_prediction", lambda groups, reference: groups[0])
+    data = {"input": input, "times": pd.to_datetime(["2024-01-01"])}
+    original = input.clone()
+    output = model.test_cascade(data)
+    expected_target = torch.tensor(expected, dtype=torch.float32).view(1, -1, 1, 1, 1).expand_as(data["targets"])
+    torch.testing.assert_close(data["targets"], expected_target)
+    torch.testing.assert_close(output.float(), expected_target)
+    torch.testing.assert_close(data["input"], original)
 
 
 def test_rollout_field_dynamics_loss_supports_segmented_backward() -> None:
@@ -255,6 +276,7 @@ def test_spectral_loss_backpropagates_and_segments_sum_to_full_rollout(image_siz
 
 def test_disabled_posterior_is_not_executed() -> None:
     model = _build_tiny_group_vae(0.0, loss_weight=(0.0, 0.0, 1.0, 0.01, 1.0)).train()
+    assert not any(p.requires_grad for p in model.posterior_encoder_group.parameters())
 
     def forbidden_call(module, args):
         raise AssertionError("Disabled posterior encoder was called")
@@ -273,6 +295,21 @@ def test_disabled_posterior_is_not_executed() -> None:
     finally:
         for handle in handles:
             handle.remove()
+
+
+def test_subclass_posterior_alignment_keeps_encoder_trainable():
+    class PosteriorAlignmentVAE(_BaseGroupVAE):
+        def _uses_posterior_encoder(self) -> bool:
+            return True
+
+    model = _build_tiny_group_vae(0.0, model_type=PosteriorAlignmentVAE, loss_weight=(0.0, 0.0, 1.0, 0.01, 1.0)).train()
+    batch = _build_batch()
+    timestamp = model.get_timestamp(batch["inputs"], pd.to_datetime(["2024-01-01"]), model.start_frames)
+    posterior = model._encode_all_groups(batch["inputs"], timestamp, is_prior=False)
+    posterior[0].square().mean().backward()
+    parameters = list(model.posterior_encoder_group.parameters())
+    assert all(p.requires_grad for p in parameters)
+    assert any(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0 for p in parameters)
 
 
 @pytest.mark.parametrize("mixed_precision", [False, True])

@@ -720,6 +720,12 @@ class _BaseGroupVAE(BasePredictor):
         )
         if self.pretrain:
             self._configure_pretrain_trainable()
+        elif not self._uses_posterior_encoder():
+            self.freeze(("posterior_encoder_group",))
+
+    def _uses_posterior_encoder(self) -> bool:
+        """Whether forecast training uses posterior features; subclasses may add consumers."""
+        return self.compute_posterior_vae
 
     def _configure_pretrain_trainable(self) -> None:
         """Train the posterior encoder, decoder and optional correction.
@@ -1290,7 +1296,7 @@ class _BaseGroupVAE(BasePredictor):
         times = data["times"]
         const = data["const"] if self.const_chans > 0 else None
         if self.pretrain:
-            data["targets"] = input[:, -1:, self.test_chans].expand(-1, len(self.test_frames), -1, -1, -1)
+            data["targets"] = input.new_zeros((input.shape[0], len(self.test_frames), len(self.test_chans), *input.shape[-2:]))
         total_step = max(self.test_frames) + self.start_frames
         test_frame_to_idx = {int(frame): idx for idx, frame in enumerate(self.test_frames)}
         self.logger.debug(f"Testing cascade: total_step={total_step}, stride={self.forecast_stride}, input.shape={input.shape}")
@@ -1333,12 +1339,18 @@ class _BaseGroupVAE(BasePredictor):
                     out_idx = test_frame_to_idx.get(lead)
                     if out_idx is not None and member_idx < step_member_limit:
                         outputs[:, out_idx] += output[:, lead_idx, self.test_chans].detach()
+                        if self.pretrain:
+                            # Align each reconstruction position with the original input tail,
+                            # including overlapping blocks and their ensemble averaging.
+                            data["targets"][:, out_idx] += input[:, lead_idx - self.out_frames, self.test_chans]
                         ensemble_counts[out_idx] += 1
                 self.logger.debug(f"Step {t}: output shape={output.shape}, updated outputs shape={outputs.shape}")
 
         denom = torch.tensor(ensemble_counts, device=outputs.device, dtype=outputs.dtype).view(1, -1, 1, 1, 1)
         denom = torch.clamp(denom, min=1.0)
         outputs = outputs / denom
+        if self.pretrain:
+            data["targets"] = data["targets"] / denom
         return outputs
 
     @torch.no_grad()

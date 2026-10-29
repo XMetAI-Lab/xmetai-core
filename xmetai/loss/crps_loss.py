@@ -101,7 +101,7 @@ def _distributed_crps(
 
     members = outputs.shape[0]
     if members < 2 and alpha != 0.0:
-        return output.sum() * 0.0
+        return (output * 0.0).sum()
 
     if not scales:
         return _afcrps_from_members(outputs, target, weight, alpha)
