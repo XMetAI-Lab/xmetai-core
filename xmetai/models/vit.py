@@ -37,6 +37,8 @@ class ViTModel(BasePredictor):
         mlp_ratio=4,
         layer_type="mamba_embed",
         const_chans=0,
+        down_times=0,
+        up_times=None,
         **kwargs,
     ):
         self.patch_size = patch_size
@@ -61,6 +63,8 @@ class ViTModel(BasePredictor):
             const_chans=const_chans,
             window_size=window_size,
             patch_size=patch_size,
+            down_times=down_times,
+            up_times=up_times,
             depths=depths,
             num_heads=num_heads,
             drop_mcmc=drop_rate,
@@ -157,32 +161,7 @@ class ViTModel(BasePredictor):
                 self.logger.debug(f"Applied input token masking with ratio: {self.pertub_mask:.3f}")
         # -----------------------------------------------------------------
 
-        # timestamp embedding
-        embed = self.encoder.get_embed(timestamp)
-
-        # Iterate over transformer layers
-        for i, blk in enumerate(self.encoder.layers):
-            h = getattr(self.encoder, f"drop{i}")(h, self.encoder.drop_mcmc)
-            # handle time-embedding for layers correctly as UTransformer expects
-            if "rotary" in self.encoder.attn_type:
-                h = blk(
-                    h,
-                    time_embedding=embed,
-                    freqs_cos=self.encoder.freqs_cos,
-                    freqs_sin=self.encoder.freqs_sin,
-                )
-            else:
-                h = blk(h, time_embedding=embed)
-            self.logger.debug(f"After layer {i}, h shape: {h.shape}")
-
-        if hasattr(self.encoder, "fpn") and self.encoder.fpn is not None:
-            # Just in case we expand UTransformer later to use feature pyramids
-            self.logger.debug("FPN is enabled, but not implemented in this ViT model.")
-            pass
-
-        if hasattr(self.encoder, "norm") and self.encoder.norm is not None:
-            h = self.encoder.norm(h, embed)
-            self.logger.debug(f"After normalization, h shape: {h.shape}")
+        h = self.encoder.forward_features(h, timestamp)
 
         output = self.encoder.head(h)  # B, N, C_out*P*P
         self.logger.debug(f"head output shape: {output.shape}")

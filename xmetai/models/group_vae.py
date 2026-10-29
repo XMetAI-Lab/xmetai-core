@@ -21,7 +21,7 @@ Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import math
-from typing import Any, final
+from typing import Any, TypeAlias, final
 
 import torch
 import torch.nn as nn
@@ -260,12 +260,16 @@ def _build_reassemble_map(group_slice_indices: list[list[int]], num_channels: in
     return reassemble_map
 
 
+_GroupShortcut: TypeAlias = torch.Tensor | dict[int, torch.Tensor]
+
+
 @MODELS.register()
 class GroupEncoder(UTransformer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         del self.head
         self.norm_layer = AdaptiveLN(self.embed_dim)
+        self.local_shortcut = True
 
     def forward(self, input, timestamp, const=None):
         input = input[:, -self.in_frames :]  # bxTxcxhxw
@@ -274,58 +278,46 @@ class GroupEncoder(UTransformer):
         resized_input = rearrange(resized_input, "(n t) c h w -> n t c h w", n=batch_size)
         h = self.patch_embed(resized_input, const)
         shortcut = h
-        embed = self.get_embed(timestamp)
-        for i, blk in enumerate(self.layers):
-            h = getattr(self, f"drop{i}")(h, self.drop_mcmc)
-            if "rotary" in self.attn_type:
-                h = blk(
-                    h,
-                    time_embedding=embed,
-                    freqs_cos=self.freqs_cos,
-                    freqs_sin=self.freqs_sin,
-                )
-            else:
-                h = blk(h, time_embedding=embed)
-        h = self.norm_layer(h, embed) + shortcut
-        return h
+        if self.hierarchical and self.down_times:
+            h, stages = self.forward_features(h, timestamp, return_stages=True, norm=self.norm_layer)
+            return h, {index: stage for index, stage in enumerate(reversed(stages[:-1]), start=1)}
+        h = self.forward_features(h, timestamp, norm=self.norm_layer)
+        if self.local_shortcut:
+            return h + shortcut
+        return h, shortcut
 
 
 @MODELS.register()
 class GroupDecoder(UTransformer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        if self.up_times:
+            # The parent only builds internal skips; decoder skips come from the external encoder.
+            for index in range(1, self.num_layers):
+                self.skip_projections[str(index)] = nn.Linear(2 * self.stage_dims[index], self.stage_dims[index])
         self.output_features = False
         self.norm_layer = AdaptiveLN(self.embed_dim)
-        if hasattr(self, "patch_embed"):
-            del self.patch_embed
+        del self.patch_embed
 
-    def forward(self, latent_h, timestamp=None, const=None):
-        h = latent_h
-        shortcut = h
+    def _get_stage_sizes(self, down_factors, up_factors):
+        if down_factors:
+            raise ValueError("GroupDecoder supports upsampling stages only.")
+        sizes = super()._get_stage_sizes(list(reversed(up_factors)), [])
+        return list(reversed(sizes))
+
+    def forward(self, latent_h, timestamp=None, const=None, patch_shortcut=None):
         ih, iw = self.image_size
-        embed = self.get_embed(timestamp)
-
-        for i, blk in enumerate(self.layers):
-            h = getattr(self, f"drop{i}")(h, self.drop_mcmc)
-            if "rotary" in self.attn_type:
-                h = blk(
-                    h,
-                    time_embedding=embed,
-                    freqs_cos=self.freqs_cos,
-                    freqs_sin=self.freqs_sin,
-                )
-            else:
-                h = blk(h, time_embedding=embed)
-
-        h = self.norm_layer(h, embed) + shortcut
-        h = rearrange(h, "n (h w) c -> n c h w", h=self.feat_size[0])
+        h = self.forward_features(latent_h, timestamp, stage_shortcuts=patch_shortcut if self.up_times else None, norm=self.norm_layer)
+        if not self.up_times:
+            h = h + (latent_h if patch_shortcut is None else patch_shortcut)
+        h = rearrange(h, "n (h w) c -> n c h w", h=self.stage_sizes[-1][0])
         if self.output_features:
             return h
         h = F.pad(h, (0, 0, 0, 1))
 
         pred = self.head(h, need_rearrange=False)
         pred = pred[:, :, :ih, :iw]
-        if pred.shape[-2:] != [ih, iw]:
+        if pred.shape[-2:] != (ih, iw):
             pred = F.interpolate(
                 pred.float(),
                 size=(ih, iw),
@@ -395,6 +387,7 @@ class LatentMixerPredictor(UTransformer):
         ffn_type: str = "gegluffn",
         layer_type: str = "mamba_embed",
         use_projection: bool = True,
+        use_year_embed: bool = False,
         group_norm_mode: str = "none",
         **kwargs: Any,
     ) -> None:
@@ -425,6 +418,7 @@ class LatentMixerPredictor(UTransformer):
             norm_type=norm_type,  # critical: normalization
             ffn_type=ffn_type,  # critical: feed-forward
             layer_type=layer_type,  # critical: block type
+            use_year_embed=use_year_embed,
         )
         del self.patch_embed
         del self.head
@@ -467,14 +461,8 @@ class LatentMixerPredictor(UTransformer):
                 torch.lerp(x, F.layer_norm(x.float(), (d,), eps=1e-6).to(x), strength.to(x)) for x, d, strength in zip(h_states, self.latent_dim, strengths)
             ]
         h = torch.cat(mixer_states, dim=-1)
-        time_embedding = self.get_embed(timestamp)
         shortcut = h_states
-        for i, blk in enumerate(self.layers):
-            h = getattr(self, f"drop{i}")(h, self.drop_mcmc)
-            if "rotary" in self.attn_type:
-                h = blk(h, time_embedding=time_embedding, freqs_cos=self.freqs_cos, freqs_sin=self.freqs_sin)
-            else:
-                h = blk(h, time_embedding=time_embedding)
+        h = self.forward_features(h, timestamp)
         if self.group_projs is not None:
             outputs = [proj(h) for proj in self.group_projs]
             outputs = [out + sc for out, sc in zip(outputs, shortcut)]  # residual connection in latent space
@@ -511,7 +499,7 @@ class _BaseGroupVAE(BasePredictor):
         image_size: tuple[int, int] = (120, 240),
         window_size: int = 10,
         patch_size: int = 2,
-        down_times: int = 0,
+        down_times: int | list[int] = 0,
         encoder_depths: list[int] = [6, 6],
         decoder_depths: list[int] = [12],
         num_heads: int = 6,
@@ -530,6 +518,7 @@ class _BaseGroupVAE(BasePredictor):
         vt_layer_type: str = "swin",
         vt_use_proj: bool = True,
         vt_group_norm_mode: str = "none",
+        patch_decoder_shortcut: bool = False,
         residual_vae_indices: list[int] | None = None,
         alpha: float = 1.0,
         loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
@@ -562,7 +551,9 @@ class _BaseGroupVAE(BasePredictor):
         self.amse_weight = float(amse_weight)
         if not math.isfinite(self.amse_weight) or self.amse_weight < 0:
             raise ValueError("amse_weight must be finite and nonnegative")
-        self.amse_loss = SphericalAMSELoss(image_size) if self.amse_weight > 0 else None
+        # Both spherical losses operate on the native output grid, not the encoder grid.
+        spectral_image_size = image_size if spectral_image_size is None else spectral_image_size
+        self.amse_loss = SphericalAMSELoss(spectral_image_size) if self.amse_weight > 0 else None
         self.latent_dyn_weight = float(latent_dyn_weight)
         self.spectral_loss_weight = float(spectral_loss_weight)
         if not math.isfinite(self.spectral_loss_weight) or self.spectral_loss_weight < 0:
@@ -582,7 +573,6 @@ class _BaseGroupVAE(BasePredictor):
             if set(spectral_indices).intersection(self.logid):
                 raise ValueError("Spectral loss expects linearly normalized channels, not log-transformed channels")
             self.register_buffer("spectral_channel_indices", torch.tensor(spectral_indices, dtype=torch.long), persistent=False)
-            spectral_image_size = image_size if spectral_image_size is None else spectral_image_size
             self.spectral_loss = SphericalBandPowerLoss(spectral_image_size, bands=spectral_loss_bands)
             self.logger.info(f"Spectral loss: weight={self.spectral_loss_weight}, channels={spectral_loss_names}, bands={self.spectral_loss.bands}")
         self.const_chans = const_chans
@@ -634,36 +624,28 @@ class _BaseGroupVAE(BasePredictor):
         for gi, group_indices in enumerate(self.group_slice_indices):
             self.register_buffer(f"group_indices_{gi}", torch.tensor(group_indices, dtype=torch.long), persistent=False)
 
-        common_encoder_kwargs = dict(
+        down_factors = [] if isinstance(down_times, int) else list(down_times)
+        sampled = bool(down_factors)
+        common_kwargs = dict(
             image_size=image_size,
             in_frames=self.in_frames,
-            const_chans=self.const_chans,
             window_size=window_size,
             patch_size=patch_size,
-            down_times=down_times,
-            depths=encoder_depths,
             num_heads=num_heads,
-            drop_mcmc=drop_mcmc * 2,
             attn_type=attn_type,
             mask_type=mask_type,
             norm_type=norm_type,
             ffn_type=ffn_type,
             layer_type=layer_type,
         )
-        common_decoder_kwargs = dict(
-            image_size=image_size,
+        encoder_kwargs = dict(common_kwargs, const_chans=self.const_chans, down_times=down_times, depths=encoder_depths, drop_mcmc=drop_mcmc * 2)
+        decoder_kwargs = dict(
+            common_kwargs,
             out_frames=self.out_frames,
-            window_size=window_size,
-            patch_size=patch_size,
-            down_times=down_times,
+            down_times=0 if sampled else down_times,
+            up_times=list(reversed(down_factors)) if sampled else None,
             depths=decoder_depths,
-            num_heads=num_heads,
-            attn_type=attn_type,
-            mask_type=mask_type,
             head_type=head_type,
-            norm_type=norm_type,
-            ffn_type=ffn_type,
-            layer_type=layer_type,
         )
 
         vae_encoder_list: list[GroupEncoder] = []
@@ -671,26 +653,34 @@ class _BaseGroupVAE(BasePredictor):
         decoder_list: list[GroupDecoder] = []
 
         for gi, group in enumerate(self.group_slice_indices):
-            group_chans = len(self.group_slice_indices[gi])
+            group_chans = len(group)
             group_embed_dim = self.embed_dims[gi]
 
-            vae_encoder = GroupEncoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, **common_encoder_kwargs)
+            vae_encoder = GroupEncoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, **encoder_kwargs)
             vae_encoder_list.append(vae_encoder)
 
-            posterior_encoder = GroupEncoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, **common_encoder_kwargs)
+            posterior_encoder = GroupEncoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, **encoder_kwargs)
             posterior_encoder_list.append(posterior_encoder)
 
-            decoder = GroupDecoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, in_frames=self.in_frames, **common_decoder_kwargs)
+            decoder = GroupDecoder(
+                embed_dim=group_embed_dim,
+                in_chans=group_chans,
+                out_chans=group_chans,
+                **decoder_kwargs,
+            )
             decoder.head = ConvHead(group_embed_dim, group_chans * self.out_frames, patch_size=patch_size)
             decoder_list.append(decoder)
 
         self.vae_encoder_group = nn.ModuleList(vae_encoder_list)
         self.posterior_encoder_group = nn.ModuleList(posterior_encoder_list)
         self.decoder_group = nn.ModuleList(decoder_list)
+        self.patch_decoder_shortcut = patch_decoder_shortcut or sampled
+        for module in (*self.vae_encoder_group, *self.posterior_encoder_group):
+            module.local_shortcut = not self.patch_decoder_shortcut
         self.joint_output_correction = JointFieldCorrection(self.out_chans, kernel_size=joint_kernel_size) if use_joint_correction else nn.Identity()
 
         self.latent_mixer = LatentMixerPredictor(
-            image_size=(image_size[0] // patch_size, image_size[1] // patch_size),
+            image_size=tuple(self.vae_encoder_group[0].stage_sizes[-1]),
             window_size=vt_window_size,
             latent_dim=self.embed_dims,
             num_heads=vt_num_heads,
@@ -730,13 +720,11 @@ class _BaseGroupVAE(BasePredictor):
         )
         if self.pretrain:
             self._configure_pretrain_trainable()
-        elif not self.compute_posterior_vae:
-            self.freeze(("posterior_encoder_group",))
 
     def _configure_pretrain_trainable(self) -> None:
         """Train the posterior encoder, decoder and optional correction.
 
-        `forward_pre_stage` does not use the prior encoder or latent mixer. Freezing
+        `forward_pretrain_stage` does not use the prior encoder or latent mixer. Freezing
         the unused branches avoids DDP unused-parameter reduction errors while
         keeping the complete reconstruction path trainable.
         """
@@ -778,12 +766,10 @@ class _BaseGroupVAE(BasePredictor):
         return flat.view(B, T, C, *target_hw)
 
     @final
-    def _encode_group(self, x_group: torch.Tensor, gi: int, timestamp: dict, is_prior: bool = True, const: torch.Tensor | None = None) -> torch.Tensor:
+    def _encode_group(
+        self, x_group: torch.Tensor, gi: int, timestamp: dict, is_prior: bool = True, const: torch.Tensor | None = None
+    ) -> torch.Tensor | tuple[torch.Tensor, _GroupShortcut]:
         return (self.vae_encoder_group[gi] if is_prior else self.posterior_encoder_group[gi])(x_group, timestamp, const=const)
-
-    @final
-    def _decode_group(self, h_state: torch.Tensor, gi: int, timestamp: dict, const: torch.Tensor | None = None) -> torch.Tensor:
-        return self.decoder_group[gi](h_state, timestamp=timestamp, const=const)
 
     def _set_decoder_lora_step(self, lora_step: int | None) -> None:
         if lora_step is None:
@@ -803,33 +789,21 @@ class _BaseGroupVAE(BasePredictor):
         timestamp: dict,
         const: torch.Tensor | None = None,
         is_prior: bool = True,
-    ) -> list:
-        """Encode all groups from input tensor.
-
-        This method returns per-group latent states produced by the fixed
-        internal encoder path. For frozen groups, encoding is done in no_grad
-        context to avoid storing activations.
-
-        Args:
-            x: Input tensor (B, T, C, H, W)
-            timestamp: Timestamp dict
-            const: Optional constant tensor
-            is_prior: Whether to use prior or posterior encoder
-
-        Returns:
-            List of latent states from _encode_group.
-        """
+    ) -> list | tuple[list, list[_GroupShortcut]]:
+        """Encode each group, returning shortcuts when decoder routing is enabled."""
         results_by_group = []
+        shortcuts: list[_GroupShortcut] = []
         for gi in range(self.num_groups):
             x_group = self._prepare_group_input(x, gi)
-            # Use no_grad for frozen encoders to skip activation storage (major memory savings)
-            if self._is_group_frozen(gi, is_prior=is_prior):
-                with torch.no_grad():
-                    result = self._encode_group(x_group, gi, timestamp, is_prior=is_prior, const=const)
-                    result = result.detach()
-            else:
+            frozen = self._is_group_frozen(gi, is_prior=is_prior)
+            with torch.set_grad_enabled(torch.is_grad_enabled() and not frozen):
                 result = self._encode_group(x_group, gi, timestamp, is_prior=is_prior, const=const)
+            if isinstance(result, tuple):
+                result, shortcut = result
+                shortcuts.append(shortcut)
             results_by_group.append(result)
+        if self.patch_decoder_shortcut:
+            return results_by_group, shortcuts
         return results_by_group
 
     @final
@@ -839,32 +813,18 @@ class _BaseGroupVAE(BasePredictor):
         timestamp: dict,
         const: torch.Tensor | None = None,
         lora_step: int | None = None,
+        shortcuts: list[_GroupShortcut] | None = None,
     ) -> list[torch.Tensor]:
-        """Decode all groups from latent states.
-
-        This path assumes each entry in `h_states` is directly consumable by
-        `_decode_group`. For frozen decoders, h_states are detached to prevent
-        gradient flow into frozen decoder parameters, saving activation memory.
-
-        Args:
-            h_states: List of latent states (B, N, D) for each group
-            timestamp: Timestamp dict
-            const: Optional constant tensor
-
-        Returns:
-            List of decoded outputs (B, 1, C_g, H, W) for each group
-        """
+        """Decode groups with their matching encoder shortcuts."""
         self._set_decoder_lora_step(lora_step)
         outputs_by_group = []
-        for gi, h_state in enumerate(h_states):
-            # For frozen decoders, detach h_states to avoid gradient accumulation in frozen parameters
-            # This saves activation memory while allowing gradients to backprop through the model
-            if not any(p.requires_grad for p in self.decoder_group[gi].parameters()):
-                h_input = h_state.detach()
-            else:
-                h_input = h_state
-            out_group = self._decode_group(h_input, gi, timestamp, const=const)
-            outputs_by_group.append(out_group)
+        for gi, (decoder, h_state) in enumerate(zip(self.decoder_group, h_states, strict=True)):
+            shortcut = None if shortcuts is None else shortcuts[gi]
+            if not any(p.requires_grad for p in decoder.parameters()):
+                h_state = h_state.detach()
+                if shortcut is not None:
+                    shortcut = {index: value.detach() for index, value in shortcut.items()} if isinstance(shortcut, dict) else shortcut.detach()
+            outputs_by_group.append(decoder(h_state, timestamp=timestamp, const=const, patch_shortcut=shortcut))
         return outputs_by_group
 
     def _assemble_prediction(
@@ -896,8 +856,11 @@ class _BaseGroupVAE(BasePredictor):
         timestamp = self.get_timestamp(input, times, t)
         timestamp_target = self.get_timestamp(input, times, t + self.out_frames)
         h_states = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
+        shortcuts = None
+        if self.patch_decoder_shortcut:
+            h_states, shortcuts = h_states
         z_coupled = self.latent_mixer(h_states, timestamp_target)
-        group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames)
+        group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames, shortcuts=shortcuts)
         output = self._assemble_prediction(group_outputs, input)
         next_input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
         return output, next_input
@@ -1001,6 +964,7 @@ class _BaseGroupVAE(BasePredictor):
         large: float = 0.08,
         alpha_amp: float = 0.05,
         min_scale: float = 0.08,
+        shortcuts: list[_GroupShortcut] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if small <= 0.0 or large <= small:
             raise ValueError(f"MCR perturbation scales must satisfy 0 < small < large, got small={small}, large={large}.")
@@ -1016,9 +980,9 @@ class _BaseGroupVAE(BasePredictor):
             h1_states.append(h1)
             h2_states.append(h2)
 
-        outputs0 = self._decode_all_groups(h_states, timestamp, const=const, lora_step=lora_step)
-        outputs1 = self._decode_all_groups(h1_states, timestamp, const=const, lora_step=lora_step)
-        outputs2 = self._decode_all_groups(h2_states, timestamp, const=const, lora_step=lora_step)
+        outputs0 = self._decode_all_groups(h_states, timestamp, const=const, lora_step=lora_step, shortcuts=shortcuts)
+        outputs1 = self._decode_all_groups(h1_states, timestamp, const=const, lora_step=lora_step, shortcuts=shortcuts)
+        outputs2 = self._decode_all_groups(h2_states, timestamp, const=const, lora_step=lora_step, shortcuts=shortcuts)
 
         x0 = self._assemble_prediction(outputs0, reference_input)
         x1 = self._assemble_prediction(outputs1, reference_input)
@@ -1035,7 +999,7 @@ class _BaseGroupVAE(BasePredictor):
         loss_mcr = alpha_amp * amp + curv
         return loss_mcr, x0
 
-    def forward_pre_stage(self, data):
+    def forward_pretrain_stage(self, data):
         """VAE-only pretraining stage.
 
         Uses the posterior path to reconstruct the tail of the input window.
@@ -1056,6 +1020,10 @@ class _BaseGroupVAE(BasePredictor):
         # Encode clean and augmented inputs using the posterior path.
         h_clean_by_group = self._encode_all_groups(input, timestamp, const=const, is_prior=False)
         h_aug_by_group = self._encode_all_groups(aug_input, timestamp, const=const, is_prior=False)
+        clean_shortcuts = aug_shortcuts = None
+        if self.patch_decoder_shortcut:
+            h_clean_by_group, clean_shortcuts = h_clean_by_group
+            h_aug_by_group, aug_shortcuts = h_aug_by_group
 
         # Decode both views and reconstruct the clean tail frames.
         loss_mcr, recon_clean = self._pretrain_mcr_loss(
@@ -1065,9 +1033,10 @@ class _BaseGroupVAE(BasePredictor):
             const=const,
             lora_step=self.start_frames,
             pool_size=8 if input.shape[-2] >= 256 else 4,
+            shortcuts=clean_shortcuts,
         )
         recon_clean = recon_clean[:, -self.out_frames :]
-        rec_aug_by_group = self._decode_all_groups(h_aug_by_group, timestamp, const=const, lora_step=self.start_frames)
+        rec_aug_by_group = self._decode_all_groups(h_aug_by_group, timestamp, const=const, lora_step=self.start_frames, shortcuts=aug_shortcuts)
         recon_aug = self._assemble_prediction(rec_aug_by_group, recon_base)[:, -self.out_frames :]
 
         # Prepare weight for loss computation
@@ -1098,7 +1067,7 @@ class _BaseGroupVAE(BasePredictor):
             return self.test(data)
 
         if self.pretrain:
-            return self.forward_pre_stage(data)
+            return self.forward_pretrain_stage(data)
 
         if rollout_state is None:
             targets = data["targets"][:, : data.get("future_frames", self.out_frames)]
@@ -1214,13 +1183,16 @@ class _BaseGroupVAE(BasePredictor):
             timestamp_target = self.get_timestamp(input, times, t + self.out_frames)
 
             h_prior_states = self._encode_all_groups(input, timestamp, const=const, is_prior=True)
+            prior_shortcuts = None
+            if self.patch_decoder_shortcut:
+                h_prior_states, prior_shortcuts = h_prior_states
             # The prior always drives forecasting, independently of reconstruction.
             if self.compute_latent_reg:
                 for h_prior in h_prior_states:
                     loss_latent_reg += block_weight * h_prior.square().mean() / self.num_groups
 
             if self.compute_prior_vae:
-                vae_input_groups = self._decode_all_groups(h_prior_states, timestamp, const=const, lora_step=t)
+                vae_input_groups = self._decode_all_groups(h_prior_states, timestamp, const=const, lora_step=t, shortcuts=prior_shortcuts)
                 vae_input_base = true_input[:, -self.out_frames - 1 : -1]
                 vae_input_recon = self._assemble_prediction(vae_input_groups, vae_input_base)
                 vae_input_target = true_input[:, -self.out_frames :]
@@ -1230,7 +1202,12 @@ class _BaseGroupVAE(BasePredictor):
             if self.compute_posterior_vae:
                 new_target = self._build_posterior_input(true_input, target)
                 h_posterior_states = self._encode_all_groups(new_target, timestamp_target, const=const, is_prior=False)
-                vae_target_groups = self._decode_all_groups(h_posterior_states, timestamp_target, const=const, lora_step=t + self.out_frames)
+                posterior_shortcuts = None
+                if self.patch_decoder_shortcut:
+                    h_posterior_states, posterior_shortcuts = h_posterior_states
+                vae_target_groups = self._decode_all_groups(
+                    h_posterior_states, timestamp_target, const=const, lora_step=t + self.out_frames, shortcuts=posterior_shortcuts
+                )
                 vae_target_base = new_target[:, -self.out_frames - 1 : -1]
                 vae_target_recon = self._assemble_prediction(vae_target_groups, vae_target_base)
                 loss_vae_target += block_weight * charbonnier_loss(vae_target_recon, target, weight=self.weight)
@@ -1241,14 +1218,13 @@ class _BaseGroupVAE(BasePredictor):
                     for predicted, posterior in zip(z_coupled, h_posterior_states):
                         loss_latent_pred_rec += block_weight * charbonnier_loss(predicted, posterior.detach())
 
-            group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames)
+            group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames, shortcuts=prior_shortcuts)
             output = self._assemble_prediction(group_outputs, input)
             if self.amse_weight > 0:
                 loss_amse += block_weight * self.amse_loss(output, target, channel_weights=self.channel_weights if "channel_weights" in self._buffers else None)
             if self.compute_spectral_loss:
                 loss_spectral += block_weight * self.spectral_loss(
-                    output.index_select(2, self.spectral_channel_indices),
-                    target.index_select(2, self.spectral_channel_indices),
+                    output.index_select(2, self.spectral_channel_indices), target.index_select(2, self.spectral_channel_indices)
                 )
             if self.compute_latent_dyn:
                 loss_latent_dyn_consistency += block_weight * field_dynamics_consistency_loss(
@@ -1313,6 +1289,8 @@ class _BaseGroupVAE(BasePredictor):
         input = data["input"]
         times = data["times"]
         const = data["const"] if self.const_chans > 0 else None
+        if self.pretrain:
+            data["targets"] = input[:, -1:, self.test_chans].expand(-1, len(self.test_frames), -1, -1, -1)
         total_step = max(self.test_frames) + self.start_frames
         test_frame_to_idx = {int(frame): idx for idx, frame in enumerate(self.test_frames)}
         self.logger.debug(f"Testing cascade: total_step={total_step}, stride={self.forecast_stride}, input.shape={input.shape}")
@@ -1333,18 +1311,18 @@ class _BaseGroupVAE(BasePredictor):
             new_input = input.clone()
             new_input[~torch.isfinite(new_input)] = 0.0
             for t in range(self.start_frames, total_step, self.forecast_stride):
-                if self.pretrain and "targets" in data:
-                    k = t - self.start_frames
-                    target = data["targets"][:, k : k + self.out_frames].to(new_input)
-                    if target.shape[1] != self.out_frames:
-                        break
-                    target_input = self._build_posterior_input(new_input, target)
-                    timestamp_target = self.get_timestamp(new_input, times, t + self.out_frames)
+                if self.pretrain:
+                    target = new_input[:, -self.out_frames :]
+                    target_input = self._build_posterior_input(new_input[:, : -self.out_frames], target)
+                    timestamp_target = self.get_timestamp(new_input, times, t)
                     h_states = self._encode_all_groups(target_input, timestamp_target, const=const, is_prior=False)
-                    group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const, lora_step=t + self.out_frames)
+                    shortcuts = None
+                    if self.patch_decoder_shortcut:
+                        h_states, shortcuts = h_states
+                    group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const, lora_step=t, shortcuts=shortcuts)
                     target_base = target_input[:, -self.out_frames - 1 : -1]
                     output = self._assemble_prediction(group_outputs, target_base)
-                    new_input = torch.cat([new_input, output], dim=1)[:, -self.in_frames :]
+                    new_input = torch.cat([new_input[:, :-1], output[:, -1:]], dim=1)
                 else:
                     output, new_input = self._predict_next(new_input, times, t, const=const)
 
@@ -1398,9 +1376,12 @@ class _BaseGroupVAE(BasePredictor):
         )
 
         h_states = self._encode_all_groups(new_input, timestamp, const=const, is_prior=True)
+        shortcuts = None
+        if self.patch_decoder_shortcut:
+            h_states, shortcuts = h_states
 
         Z_coupled = self.latent_mixer(h_states, timestamp_target)
-        group_outputs = self._decode_all_groups(Z_coupled, timestamp_target, const=const)
+        group_outputs = self._decode_all_groups(Z_coupled, timestamp_target, const=const, shortcuts=shortcuts)
         output = self._assemble_prediction(group_outputs, new_input)
 
         output = self.inv_normalize(output)

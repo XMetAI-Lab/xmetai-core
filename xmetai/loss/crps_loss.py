@@ -6,7 +6,9 @@ import torch.distributed as dist
 from torch.utils.checkpoint import checkpoint
 
 __all__ = [
-    "afcrps_loss_lite",
+    "crps_loss",
+    "afcrps_loss",
+    "multiscale_afcrps_loss",
 ]
 
 
@@ -33,66 +35,59 @@ def all_gather_grad(x, group=None):
     return xs
 
 
-def fcrps_loss_lite(output: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """lite version of fire CRPS loss to reduce memory usage
-    Args:
-        output (torch.Tensor): predict member with same target/observation in dimension BxTxCxHxW.
-        target (torch.Tensor): observation tensor in dimension BxTxCxHxW.
-        weight (torch.Tensor, optional): weight for loss calculation. Defaults to None. Maybe latitude weights.
+def crps_loss(output: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Sorted empirical CRPS, gathering one member per rank (BxTxCxHxW).
+
+    All ranks must share the observation. A single member reduces to MAE.
+    Weights broadcast over fields; reduction is mean(score * weight), not
+    normalization by the sum of weights. All public scores use this convention.
     """
-    # output: (B, T, C, H, W)
-    # all_gather_grad will stack along dim=0, yielding outputs shape: (num_gpus, B, T, C, H, W)
-    outputs = all_gather_grad(output)
-
-    # Check if gathered correctly
-    if dist.is_initialized() and outputs.shape[0] != dist.get_world_size():
-        # Fallback if somehow not running in fully initialized distributed mode
-        outputs = outputs.unsqueeze(0)
-
-    members = outputs.shape[0]
-    if members < 2:
-        return torch.tensor(0.0, device=output.device, dtype=output.dtype)
-
-    weight_idx = torch.arange(1, members, device=output.device, dtype=output.dtype)
-    pred_weight = (weight_idx * (members - weight_idx)).view(-1, *([1] * (outputs.dim() - 1)))
-
-    sorted_outputs = outputs.sort(dim=0).values
-    diff = torch.sum((sorted_outputs[1:] - sorted_outputs[:-1]) * pred_weight, dim=0) / (members * (members - 1))
-    crps = torch.abs(outputs - target.unsqueeze(0)).mean(0) - diff
-    if weight is not None:
-        loss = torch.mean(crps * weight)
-    else:
-        loss = torch.mean(crps)
-    return loss
+    return _distributed_crps(output, target, weight, 0.0, [])
 
 
-def afcrps_loss_lite(
+def afcrps_loss(output: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor] = None, alpha: float = 0.95) -> torch.Tensor:
+    """Sorted almost-fair CRPS (AIFS-ENS).
+
+    For M >= 2, alpha=0 gives empirical CRPS and alpha=1 gives fair CRPS.
+    A single member gives MAE for alpha=0 and differentiable zero otherwise.
+    Input and weight conventions match :func:`crps_loss`.
+    """
+    return _distributed_crps(output, target, weight, alpha, [])
+
+
+def multiscale_afcrps_loss(
     output: torch.Tensor,
     target: torch.Tensor,
     weight: Optional[torch.Tensor] = None,
     alpha: float = 0.95,
-    filter_scales: list[float] = [],
+    filter_scales: Optional[list[float]] = None,
 ) -> torch.Tensor:
-    """Lite version of afCRPS (AIFS-ENS) loss to reduce memory usage.
-    This mirrors :func:`afcrps_loss` but avoids constructing full member-by-member tensors.
+    """Sum sorted afCRPS over Gaussian bands, without an extra full-field term.
 
-    ``filter_scales`` specifies Gaussian standard deviations in grid spacings.
-    An empty list preserves the original full-field score. Positive,
-    distinct scales are sorted from coarse to fine. For [16, 8], the equally
-    weighted scored fields are D16(x), D8(x)-D16(x), and x-D8(x), with the same
-    decomposition applied to the target. No full-field term is added.
+    For [16, 8], score D16(x), D8(x)-D16(x), and x-D8(x), applying the same
+    decomposition to the target. Bands have unit weight and are summed, not
+    averaged. Empty scales give the full-field score. Scales are positive,
+    distinct Gaussian standard deviations in grid spacings, sorted internally.
+    Set alpha=0 for empirical CRPS or alpha=1 for fair CRPS in each band.
 
-    Filtering retains the grid resolution and follows input dtype and autocast. It assumes
-    a global regular latitude-longitude grid containing both poles and an even
-    number of longitudes without a duplicate endpoint. The separable grid-space
-    Gaussian is an approximation, not the paper's MIR spherical-distance filter.
-
-    The ensemble is gathered once in its original dtype. All batch/time/channel fields
-    are filtered together without forced upcasting. A single non-reentrant checkpoint
-    recomputes filtering and scoring during backward rather than retaining multiscale
-    activations. Recomputed intermediates span the full batch of fields.
+    Filtering requires a global regular lat-lon grid containing both poles and
+    even longitudes without a duplicate endpoint. This separable grid-space
+    Gaussian approximates, rather than implements, the MIR spherical filter.
+    Dtype/autocast are preserved. One gather and a non-reentrant checkpoint
+    avoid retaining multiscale activations, recomputing all fields in backward.
+    Input and weight conventions match :func:`crps_loss`.
     """
-    scales = sorted(filter_scales, reverse=True)
+    return _distributed_crps(output, target, weight, alpha, filter_scales)
+
+
+def _distributed_crps(
+    output: torch.Tensor,
+    target: torch.Tensor,
+    weight: Optional[torch.Tensor],
+    alpha: float,
+    filter_scales: Optional[list[float]],
+) -> torch.Tensor:
+    scales = sorted(filter_scales, reverse=True) if filter_scales is not None else []
     if any(not math.isfinite(scale) or scale <= 0 for scale in scales):
         raise ValueError("filter_scales must contain finite positive grid spacings.")
     if len(set(scales)) != len(scales):
@@ -105,8 +100,8 @@ def afcrps_loss_lite(
         outputs = outputs.unsqueeze(0)
 
     members = outputs.shape[0]
-    if members < 2:
-        return torch.tensor(0.0, device=output.device, dtype=output.dtype)
+    if members < 2 and alpha != 0.0:
+        return output.sum() * 0.0
 
     if not scales:
         return _afcrps_from_members(outputs, target, weight, alpha)
@@ -159,6 +154,9 @@ def _gaussian_filter_global(field: torch.Tensor, sigma: float) -> torch.Tensor:
 def _afcrps_from_members(outputs: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor], alpha: float) -> torch.Tensor:
     """Reduce an already gathered ensemble without further communication."""
     members = outputs.shape[0]
+    if members == 1:
+        crps = torch.abs(outputs[0] - target)
+        return torch.mean(crps * weight) if weight is not None else torch.mean(crps)
     epsilon = (1.0 - alpha) / members
 
     # First term: average absolute deviation from observation across members.
@@ -174,48 +172,4 @@ def _afcrps_from_members(outputs: torch.Tensor, target: torch.Tensor, weight: Op
     crps = coef * (2.0 * (members - 1) * abs_err_sum - (1.0 - epsilon) * pairwise_sum)
 
     loss = torch.mean(crps * weight) if weight is not None else torch.mean(crps)
-    return loss
-
-
-def afcrps_loss(output: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor] = None, alpha: float = 0.95) -> torch.Tensor:
-    """almost fire CRPS loss according to AIFS-ENS(2412.15832)
-    Args:
-        output (torch.Tensor): predict member with same target/observation in dimension BxTxCxHxW.
-        target (torch.Tensor): observation tensor in dimension BxTxCxHxW.
-        weight (torch.Tensor, optional): weight for loss calculation. Defaults to None. Maybe latitude weights.
-        alpha (float, optional): inflation coefficient. Defaults to 0.95.
-    """
-    outputs = all_gather_grad(output)  # (members, B, T, C, H, W)
-    if dist.is_initialized() and outputs.shape[0] != dist.get_world_size():
-        outputs = outputs.unsqueeze(0)
-
-    members = outputs.shape[0]
-    if members < 2:
-        return torch.tensor(0.0, device=output.device, dtype=output.dtype)
-
-    epsilon = (1.0 - alpha) / members
-    # var shape: (members, members, B, T, C, H, W)
-    var = torch.abs(outputs.unsqueeze(dim=0) - outputs.unsqueeze(dim=1))
-
-    diag = torch.eye(members, dtype=torch.bool, device=output.device)
-    # diag shape expanding for (members, members, 1, ...)
-    for _ in range(outputs.dim() - 1):
-        diag = diag.unsqueeze(dim=-1)
-
-    # target unsqueeze for member dim: (1, B, ...)
-    # then outputs - target -> (members, B, ...)
-    # expand over new member dim -> (members, members, B, ...)
-    err_abs = torch.abs(outputs - target.unsqueeze(0))
-    err_r = err_abs.unsqueeze(1).expand(members, members, *outputs.shape[1:])
-
-    mem_err = err_r * ~diag
-    mem_err_transpose = mem_err.transpose(0, 1)
-
-    coef = 1.0 / (2.0 * members * (members - 1))
-    crps = coef * torch.sum(mem_err + mem_err_transpose - (1 - epsilon) * var, dim=(0, 1))
-
-    if weight is not None:
-        loss = torch.mean(crps * weight)
-    else:
-        loss = torch.mean(crps)
     return loss
