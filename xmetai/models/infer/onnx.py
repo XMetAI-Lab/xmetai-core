@@ -13,10 +13,9 @@ import numpy as np
 import pandas as pd
 import torch
 
+from xmetai.core.base_predictor import BasePredictor
 from xmetai.registries import MODELS
 from xmetai.utils import get_local_rank
-
-from .base_predictor import BasePredictor
 
 logger = logging.getLogger(__name__)
 

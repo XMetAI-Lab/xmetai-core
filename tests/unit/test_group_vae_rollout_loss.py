@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 import torch
 
-from xmetai.models.group_vae import _BaseGroupVAE
+from xmetai.models.tongyun.tongyun import _BaseGroupVAE
 
 
 def _build_tiny_group_vae(
@@ -244,36 +244,6 @@ def test_latent_regularization_is_rollout_normalized_and_posterior_gated(posteri
             handle.remove()
 
 
-@pytest.mark.parametrize("image_size,bands", [((17, 32), ((1, 2), (3, 4))), ((120, 240), ((1, 4), (5, 20), (21, 40), (41, 59)))])
-def test_spectral_loss_backpropagates_and_segments_sum_to_full_rollout(image_size, bands) -> None:
-    model = _build_tiny_group_vae(
-        0.0,
-        alpha=0.7,
-        rollout_max=-1,
-        image_size=image_size,
-        patch_size=2,
-        spectral_loss_weight=0.1,
-        spectral_loss_names=("x",),
-        spectral_loss_bands=bands,
-    ).train()
-    baseline = _build_tiny_group_vae(0.0, image_size=image_size, patch_size=2)
-    model.load_state_dict(baseline.state_dict(), strict=True)
-    batch = {"inputs": torch.randn(1, 2, 1, *image_size), "targets": torch.randn(1, 3, 1, *image_size), "times": torch.tensor([0]), "future_frames": 3}
-    # Dropout would otherwise make the two trajectories different.
-    model.eval()
-    model.training = True
-    full = model(batch)["loss_spectral"]
-    full.backward()
-    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.decoder_group.parameters())
-    total = 0.0
-    state = None
-    done = False
-    while not done:
-        losses, state, done = model(batch if state is None else None, rollout_state=state, rollout_segment_size=1)
-        total = total + losses["loss_spectral"].detach()
-    torch.testing.assert_close(total, full.detach())
-
-
 def test_disabled_posterior_is_not_executed() -> None:
     model = _build_tiny_group_vae(0.0, loss_weight=(0.0, 0.0, 1.0, 0.01, 1.0)).train()
     assert not any(p.requires_grad for p in model.posterior_encoder_group.parameters())
@@ -409,11 +379,10 @@ def test_invalid_amse_weight(weight):
         _build_tiny_group_vae(0.0, amse_weight=weight)
 
 
-@pytest.mark.parametrize("spectral_image_size", [None, (121, 240)])
-def test_amse_uses_native_grid_without_spectral_loss(spectral_image_size):
-    model = _build_tiny_group_vae(0.0, image_size=(120, 240), amse_weight=0.8, spectral_image_size=spectral_image_size)
-    expected_size = (120, 240) if spectral_image_size is None else spectral_image_size
-    assert model.spectral_loss is None
+@pytest.mark.parametrize("amse_image_size", [None, (121, 240)])
+def test_amse_uses_native_grid(amse_image_size):
+    model = _build_tiny_group_vae(0.0, image_size=(120, 240), amse_weight=0.8, amse_image_size=amse_image_size)
+    expected_size = (120, 240) if amse_image_size is None else amse_image_size
     assert model.amse_loss.image_size == expected_size
     output = torch.full((1, 1, 1, *expected_size), 1.1, requires_grad=True)
     loss = model.amse_loss(output, torch.ones_like(output))

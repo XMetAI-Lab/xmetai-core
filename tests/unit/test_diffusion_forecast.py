@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 
-from xmetai.models.diffusion_forecast import DiffusionForecast
+from xmetai.models.dit.dit import DiffusionForecast
 
 
 def _make_model(**kwargs):

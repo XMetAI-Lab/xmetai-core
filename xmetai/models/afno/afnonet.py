@@ -1,3 +1,9 @@
+"""AFNO weather predictor adapted to the XMetAI training contract.
+
+AFNO: https://arxiv.org/abs/2111.13587
+FourCastNet weather application: https://arxiv.org/abs/2202.11214
+"""
+
 from functools import partial
 
 import numpy as np
@@ -7,17 +13,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
+from xmetai.core.base_predictor import BasePredictor
 from xmetai.layers.afnonet_blocks import Block, PatchEmbed
 from xmetai.loss import charbonnier_loss
 from xmetai.registries import MODELS
-
-from .base_predictor import BasePredictor
 
 __all__ = ["AFNONet"]
 
 
 @MODELS.register()
 class AFNONet(BasePredictor):
+    """AFNO predictor (https://arxiv.org/abs/2111.13587) with XMetAI normalization and rollout.
+
+    Weather application: FourCastNet, https://arxiv.org/abs/2202.11214.
+    This is a framework adaptation, not the original pretrained model.
+    """
+
     def __init__(
         self,
         embed_dim=768,

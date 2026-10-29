@@ -10,8 +10,8 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import Checkpoi
 from xmetai.cli.train import build_model
 from xmetai.config import LazyConfig
 from xmetai.core.defaults import apply_model_activation_checkpointing, create_fsdp2_model
+from xmetai.core.meta import Meta
 from xmetai.layers.gated_deltanet2 import GatedDeltaNet2HybridLayer
-from xmetai.models.meta import Meta
 from xmetai.recipes import recipe_path
 
 

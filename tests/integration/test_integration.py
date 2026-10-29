@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from xmetai.layers.attention import Attention
-from xmetai.models.utransformer import UTransformer
+from xmetai.layers.utransformer import UTransformer
 
 
 class TestForwardPass:

@@ -11,12 +11,11 @@ import numpy as np
 import torch
 from einops import rearrange
 
+from xmetai.core.base_predictor import BasePredictor
 from xmetai.layers import set_lora_step
+from xmetai.layers.utransformer import UTransformer
 from xmetai.loss import charbonnier_loss
 from xmetai.registries import MODELS
-
-from .base_predictor import BasePredictor
-from .utransformer import UTransformer
 
 __all__ = [
     "ViTModel",

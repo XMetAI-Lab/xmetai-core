@@ -82,35 +82,20 @@ data/
 
 ## 模型简介
 
-### ViT (Vision Transformer模型)
+模型按家族组织在 `xmetai/models/` 下，每个子目录导出公共模型类并通过注册装饰器接入框架。配置仍集中保存在 `configs/`。
 
-ViT模型将天气预报问题视为视觉任务，使用Vision Transformer架构来处理气象数据。该模型能够捕捉全局依赖关系，并在处理高分辨率数据时表现出色。
+| 目录 | 模型与用途 |
+| --- | --- |
+| `tongyun/` | [TongYun](docs/tongyun/README.md) 特征分组 VAE 预测器；S2S 配置为 `configs/s2s_tongyun.py` |
+| `puyun/` | [PuYun](https://arxiv.org/abs/2409.02123) 大核卷积自回归预测器 |
+| `tianquan/` | [TianQuan-S2S](https://arxiv.org/abs/2504.09940) 气候态条件预测器 |
+| `afno/` | [AFNO](https://arxiv.org/abs/2111.13587) 频域预测器；天气应用参见 [FourCastNet](https://arxiv.org/abs/2202.11214) |
+| `dit/` | 条件扩散、Flow Matching 和 JiT 生成式预测器 |
+| `adapter/` | `ForecastAdapter`：冻结 ONNX 预报模型的残差订正适配器 |
+| `infer/` | ONNX 推理与集合评测 |
+| `tutorials/` | ViT/ViTEns 教学模型，示例配置为 `configs/s2s_vit.py` |
 
-- **特点**：
-  - 使用标准Vision Transformer 或 Mamba架构
-  - 支持时间嵌入以处理时间序列数据
-  - 可选Mamba风格的Transformer块
-  - 适用于确定性预报
-
-### ViTEns (使用集合训练的ViT模型)
-
-ViTEns模型通过在初始场中引入扰动来生成集合预报。该模型使用U-Transformer架构，并在潜在空间中进行扰动采样。
-
-- **特点**：
-  - 在初始场中引入扰动
-  - 使用U-Transformer作为主干网络
-  - 支持2D扰动采样
-  - 适用于集合预报生成
-
-### DiffusionForecast (扩散模型)
-
-DiffusionForecast模型基于扩散模型框架，通过逐步去噪过程生成天气预报。该模型使用UNet作为主干网络，并支持DDIM采样以提高推理速度。
-
-- **特点**：
-  - 基于扩散模型框架
-  - 使用UNet作为主干网络
-  - 支持DDIM快速采样
-  - 适用于高分辨率预报
+公共预测契约位于 `xmetai/core/`，可复用网络组件位于 `xmetai/layers/`。上述论文模型均适配了本框架的训练与评测接口。旧导入路径及订正模型名称的迁移说明见 [模型目录与导入迁移](docs/model_layout.md)。
 
 ---
 

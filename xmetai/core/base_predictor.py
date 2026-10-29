@@ -17,10 +17,9 @@ import torch
 import xarray as xr
 from torch import Tensor
 
+from xmetai.core.meta import Meta
 from xmetai.loss import ChannelRegistry, pinn_loss, precip_loss
 from xmetai.utils.events import get_event_storage, has_event_storage
-
-from .meta import Meta
 
 __all__ = ["BasePredictor"]
 

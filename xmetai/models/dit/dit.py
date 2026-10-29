@@ -8,12 +8,11 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from xmetai.core.base_predictor import BasePredictor
 from xmetai.layers import DarknetConvUNet2D
+from xmetai.layers.utransformer import UTransformer
 from xmetai.loss import charbonnier_loss
 from xmetai.registries import MODELS
-
-from .base_predictor import BasePredictor
-from .utransformer import UTransformer
 
 __all__ = ["ConditionalGenerativeForecast", "DiffusionForecast", "FlowMatchingForecast", "JiTForecast", "ODEGenerativeForecast"]
 

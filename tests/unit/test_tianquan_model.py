@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from xmetai.layers import FGA, SCA, DEConv, PEDadd_UViT, Perceiver3DDecoder, Perceiver3DEncoder
-from xmetai.models import TianQuan
+from xmetai.models.tianquan import TianQuan
 
 
 def test_perceiver3d_encoder_supports_none_static_vars():
@@ -103,7 +103,7 @@ def test_tianquan_export_onnx_not_supported(monkeypatch):
     class _DummyClimate:
         pass
 
-    monkeypatch.setattr("xmetai.models.tianquan.xr.open_zarr", lambda *args, **kwargs: _DummyClimate())
+    monkeypatch.setattr("xmetai.models.tianquan.tianquan.xr.open_zarr", lambda *args, **kwargs: _DummyClimate())
 
     model = TianQuan(
         default_vars=["v1", "v2"],

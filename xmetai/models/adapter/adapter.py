@@ -1,4 +1,4 @@
-"""Residual correction for frozen ONNX weather forecasts."""
+"""Forecast adaptation through learned residual correction of frozen ONNX forecasts."""
 
 from typing import Any, Mapping, Sequence, cast
 
@@ -10,15 +10,14 @@ from torch import Tensor
 
 from xmetai.layers import DarknetConvUNet2D
 from xmetai.loss import charbonnier_loss, precip_loss
+from xmetai.models.infer.onnx import OnnxInferModel
 from xmetai.registries import MODELS
 
-from .onnx_infer import OnnxInferModel
-
-__all__ = ["CorrectionModel"]
+__all__ = ["ForecastAdapter"]
 
 
 @MODELS.register()
-class CorrectionModel(OnnxInferModel):
+class ForecastAdapter(OnnxInferModel):
     """Correct selected channels from a frozen ONNX forecast with a Darknet U-Net.
 
     The ONNX model runs in physical space, while the corrector learns
@@ -39,9 +38,9 @@ class CorrectionModel(OnnxInferModel):
     ):
         super().__init__(**kwargs)
         if self.in_chans != self.out_chans:
-            raise ValueError(f"CorrectionModel requires in_chans == out_chans for autoregressive rollout, got {self.in_chans} and {self.out_chans}")
+            raise ValueError(f"ForecastAdapter requires in_chans == out_chans for autoregressive rollout, got {self.in_chans} and {self.out_chans}")
         if self.out_frames != 1:
-            raise ValueError(f"CorrectionModel currently requires out_frames=1, got {self.out_frames}")
+            raise ValueError(f"ForecastAdapter currently requires out_frames=1, got {self.out_frames}")
         if self.members <= 0:
             raise ValueError(f"members must be positive, got {self.members}")
         if len(self.test_frames) == 0 or any(frame <= 0 for frame in self.test_frames):

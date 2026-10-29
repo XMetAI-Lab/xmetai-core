@@ -6,8 +6,8 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from xmetai.models.afnonet import AFNONet
-from xmetai.models.base_predictor import BasePredictor
+from xmetai.core.base_predictor import BasePredictor
+from xmetai.models.afno import AFNONet
 
 
 def test_afnonet_forward_loss():

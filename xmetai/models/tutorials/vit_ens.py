@@ -11,9 +11,8 @@ import torch.nn.functional as F
 
 from xmetai.layers import DropPath
 from xmetai.loss import afcrps_loss, charbonnier_loss
+from xmetai.models.tutorials.vit import ViTModel
 from xmetai.registries import MODELS
-
-from .vit import ViTModel
 
 __all__ = [
     "get_exponential_weights",

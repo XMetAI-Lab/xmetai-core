@@ -13,7 +13,7 @@ import torch.nn as nn
 from xmetai.layers.gated_deltanet2 import GatedDeltaNet2HybridLayer, GatedDeltaNet2Layer
 
 try:
-    from xmetai.models.utransformer import UTransformer
+    from xmetai.layers.utransformer import UTransformer
 except Exception as e:
     pytest.skip(
         f"UTransformer import failed; skipping model tests: {e}",

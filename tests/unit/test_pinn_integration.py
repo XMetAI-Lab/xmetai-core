@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import torch
 
-from xmetai.models.base_predictor import BasePredictor
+from xmetai.core.base_predictor import BasePredictor
 
 
 class DummyPredictor(BasePredictor):

@@ -3,11 +3,11 @@
 """
 Author: DouZesheng && douzsh@gmail.com
 Date: 2026-03-06 12:00:00
-Description: Level-wise VAE predictor config for s2s experiments.
+Description: Feature-grouped TongYun predictor for S2S forecasting.
 
-Group 0 (1000hPa + surface): 16 channels (auto-detected from in_names)
-Group 1 (925-400hPa): 5 channels each (weight-shared across 6 levels)
-Group 2 (300-50hPa): 5 channels each (weight-shared across 6 levels)
+Uses residual-state, absolute-wind and absolute-scalar groups. This config
+requires TongYun weights; historical level-grouped GroupVAE checkpoints are
+not interchangeable. Use a separate OUTPUT_DIR for the new architecture.
 
 Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
@@ -44,7 +44,6 @@ from .s2s_base import (  # noqa: F401
 # set logging to debug level if needed
 logging.basicConfig(level=logging.INFO)
 
-vae_type = "index"
 if os.path.exists(f"{output_dir}/model_best.pth"):
     train.init_checkpoint = f"{output_dir}/model_best.pth"
 loss_weight = (0.2, 0.2, 1.0, 0.002, 0.8)  # (vae_input, vae_target, pred_rec, latent_reg, latent_pred_rec)
@@ -55,15 +54,10 @@ dataloader.train.dataset.hist_frames = in_frames
 dataloader.test.dataset.hist_frames = in_frames
 
 if load_from_pretrain:
-    # freeze upper-level VAE to preserve pretrained dynamics, only fine-tune lower-level VAE and main predictor.
+    # Resume TongYun rollout without the removed level-specific freezing policy.
     train.teacher_forcing.teach_start = 2
     train.teacher_forcing.teach_steps = 20
-    train.freeze = (
-        "posterior_encoder_group.1",
-        "posterior_encoder_group.2",
-        "vae_encoder_group.1",
-        "vae_encoder_group.2",
-    )
+    train.freeze = ()
     rollout_steps = train.teacher_forcing.teach_steps - train.teacher_forcing.teach_start + 1
     train.teacher_forcing.teach_iters = train.max_iter // rollout_steps
     train.eval_period = train.teacher_forcing.teach_iters
@@ -79,9 +73,6 @@ else:
     test_frames = [i for i in range(1, out_frames + 2)]
     dataloader.test.dataset.fcst_frames = test_frames
     dataloader.evaluator[0].test_times = [t * freq for t in test_frames]
-    if os.path.exists(f"{output_dir}/../pretrain/s2s_group_vae/model_final.pth"):
-        train.init_checkpoint = f"{output_dir}/../pretrain/s2s_group_vae/model_final.pth"
-        train.freeze = ("posterior_encoder_group",)
 
 
 ######################################################################
@@ -89,7 +80,7 @@ else:
 ######################################################################
 members = 1
 
-model = L(MODELS.get("GroupVAEPredictor"))(
+model = L(MODELS.get("TongYun"))(
     # UTransformer shared architecture params
     embed_dim=256,  # 3*embed_dim for mix predictor
     image_size=(120, 240),
@@ -105,11 +96,7 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     head_type="2fc",
     norm_type="adaln",
     ffn_type="gegluffn",
-    # VAE settings
-    vae_type=vae_type,
-    vae_residual_indices=["sst", "t2m"],
-    level_groups=[[0], [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]],
-    split_surface=False,
+    # Feature groups and absolute/residual modes use TongYun's defaults.
     # Vertical transformer settings for VAE latent prediction
     vt_num_heads=24,
     vt_num_layers=depths[-1],
@@ -120,7 +107,6 @@ model = L(MODELS.get("GroupVAEPredictor"))(
     # Overall model settings
     alpha=0.9,
     loss_weight=loss_weight,
-    spectral_loss_bands=((1, 4), (5, 20), (21, 40), (41, 59)),
     # BasePredictor params
     in_names=in_names,
     in_chans=in_chans,
@@ -149,4 +135,4 @@ model.buffers = "${buffers}"
 model.precision = "bf16"
 
 if export_onnx:
-    train.export_kwargs.save_name = os.path.join(output_dir, "s2s_group_vae.onnx")
+    train.export_kwargs.save_name = os.path.join(output_dir, "s2s_tongyun.onnx")
