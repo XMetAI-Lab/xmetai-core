@@ -9,7 +9,7 @@ from .radar_echo import FSS, LPIPS, RAPSD, SSIM, RadarFSS, RadarLPIPS, RadarRAPS
 from .radar_echo import __all__ as _radar_echo_all
 from .tcc import TCC
 from .tcc import __all__ as _tcc_all
-from .threshold import FalseAlarmRate, FrequencyBias, ProbabilityOfDetection, ThreatScore
+from .threshold import FalseAlarmRate, FrequencyBias, ProbabilityOfDetection, ThreatScore, ThreatScore_nan
 from .threshold import __all__ as _threshold_all
 
 __all__ = ["ForecastFidelity", *_ips_all, *_mse_all, *_ps_all, *_tcc_all, *_radar_echo_all, *_threshold_all]

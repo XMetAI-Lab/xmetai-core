@@ -1,7 +1,9 @@
+import math
+
 import pytest
 import torch
 
-from xmetai.metrics.threshold import FalseAlarmRate, FrequencyBias, ProbabilityOfDetection, ThreatScore
+from xmetai.metrics.threshold import FalseAlarmRate, FrequencyBias, ProbabilityOfDetection, ThreatScore, ThreatScore_nan
 
 
 def test_threshold_metrics_score_contingency_table():
@@ -83,3 +85,19 @@ def test_threshold_metrics_apply_value_scale_before_mm_threshold():
 def test_threshold_metrics_reject_non_positive_value_scale():
     with pytest.raises(ValueError, match="value_scale"):
         ThreatScore(thresholds=(10.0,), test_times=(6,), value_scale=0.0)
+
+
+def test_threat_score_nan_uses_competition_missing_value_convention():
+    metric = ThreatScore_nan(thresholds=(1.0,), test_times=(6, 12), neighborhood_size=1)
+    metric.reset()
+    output = torch.zeros(1, 2, 1, 2, 2)
+    target = torch.zeros_like(output)
+    output[0, 0, 0, 0, 0] = 1.0
+    target[0, 0, 0, 0, 0] = 1.0
+
+    metric.process({}, {"output": output, "target": target})
+    results = metric.evaluate()
+
+    assert results is not None
+    assert results["ThreatScore_nan"]["TS_nan@1"][0] == 1.0
+    assert math.isnan(results["ThreatScore_nan"]["TS_nan@1"][1])
