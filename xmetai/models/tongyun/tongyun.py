@@ -1,11 +1,9 @@
 """
 Author: DouZesheng && douzsh@gmail.com
 Date: 2026-03-06 12:00:00
-Description: TongYun feature-grouped latent state-space weather predictor.
+Description: Model Architecture Designed by XMetAI.
 
-The residual-state, wind and scalar groups have independent encoders and
-shared reconstruction/forecast decoders. A latent mixer couples the groups.
-Each group declares absolute or residual reconstruction semantics.
+See docs/tongyun/README.md for architecture and training details.
 
 Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
@@ -210,15 +208,14 @@ class ConvHead(nn.Module):
 
 
 class LatentMixerPredictor(UTransformer):
-    """Global attention coupling across spatial positions and pressure level groups.
-    Uses UTransformer's layer construction and operates on flattened latent group tokens
-    (Z: B, N, G, D -> B, N, G*D) to allow full spatial self-attention on the
-    concatenated level features. The parent UTransformer handles layer/block building;
-    we only care about self.layers in forward().
+    """Shared latent dynamics across groups.
+
+    Concatenate grouped latents (B, N, G, D -> B, N, G*D), apply the configured
+    UTransformer blocks, and project back to the individual groups.
 
     Args:
         latent_dim: embedding dimension (matches VAE latent dimension)
-        num_groups: number of pressure level groups (G dimension)
+        num_groups: number of latent groups (G dimension)
         num_heads: attention heads in transformer blocks
         num_layers: number of transformer block layers
         drop_mcmc: MC-Dropout rate
@@ -333,6 +330,8 @@ class LatentMixerPredictor(UTransformer):
 
 
 class _TongYunBase(BasePredictor):
+    """Model Architecture Designed by XMetAI; see docs/tongyun/README.md."""
+
     def __init__(
         self,
         const_chans: int = 0,
@@ -1215,11 +1214,9 @@ class _TongYunBase(BasePredictor):
 
 @MODELS.register()
 class TongYun(_TongYunBase):
-    """TongYun feature-grouped VAE with per-group absolute/residual reconstruction.
+    """Model Architecture Designed by XMetAI.
 
-    Residual groups encode two frames as ``[x_tm1, x_t - x_tm1]`` and decode a
-    residual target. Absolute groups encode ``[x_tm1, x_t]`` and decode
-    absolute fields directly. Group modes also select residual output channels.
+    See docs/tongyun/README.md for architecture and training details.
     """
 
     def __init__(

@@ -3,11 +3,9 @@
 """
 Author: DouZesheng && douzsh@gmail.com
 Date: 2026-03-06 12:00:00
-Description: Feature-grouped TongYun predictor for S2S forecasting.
+Description: Model Architecture Designed by XMetAI.
 
-Uses residual-state, absolute-wind and absolute-scalar groups. This config
-requires TongYun weights; historical level-grouped GroupVAE checkpoints are
-not interchangeable. Use a separate OUTPUT_DIR for the new architecture.
+See docs/tongyun/README.md for architecture and training details.
 
 Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
@@ -54,7 +52,7 @@ dataloader.train.dataset.hist_frames = in_frames
 dataloader.test.dataset.hist_frames = in_frames
 
 if load_from_pretrain:
-    # Resume TongYun rollout without the removed level-specific freezing policy.
+    # Resume TongYun rollout training.
     train.teacher_forcing.teach_start = 2
     train.teacher_forcing.teach_steps = 20
     train.freeze = ()
@@ -96,8 +94,8 @@ model = L(MODELS.get("TongYun"))(
     head_type="2fc",
     norm_type="adaln",
     ffn_type="gegluffn",
-    # Feature groups and absolute/residual modes use TongYun's defaults.
-    # Vertical transformer settings for VAE latent prediction
+    # Use TongYun's default reconstruction settings.
+    # Shared latent dynamics settings
     vt_num_heads=24,
     vt_num_layers=depths[-1],
     vt_layer_type="mamba3_met_embed",

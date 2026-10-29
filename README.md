@@ -86,7 +86,7 @@ data/
 
 | 目录 | 模型与用途 |
 | --- | --- |
-| `tongyun/` | [TongYun](docs/tongyun/README.md) 特征分组 VAE 预测器；S2S 配置为 `configs/s2s_tongyun.py` |
+| `tongyun/` | [TongYun](docs/tongyun/README.md)：Model Architecture Designed by XMetAI；S2S 配置为 `configs/s2s_tongyun.py` |
 | `puyun/` | [PuYun](https://arxiv.org/abs/2409.02123) 大核卷积自回归预测器 |
 | `tianquan/` | [TianQuan-S2S](https://arxiv.org/abs/2504.09940) 气候态条件预测器 |
 | `afno/` | [AFNO](https://arxiv.org/abs/2111.13587) 频域预测器；天气应用参见 [FourCastNet](https://arxiv.org/abs/2202.11214) |
