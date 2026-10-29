@@ -152,14 +152,6 @@ function setup_environment() {
         else
             export BASE_CONFIG="${CONFIG_FILE_TMP}"
         fi
-    elif [[ "$config_file_name" == *"land"* ]]; then # for s2s model with land
-        # Data dir is a dataset array, separated by colon
-        export DATA_DIR="${data_dir}/zarr_refresh_v3/s2s.19500101_20260417.c76.1p5.h24.v1:${data_dir}/zarr_refresh_v3/land.1950_2024.c8.1p5.h24.v1/"
-        if grep -q "land_base" "${CONFIG_FILE_TMP}"; then
-            export BASE_CONFIG="${ROOT_DIR}/configs/land_base.py"
-        else
-            export BASE_CONFIG="${CONFIG_FILE_TMP}"
-        fi
     elif [[ "$config_file_name" == *"ens"* || "$config_file_name" == *"iwc"* ]]; then
         if [[ "$config_file_name" == *"fdp"* || "$config_file_name" == *"cra"* ]]; then
             export DATA_DIR="${data_dir}/zarr_refresh_v3/cra.19790101_20260714.c71.p25.h6.v1/"

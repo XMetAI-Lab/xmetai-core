@@ -148,6 +148,14 @@ def synchronize():
         dist.barrier()
 
 
+@functools.lru_cache()
+def _get_global_gloo_group():
+    """Return a CPU communication group; all ranks must call this together."""
+    if dist.get_backend() == dist.Backend.NCCL:
+        return dist.new_group(backend="gloo")
+    return dist.group.WORLD
+
+
 def all_gather(data, group=None):
     """
     Run all_gather on arbitrary picklable data (not necessarily tensors).
@@ -163,6 +171,8 @@ def all_gather(data, group=None):
     if get_world_size() == 1:
         return [data]
 
+    if group is None:
+        group = _get_global_gloo_group()
     world_size = dist.get_world_size(group)
     if world_size == 1:
         return [data]
@@ -189,6 +199,8 @@ def gather(data, dst=0, group=None):
     if get_world_size() == 1:
         return [data]
 
+    if group is None:
+        group = _get_global_gloo_group()
     world_size = dist.get_world_size(group=group)
     if world_size == 1:
         return [data]
