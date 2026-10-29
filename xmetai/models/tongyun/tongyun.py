@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.core.base_predictor import BasePredictor, replace_channels
-from xmetai.layers import AdaptiveLN, EarthConv2d, EarthConvTranspose2d, set_lora_step
+from xmetai.layers import AdaptiveLN, EarthConvTranspose2d, set_lora_step
 from xmetai.layers.utransformer import UTransformer
 from xmetai.loss import SphericalAMSELoss, charbonnier_loss, field_dynamics_consistency_loss
 from xmetai.registries import MODELS
@@ -28,7 +28,6 @@ from xmetai.utils.events import has_event_storage
 
 __all__ = [
     "TongYun",
-    "JointFieldCorrection",
 ]
 
 LEVELS_13 = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
@@ -333,26 +332,7 @@ class LatentMixerPredictor(UTransformer):
         return outputs
 
 
-class JointFieldCorrection(nn.Module):
-    """Shared residual correction for reconstructed and forecast full fields."""
-
-    def __init__(self, out_chans: int, kernel_size: int = 3):
-        super().__init__()
-        if not isinstance(kernel_size, int) or kernel_size < 1 or kernel_size % 2 == 0:
-            raise ValueError("JointFieldCorrection requires a positive odd kernel_size")
-        self.proj = EarthConv2d(out_chans, out_chans, kernel_size=kernel_size, padding=kernel_size // 2)
-        nn.init.zeros_(self.proj.conv.weight)
-        nn.init.zeros_(self.proj.conv.bias)
-
-    def forward(self, field: torch.Tensor) -> torch.Tensor:
-        if field.ndim != 5:
-            raise ValueError(f"Expected field shape (B,T,C,H,W), got {tuple(field.shape)}.")
-        batch_size, frames, channels, height, width = field.shape
-        correction = self.proj(field.reshape(batch_size * frames, channels, height, width))
-        return field + correction.reshape_as(field)
-
-
-class _BaseGroupVAE(BasePredictor):
+class _TongYunBase(BasePredictor):
     def __init__(
         self,
         const_chans: int = 0,
@@ -386,8 +366,6 @@ class _BaseGroupVAE(BasePredictor):
         latent_dyn_weight: float = 0.0,
         amse_weight: float = 0.0,
         amse_image_size: tuple[int, int] | None = None,
-        use_joint_correction: bool = False,
-        joint_kernel_size: int = 3,
         rollout_max: int = 50,
         pretrain: bool = False,
         pretrain_mask_ratio: float = 0.15,
@@ -521,7 +499,6 @@ class _BaseGroupVAE(BasePredictor):
         self.patch_decoder_shortcut = patch_decoder_shortcut or sampled
         for module in (*self.vae_encoder_group, *self.posterior_encoder_group):
             module.local_shortcut = not self.patch_decoder_shortcut
-        self.joint_output_correction = JointFieldCorrection(self.out_chans, kernel_size=joint_kernel_size) if use_joint_correction else nn.Identity()
 
         self.latent_mixer = LatentMixerPredictor(
             image_size=tuple(self.vae_encoder_group[0].stage_sizes[-1]),
@@ -572,7 +549,7 @@ class _BaseGroupVAE(BasePredictor):
         return self.compute_posterior_vae
 
     def _configure_pretrain_trainable(self) -> None:
-        """Train the posterior encoder, decoder and optional correction.
+        """Train the posterior encoder and decoder.
 
         `forward_pretrain_stage` does not use the prior encoder or latent mixer. Freezing
         the unused branches avoids DDP unused-parameter reduction errors while
@@ -580,10 +557,10 @@ class _BaseGroupVAE(BasePredictor):
         """
         for param in self.parameters():
             param.requires_grad = False
-        for module in (self.posterior_encoder_group, self.decoder_group, self.joint_output_correction):
+        for module in (self.posterior_encoder_group, self.decoder_group):
             for param in module.parameters():
                 param.requires_grad = True
-        self.logger.info("Pretrain mode: posterior_encoder_group, decoder_group and enabled joint_output_correction are trainable.")
+        self.logger.info("Pretrain mode: posterior_encoder_group and decoder_group are trainable.")
 
     def _apply_residual(self, pred: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
         if self.residual_vae_index.numel() == 0:
@@ -683,7 +660,7 @@ class _BaseGroupVAE(BasePredictor):
         reference_input: torch.Tensor,
         target_hw: tuple[int, int] | None = None,
     ) -> torch.Tensor:
-        """Reassemble, apply residual, then correct reconstruction or forecast.
+        """Reassemble group outputs and apply residual reconstruction.
 
         Args:
             decoded_groups: List of decoded outputs from _decode_all_groups
@@ -691,14 +668,13 @@ class _BaseGroupVAE(BasePredictor):
             target_hw: Optional target height/width for resizing
 
         Returns:
-            Full-field output with residual and optional correction applied (B, out_frames, C, H, W)
+            Full-field output with residual reconstruction applied (B, out_frames, C, H, W)
         """
         full_output = self._reassemble(decoded_groups, reference_input)
         if target_hw is None:
             target_hw = (int(reference_input.shape[-2]), int(reference_input.shape[-1]))
         full_output = self._resize_pred(full_output, target_hw)
-        output = self._apply_residual(full_output, reference_input[:, -1:])
-        return self.joint_output_correction(output)
+        return self._apply_residual(full_output, reference_input[:, -1:])
 
     @final
     def _predict_next(self, input: torch.Tensor, times: Any, t: int, const: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1238,7 +1214,7 @@ class _BaseGroupVAE(BasePredictor):
 
 
 @MODELS.register()
-class TongYun(_BaseGroupVAE):
+class TongYun(_TongYunBase):
     """TongYun feature-grouped VAE with per-group absolute/residual reconstruction.
 
     Residual groups encode two frames as ``[x_tm1, x_t - x_tm1]`` and decode a

@@ -3,12 +3,12 @@ import pandas as pd
 import pytest
 import torch
 
-from xmetai.models.tongyun.tongyun import _BaseGroupVAE
+from xmetai.models.tongyun.tongyun import _TongYunBase
 
 
 def _build_tiny_group_vae(
-    latent_dyn_weight: float, *, alpha: float = 1.0, rollout_max: int = 2, out_frames: int = 1, model_type: type[_BaseGroupVAE] = _BaseGroupVAE, **kwargs
-) -> _BaseGroupVAE:
+    latent_dyn_weight: float, *, alpha: float = 1.0, rollout_max: int = 2, out_frames: int = 1, model_type: type[_TongYunBase] = _TongYunBase, **kwargs
+) -> _TongYunBase:
     return model_type(
         group_slice_indices=[[0]],
         embed_dim=8,
@@ -268,7 +268,7 @@ def test_disabled_posterior_is_not_executed() -> None:
 
 
 def test_subclass_posterior_alignment_keeps_encoder_trainable():
-    class PosteriorAlignmentVAE(_BaseGroupVAE):
+    class PosteriorAlignmentVAE(_TongYunBase):
         def _uses_posterior_encoder(self) -> bool:
             return True
 
