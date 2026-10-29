@@ -64,7 +64,7 @@ if load_from_pretrain:
     # scheduler.period = 1.0 * train.eval_period / train.max_iter
     optimizer.lr = 1e-5
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
-    train_times = ("20100101-00", "20241231-18")
+    train_times = ("20100101-00", "20231231-18")
     dataloader.train.dataset.years = train_times
 else:
     train.teacher_forcing.teach_iters = -1
