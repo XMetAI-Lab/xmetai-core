@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from xmetai.layers import DropPath
-from xmetai.loss import afcrps_loss_lite, charbonnier_loss
+from xmetai.loss import afcrps_loss, charbonnier_loss
 from xmetai.registries import MODELS
 
 from .vit import ViTModel
@@ -168,7 +168,7 @@ class ViTModelEns(ViTModel):
                 ens_losses[k] = v * w
 
         # Add Ensemble-specific CRPS loss
-        ens_losses["loss_crps"] = afcrps_loss_lite(output, target, weight=getattr(self, "weight", None)) * w
+        ens_losses["loss_crps"] = afcrps_loss(output, target, weight=getattr(self, "weight", None)) * w
 
         # Replace naive noise_magnitude_loss with explicit parameter variance penalty
         if getattr(self, "gamma_mod", None) is not None:

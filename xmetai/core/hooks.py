@@ -860,7 +860,7 @@ class GradientClipHook(HookBase):
 
     def after_backward(self):
         # FSDP2's DTensor gradients support native distributed norm clipping.
-        clip_grad_norm_(self.trainer.model.parameters(), self.max_norm, self.norm_type, foreach=True)
+        self.trainer._grad_norm = clip_grad_norm_(self.trainer.model.parameters(), self.max_norm, self.norm_type, foreach=True)
 
 
 class EarlyStoppingHook(HookBase):

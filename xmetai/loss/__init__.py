@@ -1,6 +1,6 @@
 from .amse_loss import SphericalAMSELoss
 from .charbonnier_loss import charbonnier_loss
-from .crps_loss import afcrps_loss_lite
+from .crps_loss import afcrps_loss, crps_loss, multiscale_afcrps_loss
 from .dynamics_loss import field_dynamics_consistency_loss
 from .gt_weighted_loss import GTWeightedLoss
 from .kl_loss import kl_entropy_loss
@@ -13,7 +13,9 @@ __all__ = [
     "GTWeightedLoss",
     "SphericalBandPowerLoss",
     "ChannelRegistry",
-    "afcrps_loss_lite",
+    "crps_loss",
+    "afcrps_loss",
+    "multiscale_afcrps_loss",
     "charbonnier_loss",
     "kl_entropy_loss",
     "pinn_loss",

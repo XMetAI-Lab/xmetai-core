@@ -76,7 +76,7 @@ def build_train_loader(
         sampler=sampler,
         collate_fn=augment_batch_collator if do_augment else trivial_batch_collator,
         worker_init_fn=worker_init_reset_seed,
-        persistent_workers=True,
+        persistent_workers=num_workers > 0,
         pin_memory=pin_memory,
         drop_last=True,
     )

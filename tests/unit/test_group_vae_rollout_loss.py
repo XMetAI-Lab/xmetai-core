@@ -1,24 +1,27 @@
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
 from xmetai.models.group_vae import _BaseGroupVAE
 
 
-def _build_tiny_group_vae(latent_dyn_weight: float, *, alpha: float = 1.0, rollout_max: int = 2, out_frames: int = 1, **kwargs) -> _BaseGroupVAE:
-    return _BaseGroupVAE(
+def _build_tiny_group_vae(
+    latent_dyn_weight: float, *, alpha: float = 1.0, rollout_max: int = 2, out_frames: int = 1, model_type: type[_BaseGroupVAE] = _BaseGroupVAE, **kwargs
+) -> _BaseGroupVAE:
+    return model_type(
         group_slice_indices=[[0]],
         embed_dim=8,
         image_size=kwargs.pop("image_size", (4, 4)),
-        window_size=2,
+        window_size=kwargs.pop("window_size", 2),
         patch_size=kwargs.pop("patch_size", 1),
-        down_times=0,
-        encoder_depths=[1],
-        decoder_depths=[1],
+        down_times=kwargs.pop("down_times", 0),
+        encoder_depths=kwargs.pop("encoder_depths", [1]),
+        decoder_depths=kwargs.pop("decoder_depths", [1]),
         num_heads=1,
         vt_num_heads=1,
-        vt_num_layers=0,
-        vt_window_size=2,
+        vt_num_layers=kwargs.pop("vt_num_layers", 0),
+        vt_window_size=kwargs.pop("vt_window_size", 2),
         in_names=kwargs.pop("in_names", ["x"]),
         in_chans=1,
         out_chans=1,
@@ -50,6 +53,61 @@ def _build_batch(in_frames: int = 2, future_frames: int = 3) -> dict[str, torch.
         "times": torch.tensor([0]),
         "future_frames": future_frames,
     }
+
+
+@pytest.mark.parametrize("patch_shortcut", [False, True])
+def test_patch_shortcut_encoding_and_decoder_routing(patch_shortcut):
+    model = _build_tiny_group_vae(0.0, patch_decoder_shortcut=patch_shortcut).eval()
+    batch = _build_batch()
+    batch["times"] = pd.to_datetime(["2024-01-01"])
+    x = batch["inputs"]
+    timestamp = model.get_timestamp(x, batch["times"], model.start_frames)
+    encoded = model._encode_all_groups(x, timestamp)
+    assert isinstance(encoded, tuple if patch_shortcut else list)
+    patches, received = [], []
+    encoder_hook = model.vae_encoder_group[0].patch_embed.register_forward_hook(lambda module, args, output: patches.append(output))
+    decoder_hook = model.decoder_group[0].register_forward_pre_hook(lambda module, args, kwargs: received.append(kwargs["patch_shortcut"]), with_kwargs=True)
+    try:
+        output, history = model._predict_next(x, batch["times"], model.start_frames)
+    finally:
+        encoder_hook.remove()
+        decoder_hook.remove()
+    assert received[0] is patches[0] if patch_shortcut else received[0] is None
+    assert torch.isfinite(output).all()
+    torch.testing.assert_close(history[:, -1:], output)
+
+
+@pytest.mark.parametrize("patch_shortcut", [False, True])
+def test_patch_shortcut_training_and_export_forward(patch_shortcut):
+    model = _build_tiny_group_vae(0.0, patch_decoder_shortcut=patch_shortcut, loss_weight=(1, 1, 1, 1, 1)).train()
+    batch = _build_batch()
+    losses = model(batch)
+    sum(losses.values()).backward()
+    gradient = model.vae_encoder_group[0].patch_embed.proj.weight.grad
+    assert gradient is not None and torch.isfinite(gradient).all()
+    model.eval()
+    value = torch.zeros(1)
+    output = model.export_onnx(batch["inputs"].clone(), value, value, value)
+    assert torch.isfinite(output).all()
+
+
+@pytest.mark.parametrize("out_frames,stride,expected", [(1, 1, [20, 20, 20, 20]), (2, 2, [20, 30, 20, 30]), (2, 1, [20, 25, 25, 25])])
+def test_pretrain_evaluation_targets_match_reconstructed_tail(monkeypatch, out_frames, stride, expected):
+    model = _build_tiny_group_vae(0.0, out_frames=out_frames, pretrain=True, forecast_stride=stride, members=2).eval()
+    model.test_frames = [1, 2, 3, 4]
+    model.ensemble_sizes = [2] * (model.start_frames + 4)
+    input = torch.arange(1, out_frames + 2, dtype=torch.float32).view(1, -1, 1, 1, 1).expand(1, -1, 1, 4, 4).clone() * 10
+    tail = input[:, -out_frames:].clone()
+    monkeypatch.setattr(model, "_encode_all_groups", lambda *args, **kwargs: [tail])
+    monkeypatch.setattr(model, "_decode_all_groups", lambda *args, **kwargs: [tail])
+    monkeypatch.setattr(model, "_assemble_prediction", lambda groups, reference: groups[0])
+    data = {"input": input, "times": pd.to_datetime(["2024-01-01"])}
+    original = input.clone()
+    output = model.test_cascade(data)
+    expected_target = torch.tensor(expected, dtype=torch.float32).view(1, -1, 1, 1, 1).expand_as(data["targets"])
+    torch.testing.assert_close(data["targets"], expected_target)
+    torch.testing.assert_close(output.float(), expected_target)
+    torch.testing.assert_close(data["input"], original)
 
 
 def test_rollout_field_dynamics_loss_supports_segmented_backward() -> None:
@@ -129,6 +187,29 @@ def test_segmented_rollout_preserves_unsegmented_loss_values() -> None:
         torch.testing.assert_close(segmented_totals[name], value.detach())
 
 
+@pytest.mark.parametrize("steps,segment_size,alpha", [(42, 10, 1.0), (36, 9, 1.0), (7, 3, 0.98)])
+def test_partial_tail_segment_preserves_per_lead_weights(steps, segment_size, alpha):
+    torch.manual_seed(0)
+    model = _build_tiny_group_vae(latent_dyn_weight=0.0, alpha=alpha, rollout_max=-1).train()
+    batch = _build_batch(future_frames=steps)
+    with torch.no_grad():
+        torch.manual_seed(1)
+        full_losses = model(batch)
+        torch.manual_seed(1)
+        totals, state, done = {}, None, False
+        while not done:
+            losses, state, done = model(batch if state is None else None, rollout_state=state, rollout_segment_size=segment_size)
+            for name, value in losses.items():
+                totals[name] = totals.get(name, 0) + value
+    expected = alpha ** torch.arange(steps, dtype=torch.float32)
+    expected /= expected.sum()
+    torch.testing.assert_close(state["rolling_weights"], expected)
+    assert state["loss_block_indices"] == set(range(steps))
+    assert totals.keys() == full_losses.keys()
+    for name, value in full_losses.items():
+        torch.testing.assert_close(totals[name], value)
+
+
 @pytest.mark.parametrize("posterior_reconstruction", [0.0, 0.2])
 def test_latent_regularization_is_rollout_normalized_and_posterior_gated(posterior_reconstruction: float) -> None:
     model = _build_tiny_group_vae(
@@ -193,7 +274,7 @@ def test_spectral_loss_backpropagates_and_segments_sum_to_full_rollout(image_siz
     torch.testing.assert_close(total, full.detach())
 
 
-def test_disabled_posterior_is_not_executed_or_optimized() -> None:
+def test_disabled_posterior_is_not_executed() -> None:
     model = _build_tiny_group_vae(0.0, loss_weight=(0.0, 0.0, 1.0, 0.01, 1.0)).train()
     assert not any(p.requires_grad for p in model.posterior_encoder_group.parameters())
 
@@ -214,6 +295,21 @@ def test_disabled_posterior_is_not_executed_or_optimized() -> None:
     finally:
         for handle in handles:
             handle.remove()
+
+
+def test_subclass_posterior_alignment_keeps_encoder_trainable():
+    class PosteriorAlignmentVAE(_BaseGroupVAE):
+        def _uses_posterior_encoder(self) -> bool:
+            return True
+
+    model = _build_tiny_group_vae(0.0, model_type=PosteriorAlignmentVAE, loss_weight=(0.0, 0.0, 1.0, 0.01, 1.0)).train()
+    batch = _build_batch()
+    timestamp = model.get_timestamp(batch["inputs"], pd.to_datetime(["2024-01-01"]), model.start_frames)
+    posterior = model._encode_all_groups(batch["inputs"], timestamp, is_prior=False)
+    posterior[0].square().mean().backward()
+    parameters = list(model.posterior_encoder_group.parameters())
+    assert all(p.requires_grad for p in parameters)
+    assert any(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0 for p in parameters)
 
 
 @pytest.mark.parametrize("mixed_precision", [False, True])
@@ -311,3 +407,17 @@ def test_amse_weight_and_segmented_rollout(amse_weight):
 def test_invalid_amse_weight(weight):
     with pytest.raises(ValueError, match="amse_weight"):
         _build_tiny_group_vae(0.0, amse_weight=weight)
+
+
+@pytest.mark.parametrize("spectral_image_size", [None, (121, 240)])
+def test_amse_uses_native_grid_without_spectral_loss(spectral_image_size):
+    model = _build_tiny_group_vae(0.0, image_size=(120, 240), amse_weight=0.8, spectral_image_size=spectral_image_size)
+    expected_size = (120, 240) if spectral_image_size is None else spectral_image_size
+    assert model.spectral_loss is None
+    assert model.amse_loss.image_size == expected_size
+    output = torch.full((1, 1, 1, *expected_size), 1.1, requires_grad=True)
+    loss = model.amse_loss(output, torch.ones_like(output))
+    torch.testing.assert_close(loss, torch.tensor(0.01), atol=1e-6, rtol=1e-4)
+    loss.backward()
+    assert torch.isfinite(output.grad).all()
+    assert output.grad.abs().sum() > 0

@@ -359,6 +359,7 @@ class SimpleTrainer(TrainerBase):
         # to access the data loader iterator, call `self._data_loader_iter`
         self._data_loader_iter_obj = None
         self.optimizer = optimizer
+        self._grad_norm: Optional[torch.Tensor] = None
         self.gather_metric_period = gather_metric_period
         self.zero_grad_before_forward = zero_grad_before_forward
         self.async_write_metrics = async_write_metrics
@@ -417,12 +418,11 @@ class SimpleTrainer(TrainerBase):
             self.optimizer.zero_grad()
         losses.backward()
 
+        self.after_backward()
         reduced_metrics = self._reduce_metrics(loss_dict, data_time)
         if reduced_metrics is None:
             return
         loss_dict, data_time = reduced_metrics
-        self.after_backward()
-
         if self.async_write_metrics:
             # write metrics asynchronically
             self.concurrent_executor.submit(self._write_metrics, loss_dict, data_time, iter=self.iter)
@@ -440,10 +440,11 @@ class SimpleTrainer(TrainerBase):
         self.after_optimizer(data)
 
     def _reduce_metrics(self, loss_dict: Mapping[str, torch.Tensor], data_time: float) -> Optional[tuple[Dict[str, float], float]]:
-        """Reduce losses, timing and the skip flag with one collective per iteration.
+        """Reduce losses, timing and loss/gradient validity with one collective.
 
         Loss keys must match across ranks. Per-rank timing slots allow a SUM
-        reduction to retain maximum data time alongside mean losses.
+        reduction to retain maximum data time alongside mean losses. Reuse the
+        clipping hook's pre-clipping norm rather than scanning gradients again.
         """
         names = sorted(loss_dict)
         values = []
@@ -453,6 +454,11 @@ class SimpleTrainer(TrainerBase):
         invalid = ~torch.isfinite(sum(values))
         losses = torch.stack([value.to(dtype=torch.float32) for value in values])
         invalid = invalid | ~torch.isfinite(losses).all()
+        if self._grad_norm is not None:
+            grad_norm = self._grad_norm.detach()
+            if isinstance(grad_norm, DTensor):
+                grad_norm = grad_norm.to_local()
+            invalid = invalid | ~torch.isfinite(grad_norm).to(device=invalid.device)
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         # Only this rank fills its timing slot; SUM preserves all rank timings.
         metrics = losses.new_zeros(len(names) + world_size + 1)
@@ -466,7 +472,7 @@ class SimpleTrainer(TrainerBase):
         if reduced[-1] or not np.isfinite(sum(reduced_losses.values())):
             self.optimizer.zero_grad(set_to_none=True)
             if is_main_process():
-                self.logger.warning("Skipping iteration=%d on all ranks: loss became NaN or Inf.", self.iter)
+                self.logger.warning("Skipping iteration=%d on all ranks: loss or gradient norm became NaN or Inf.", self.iter)
             return None
         if (self.iter + 1) % self.gather_metric_period == 0:
             get_event_storage().put_scalar("rank_data_time", data_time, cur_iter=self.iter)
@@ -668,12 +674,11 @@ class ExpandTrainer(SimpleTrainer):
                 self.optimizer.zero_grad()
             losses.backward()
 
+        self.after_backward()
         reduced_metrics = self._reduce_metrics(loss_dict, data_time)
         if reduced_metrics is None:
             return
         loss_dict, data_time = reduced_metrics
-        self.after_backward()
-
         if self.async_write_metrics:
             # write metrics asynchronically
             self.concurrent_executor.submit(self._write_metrics, loss_dict, data_time, iter=self.iter)

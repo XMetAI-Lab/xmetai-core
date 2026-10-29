@@ -3,8 +3,72 @@ Unit tests for loss functions and metrics.
 Tests: CRPS loss, MSE, TCC metrics with numerical stability.
 """
 
+import importlib
+
 import pytest
 import torch
+
+
+class TestSortedCRPSEntrypoints:
+    @pytest.mark.parametrize("members", [2, 3, 8])
+    @pytest.mark.parametrize("name,alpha", [("crps_loss", 0.0), ("afcrps_loss", 0.0), ("afcrps_loss", 0.95), ("afcrps_loss", 1.0)])
+    def test_scores_and_gradients(self, monkeypatch, members, name, alpha):
+        crps_module = importlib.import_module("xmetai.loss.crps_loss")
+        generator = torch.Generator().manual_seed(42)
+        outputs = torch.randn(members, 1, 1, 2, 9, 16, generator=generator, dtype=torch.float64, requires_grad=True)
+        target = torch.randn_like(outputs[0], requires_grad=True)
+        weight = torch.rand(9, 1, dtype=torch.float64, requires_grad=True)
+        monkeypatch.setattr(crps_module, "all_gather_grad", lambda output: outputs)
+        kwargs = {"alpha": alpha} if name == "afcrps_loss" else {}
+        actual = getattr(crps_module, name)(outputs[0], target, weight, **kwargs)
+        expected = TestMultiscaleAFCRPS._reference(outputs, target, weight, alpha)
+        torch.testing.assert_close(actual, expected)
+        for actual_grad, expected_grad in zip(torch.autograd.grad(actual, (outputs, target, weight)), torch.autograd.grad(expected, (outputs, target, weight))):
+            torch.testing.assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.parametrize("alpha", [0.0, 0.95, 1.0])
+    @pytest.mark.parametrize("scales", [[], [2], [2, 8]])
+    def test_multiscale_scores_and_gradients(self, monkeypatch, alpha, scales):
+        crps_module = importlib.import_module("xmetai.loss.crps_loss")
+        outputs = torch.randn(3, 1, 1, 2, 9, 16, dtype=torch.float64, requires_grad=True)
+        target = torch.randn_like(outputs[0], requires_grad=True)
+        weight = torch.rand(9, 1, dtype=torch.float64, requires_grad=True)
+        monkeypatch.setattr(crps_module, "all_gather_grad", lambda output: outputs)
+        actual = crps_module.multiscale_afcrps_loss(outputs[0], target, weight, alpha=alpha, filter_scales=scales)
+        output_parts = [crps_module._gaussian_filter_global(outputs, scale) for scale in sorted(scales, reverse=True)] + [outputs]
+        target_parts = [crps_module._gaussian_filter_global(target, scale) for scale in sorted(scales, reverse=True)] + [target]
+        expected = TestMultiscaleAFCRPS._reference(output_parts[0], target_parts[0], weight, alpha)
+        for index in range(1, len(output_parts)):
+            expected = expected + TestMultiscaleAFCRPS._reference(
+                output_parts[index] - output_parts[index - 1], target_parts[index] - target_parts[index - 1], weight, alpha
+            )
+        torch.testing.assert_close(actual, expected)
+        for actual_grad, expected_grad in zip(torch.autograd.grad(actual, (outputs, target, weight)), torch.autograd.grad(expected, (outputs, target, weight))):
+            torch.testing.assert_close(actual_grad, expected_grad)
+
+    @pytest.mark.parametrize("name", ["crps_loss", "afcrps_loss", "multiscale_afcrps_loss"])
+    def test_single_member_mae(self, name):
+        from xmetai import loss
+
+        output = torch.ones(1, 1, 1, 9, 16, requires_grad=True)
+        target = torch.zeros_like(output)
+        weight = torch.full((9, 1), 2.0)
+        kwargs = {} if name == "crps_loss" else {"alpha": 0.0}
+        actual = getattr(loss, name)(output, target, weight, **kwargs)
+        torch.testing.assert_close(actual, ((output - target).abs() * weight).mean())
+        actual.backward()
+        torch.testing.assert_close(output.grad, torch.full_like(output, 2.0 / output.numel()))
+
+    @pytest.mark.parametrize("name", ["afcrps_loss", "multiscale_afcrps_loss"])
+    @pytest.mark.parametrize("dtype,shape", [(torch.float32, (1, 1, 1, 9, 16)), (torch.float16, (1, 1, 1, 256, 256))])
+    def test_single_member_zero_has_gradient(self, name, dtype, shape):
+        from xmetai import loss
+
+        output = torch.ones(shape, dtype=dtype, requires_grad=True)
+        actual = getattr(loss, name)(output, torch.zeros_like(output))
+        assert actual.item() == 0
+        actual.backward()
+        torch.testing.assert_close(output.grad, torch.zeros_like(output))
 
 
 class TestMultiscaleAFCRPS:
@@ -36,13 +100,13 @@ class TestMultiscaleAFCRPS:
 
     @pytest.mark.parametrize("scales", [[]])
     def test_original_score(self, monkeypatch, scales):
-        from xmetai.loss import crps_loss
+        crps_loss = importlib.import_module("xmetai.loss.crps_loss")
 
         outputs = torch.randn(3, 1, 1, 2, 9, 16, requires_grad=True)
         target = torch.randn_like(outputs[0])
         weight = torch.rand(9, 1)
         monkeypatch.setattr(crps_loss, "all_gather_grad", lambda output: outputs)
-        actual = crps_loss.afcrps_loss_lite(outputs[0], target, weight, filter_scales=scales)
+        actual = crps_loss.multiscale_afcrps_loss(outputs[0], target, weight, filter_scales=scales)
         torch.testing.assert_close(actual, self._reference(outputs, target, weight))
         actual.backward()
         assert torch.isfinite(outputs.grad).all()
@@ -50,7 +114,7 @@ class TestMultiscaleAFCRPS:
 
     @pytest.mark.parametrize("scales", [[8.0], [8.0, 2.0], [2.0, 8.0]])
     def test_scale_partition_and_gradients(self, monkeypatch, scales):
-        from xmetai.loss import crps_loss
+        crps_loss = importlib.import_module("xmetai.loss.crps_loss")
         from xmetai.loss.crps_loss import _gaussian_filter_global
 
         outputs = torch.randn(3, 1, 1, 2, 9, 16, requires_grad=True)
@@ -63,7 +127,7 @@ class TestMultiscaleAFCRPS:
             return outputs
 
         monkeypatch.setattr(crps_loss, "all_gather_grad", gather)
-        actual = crps_loss.afcrps_loss_lite(outputs[0], target, weight, filter_scales=scales)
+        actual = crps_loss.multiscale_afcrps_loss(outputs[0], target, weight, filter_scales=scales)
         ordered = sorted(scales, reverse=True)
         output_parts = [_gaussian_filter_global(outputs, scale) for scale in ordered] + [outputs]
         target_parts = [_gaussian_filter_global(target, scale) for scale in ordered] + [target]
@@ -106,7 +170,7 @@ class TestMultiscaleAFCRPS:
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     @pytest.mark.parametrize("autocast_enabled", [False, True])
     def test_multiscale_preserves_precision(self, monkeypatch, dtype, autocast_enabled):
-        from xmetai.loss import crps_loss
+        crps_loss = importlib.import_module("xmetai.loss.crps_loss")
         from xmetai.loss.crps_loss import _gaussian_filter_global
 
         outputs = torch.randn(3, 1, 1, 1, 9, 16, dtype=dtype, requires_grad=True)
@@ -121,9 +185,9 @@ class TestMultiscaleAFCRPS:
 
         monkeypatch.setattr(crps_loss, "all_gather_grad", lambda output: outputs)
         monkeypatch.setattr(crps_loss, "_gaussian_filter_global", filter_field)
-        expected = crps_loss.afcrps_loss_lite(outputs[0], target, filter_scales=[8, 2])
+        expected = crps_loss.multiscale_afcrps_loss(outputs[0], target, filter_scales=[8, 2])
         with torch.autocast("cpu", dtype=dtype, enabled=autocast_enabled):
-            actual = crps_loss.afcrps_loss_lite(outputs[0], target, filter_scales=[8, 2])
+            actual = crps_loss.multiscale_afcrps_loss(outputs[0], target, filter_scales=[8, 2])
         assert actual.dtype == dtype
         torch.testing.assert_close(actual, expected, atol=0, rtol=0)
         actual.backward()
@@ -134,7 +198,7 @@ class TestMultiscaleAFCRPS:
 
     @pytest.mark.parametrize("time_steps", [1, 2])
     def test_checkpoint_retains_only_input_storage(self, monkeypatch, time_steps):
-        from xmetai.loss import crps_loss
+        crps_loss = importlib.import_module("xmetai.loss.crps_loss")
         from xmetai.loss.crps_loss import _gaussian_filter_global, _multiscale_afcrps_field
 
         outputs = torch.randn(3, 2, time_steps, 3, 9, 16, requires_grad=True)
@@ -172,7 +236,7 @@ class TestMultiscaleAFCRPS:
         monkeypatch.setattr(crps_loss, "all_gather_grad", lambda output: outputs)
         monkeypatch.setattr(crps_loss, "_gaussian_filter_global", filter_field)
         with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
-            actual = crps_loss.afcrps_loss_lite(outputs[0], target, weight, filter_scales=[8, 2])
+            actual = crps_loss.multiscale_afcrps_loss(outputs[0], target, weight, filter_scales=[8, 2])
         assert baseline_extra_bytes > 0
         assert set(retained_storages).issubset(input_storages)
         torch.testing.assert_close(actual, expected)
@@ -185,17 +249,17 @@ class TestMultiscaleAFCRPS:
 
     @pytest.mark.parametrize("scales", [[0.0], [-1.0], [8.0, 0.0], [8.0, 8.0], [float("nan")], [float("inf")]])
     def test_invalid_scales(self, scales):
-        from xmetai.loss.crps_loss import afcrps_loss_lite
+        from xmetai.loss.crps_loss import multiscale_afcrps_loss
 
         field = torch.zeros(1, 1, 1, 9, 16)
         with pytest.raises(ValueError, match="filter_scales"):
-            afcrps_loss_lite(field, field, filter_scales=scales)
+            multiscale_afcrps_loss(field, field, filter_scales=scales)
 
     def test_single_process_stays_zero(self):
-        from xmetai.loss.crps_loss import afcrps_loss_lite
+        from xmetai.loss.crps_loss import multiscale_afcrps_loss
 
         field = torch.zeros(1, 1, 1, 9, 16)
-        assert afcrps_loss_lite(field, field, filter_scales=[8]).item() == 0
+        assert multiscale_afcrps_loss(field, field, filter_scales=[8]).item() == 0
 
 
 class TestCRPSLoss:
