@@ -95,7 +95,7 @@ data/
 | `infer/` | ONNX 推理与集合评测 |
 | `tutorials/` | ViT/ViTEns 教学模型，示例配置为 `configs/s2s_vit.py` |
 
-公共预测契约位于 `xmetai/core/`，可复用网络组件位于 `xmetai/layers/`。上述论文模型均适配了本框架的训练与评测接口。旧导入路径及订正模型名称的迁移说明见 [模型目录与导入迁移](docs/model_layout.md)。
+公共预测契约位于 `xmetai/core/`，可复用网络组件位于 `xmetai/layers/`。上述论文模型均适配了本框架的训练与评测接口。
 
 ---
 
