@@ -352,7 +352,8 @@ def test_rollout_returns_only_enabled_losses(weights, expected):
 
 @pytest.mark.parametrize("amse_weight", [0.0, 0.25, 1.0])
 def test_amse_weight_and_segmented_rollout(amse_weight):
-    model = _build_tiny_group_vae(0.0, amse_weight=amse_weight, alpha=0.7, rollout_max=-1).train()
+    # Numerical equivalence requires deterministic encoders, including in eval mode.
+    model = _build_tiny_group_vae(0.0, amse_weight=amse_weight, alpha=0.7, rollout_max=-1, drop_mcmc=0.0).train()
     model.eval()
     model.training = True
     batch = _build_batch()

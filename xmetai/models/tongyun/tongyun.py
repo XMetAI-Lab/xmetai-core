@@ -218,7 +218,6 @@ class LatentMixerPredictor(UTransformer):
         num_groups: number of latent groups (G dimension)
         num_heads: attention heads in transformer blocks
         num_layers: number of transformer block layers
-        drop_mcmc: MC-Dropout rate
         attn_type: attention type ("v2", "rotary", etc.)
         norm_type: normalization type ("adaln", etc.)
         ffn_type: feed-forward type ("gegluffn", etc.)
@@ -237,7 +236,6 @@ class LatentMixerPredictor(UTransformer):
         latent_dim: list[int],
         num_heads: int = 4,
         num_layers: int = 2,
-        drop_mcmc: float = 0.0,
         attn_type: str = "v2",
         mask_type: str = "h",
         norm_type: str = "adaln",
@@ -268,7 +266,6 @@ class LatentMixerPredictor(UTransformer):
             down_times=0,  # no downsampling
             depths=[num_layers],  # critical: controls number of blocks
             num_heads=num_heads,  # critical: for attention
-            drop_mcmc=drop_mcmc,  # MC-Dropout rate
             attn_type=attn_type,  # critical: attention mechanism
             mask_type=mask_type,  # critical: masking mechanism
             head_type="none",  # no prediction head needed
@@ -279,7 +276,6 @@ class LatentMixerPredictor(UTransformer):
         )
         del self.patch_embed
         del self.head
-        self.drop_mcmc = drop_mcmc
         self.latent_dim = latent_dim
         self.group_norm_mode = group_norm_mode
         if self.group_norm_mode == "adaptive":
@@ -459,7 +455,7 @@ class _TongYunBase(BasePredictor):
             ffn_type=ffn_type,
             layer_type=layer_type,
         )
-        encoder_kwargs = dict(common_kwargs, const_chans=self.const_chans, down_times=down_times, depths=encoder_depths, drop_mcmc=drop_mcmc * 2)
+        encoder_kwargs = dict(common_kwargs, const_chans=self.const_chans, down_times=down_times, depths=encoder_depths, drop_mcmc=drop_mcmc)
         decoder_kwargs = dict(
             common_kwargs,
             out_frames=self.out_frames,
@@ -510,7 +506,6 @@ class _TongYunBase(BasePredictor):
             norm_type=norm_type,
             layer_type=vt_layer_type,
             ffn_type=ffn_type,
-            drop_mcmc=drop_mcmc,
             use_projection=vt_use_proj,
             group_norm_mode=vt_group_norm_mode,
         )
