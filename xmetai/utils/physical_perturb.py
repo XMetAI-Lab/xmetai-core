@@ -11,7 +11,8 @@ def physical_input_perturb(
 
     Input shape is (batch, history, channels, 721, 1440). Geopotential channels
     use m2/s2 and winds use m/s. ``height_rms`` is the global area-weighted RMS
-    in geopotential-height metres. Latitude weights must be nonnegative.
+    in geopotential-height metres. Latitude weights must be nonnegative, except
+    for float32 cosine roundoff at the two poles, which is rounded to zero.
 
     Independent members share their own perturbation across history frames and
     50--850 hPa levels. Winds follow discrete geostrophic increments derived
@@ -39,8 +40,13 @@ def physical_input_perturb(
         polar_ramp = ((80 - deg) / 10).clamp(0, 1)
         taper = (0.25 * (1 - (math.pi * equatorial_ramp).cos()) * (1 - (math.pi * polar_ramp).cos()))[:, None]
         weights = weight.to(device=input.device, dtype=torch.float32).reshape(h, -1).expand(h, w)
-        if not torch.isfinite(weights).all() or (weights < 0).any() or (taper * weights).sum() <= 0:
-            raise ValueError("weight must be finite, nonnegative and positive in the perturbation domain.")
+        pole_tolerance = torch.finfo(torch.float32).eps * weights.abs().amax()
+        invalid_negative = (weights < 0) & ((deg[:, None] < 90) | (weights < -pole_tolerance))
+        if not torch.isfinite(weights).all() or invalid_negative.any():
+            raise ValueError(f"weight must be finite and nonnegative except for polar roundoff; min={weights.amin().item()}, max={weights.amax().item()}.")
+        weights = weights.clamp_min(0)
+        if (taper * weights).sum() <= 0:
+            raise ValueError("weight must be positive in the perturbation domain.")
         noise = torch.randn(b, 1, h, w, device=input.device, dtype=torch.float32)
         if not latitude_ascending:
             noise = noise.flip(-2)

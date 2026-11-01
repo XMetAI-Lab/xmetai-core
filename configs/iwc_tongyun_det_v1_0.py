@@ -77,7 +77,6 @@ else:
         loss_weight = (0.1, 0.1, 1.0, 0.01, 0.01)  # (vae_input, vae_target, pred_rec, kl, latent_pred_rec)
         train.init_checkpoint = "/workspace/cma/output/pretrain/iwc_gssp/model_final.pth"
         optimizer.params.overrides = {"posterior_encoder_group": {"lr_factor": 0.1}}
-train.init_checkpoint = "/workspace/cma/output/6_6_12_12-iwc_fgvp_gdn2-0.0005/mstep-20261011/model_best.pth"
 ######################################################################
 # Model settings
 ######################################################################

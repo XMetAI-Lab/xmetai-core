@@ -50,3 +50,27 @@ def test_latitude_order_and_zero_amplitude():
 def test_invalid_amplitude_fails(amplitude):
     with pytest.raises(ValueError, match="height_rms"):
         physical_input_perturb(torch.zeros(1, 1, 3, 721, 1440), torch.ones(721, 1), ["z500", "u500", "v500"], height_rms=amplitude)
+
+
+def test_raw_cosine_polar_roundoff_preserves_physical_rms():
+    source = torch.zeros(1, 1, 3, 721, 1440)
+    weight = torch.linspace(-math.pi / 2, math.pi / 2, 721).cos()[:, None]
+    assert weight[0] < 0 and weight[-1] < 0
+    original = weight.clone()
+    torch.manual_seed(7)
+    actual = physical_input_perturb(source, weight, ["z500", "u500", "v500"])
+    torch.manual_seed(7)
+    expected = physical_input_perturb(source, weight.clamp_min(0), ["z500", "u500", "v500"])
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(weight, original)
+    weights = weight.clamp_min(0).expand(721, 1440)
+    rms = ((actual[0, 0, 0].square() * weights).sum() / weights.sum()).sqrt() / 9.80665
+    torch.testing.assert_close(rms, torch.tensor(5.0))
+
+
+@pytest.mark.parametrize("row,value", [(0, -0.01), (360, -1e-8), (360, float("nan")), (360, float("inf"))])
+def test_invalid_weights_still_fail(row, value):
+    weight = torch.ones(721, 1)
+    weight[row] = value
+    with pytest.raises(ValueError, match="weight must be finite"):
+        physical_input_perturb(torch.zeros(1, 1, 3, 721, 1440), weight, ["z500", "u500", "v500"])
