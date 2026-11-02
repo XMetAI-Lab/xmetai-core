@@ -201,10 +201,11 @@ def get_data_info(data_dirs, ignore_names=[]):
     store_channel_names = []
     try:
         for data_dir in data_dirs:
+            # Metadata reads must not start Dask threads before training workers fork.
             try:
-                store = xr.open_zarr(data_dir, consolidated=True)
+                store = xr.open_zarr(data_dir, consolidated=True, chunks=None)
             except (KeyError, ValueError):
-                store = xr.open_zarr(data_dir, consolidated=False)
+                store = xr.open_zarr(data_dir, consolidated=False, chunks=None)
             stores.append(store)
 
             if "channel" not in store.coords:
