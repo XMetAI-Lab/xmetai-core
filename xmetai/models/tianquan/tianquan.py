@@ -5,6 +5,9 @@ Author: shenzhewen &&
 Date: 2026-04-20 12:00:00
 Description: TIANQUAN-S2S: A SUBSEASONAL-TO-SEASONAL GLOBAL WEATHER MODEL VIA INCORPORATE CLIMATOLOGY STATE
 
+Original paper: https://arxiv.org/abs/2504.09940
+This module adapts TianQuan-S2S to the XMetAI prediction contract.
+
 Channel layout (s2s 67-channel):
     PL vars: z,t,u,v,q  x 13 levels = 65 channels
     Surface vars:  = 2 channels
@@ -33,6 +36,7 @@ import torch.nn.functional as F
 import xarray as xr
 from einops import rearrange
 
+from xmetai.core.base_predictor import BasePredictor
 from xmetai.layers import (
     FGA,
     SCA,
@@ -48,8 +52,6 @@ from xmetai.layers.weight_init import vit_fill
 # ==============================================================================
 from xmetai.loss import charbonnier_loss
 from xmetai.registries import MODELS
-
-from .base_predictor import BasePredictor
 
 
 def default_conv(in_channels, out_channels, kernel_size, bias=True):
@@ -178,7 +180,7 @@ def crps(y_pred, y_true, transform, vars, lat, clim, log_postfix=None, anomaly=N
 @MODELS.register()
 class TianQuan(BasePredictor):
     """
-    ResCast sub-seasonal-to-seasonal forecasting model.
+    TianQuan-S2S adapted from https://arxiv.org/abs/2504.09940.
 
     Args:
         default_vars (list[str]): List of variable names used as inputs.

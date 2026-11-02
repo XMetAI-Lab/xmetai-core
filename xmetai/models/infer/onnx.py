@@ -6,6 +6,7 @@ Copyright (c) 2025 by XMetAI/douzesheng, All Rights Reserved.
 """
 
 import logging
+import math
 import os
 from collections.abc import Mapping
 
@@ -13,10 +14,10 @@ import numpy as np
 import pandas as pd
 import torch
 
+from xmetai.core.base_predictor import BasePredictor
 from xmetai.registries import MODELS
 from xmetai.utils import get_local_rank
-
-from .base_predictor import BasePredictor
+from xmetai.utils.physical_perturb import physical_input_perturb
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,9 @@ class OnnxInferModel(BasePredictor):
         stream_ensemble=False,
         custom_ops_library="",
         defer_metrics=True,
+        physical_input_perturb=False,
+        initial_height_rms=5.0,
+        latitude_ascending=True,
         **kwargs,
     ):
         self.gpu_mem_fraction = kwargs.pop("gpu_mem_fraction", 0.7)
@@ -49,12 +53,25 @@ class OnnxInferModel(BasePredictor):
         self.stream_ensemble = bool(stream_ensemble)
         self.custom_ops_library = custom_ops_library
         self.defer_metrics = bool(defer_metrics)
+        self.physical_input_perturb = bool(physical_input_perturb)
+        self.initial_height_rms = float(initial_height_rms)
+        self.latitude_ascending = bool(latitude_ascending)
+        if not math.isfinite(self.initial_height_rms) or self.initial_height_rms < 0:
+            raise ValueError("initial_height_rms must be finite and nonnegative (metres).")
+        if self.physical_input_perturb and self.in_names is None:
+            raise ValueError("physical_input_perturb requires in_names in input channel order.")
         if self.onnx_batch_size < 1:
             raise ValueError("onnx_batch_size must be positive")
         self.device_id = get_local_rank()
         self.logger.name = __name__
         self.logger.info("perturb_std_scale=%s, stream_ensemble=%s, defer_metrics=%s", self.perturb_std_scale, self.stream_ensemble, self.defer_metrics)
         self.load_model(onnx_path)
+
+    def _initial_input_perturb(self, input):
+        """Add physical-space noise once at the beginning of each member trajectory."""
+        if not self.physical_input_perturb:
+            return input
+        return physical_input_perturb(input, self.weight, list(self.in_names), height_rms=self.initial_height_rms, latitude_ascending=self.latitude_ascending)
 
     def load_model(self, onnx_path):
         if ort is None:
@@ -209,6 +226,8 @@ class OnnxInferModel(BasePredictor):
                 for member_start in range(0, member_count, self.runtime_batch_size):
                     member_end = min(member_start + self.runtime_batch_size, member_count)
                     member_states = states[sample_index, member_start:member_end]
+                    if step == 1:
+                        member_states.copy_(self._initial_input_perturb(member_states))
                     times = pd.DatetimeIndex([batch["times"][sample_index]] * (member_end - member_start))
                     output = self._run_onnx_step(member_states, step=self.start_frames + step - 1, times=times)
                     finite.logical_and_(torch.isfinite(output).all())
@@ -273,6 +292,7 @@ class OnnxInferModel(BasePredictor):
             for member_start in range(0, self.members, self.runtime_batch_size):
                 member_count = min(self.runtime_batch_size, self.members - member_start)
                 curr_input = input[sample_index : sample_index + 1].repeat(member_count, 1, 1, 1, 1)
+                curr_input = self._initial_input_perturb(curr_input)
                 member_times = pd.DatetimeIndex([times[sample_index]] * member_count)
                 for curr_step in range(step, step + num_step):
                     output = self._run_onnx_step(curr_input, step=curr_step, times=member_times)

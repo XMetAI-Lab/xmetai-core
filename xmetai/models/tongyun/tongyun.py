@@ -1,21 +1,9 @@
 """
 Author: DouZesheng && douzsh@gmail.com
 Date: 2026-03-06 12:00:00
-Description: Level-wise VAE predictor with vertical cross-attention coupling.
+Description: Model Architecture Designed by XMetAI.
 
-Architecture (v2 -- reusing existing UTransformer-based encoder/decoder):
-    - Per-level encoding via grouped GroupEncoder (UTransformer encoder)
-    - LatentMixerPredictor: self-attention across spatial positions and pressure level groups
-    - Per-level decoding via grouped GroupDecoder (UTransformer decoder with ConvTranspose2d head)
-
-Level grouping (3 groups sharing encoder/decoder weights):
-    - Group 0 (surface-coupled): 1000hPa only -- 16 input channels (5 PL + 11 surface)
-    - Group 1 (lower-mid): 925, 850, 700, 600, 500, 400 hPa -- 5 channels each
-    - Group 2 (upper): 300, 250, 200, 150, 100, 50 hPa -- 5 channels each
-
-Channel layout (s2s 76-channel):
-    PL vars: z,t,u,v,q  x 13 levels = 65 channels
-    Surface vars: msl,t2m,sst,ttr,tp,ssr,ssrd,fdir,... = 11 channels
+See docs/tongyun/README.md for architecture and training details.
 
 Copyright (c) 2026 by XMetAI/douzesheng, All Rights Reserved.
 """
@@ -28,63 +16,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-from xmetai.layers import AdaptiveLN, EarthConv2d, EarthConvTranspose2d, set_lora_step
-from xmetai.loss import SphericalAMSELoss, SphericalBandPowerLoss, charbonnier_loss, field_dynamics_consistency_loss
+from xmetai.core.base_predictor import BasePredictor, replace_channels
+from xmetai.layers import AdaptiveLN, EarthConvTranspose2d, set_lora_step
+from xmetai.layers.utransformer import UTransformer
+from xmetai.loss import SphericalAMSELoss, charbonnier_loss, field_dynamics_consistency_loss
 from xmetai.registries import MODELS
 from xmetai.utils import get_event_storage
 from xmetai.utils.events import has_event_storage
 
-from .base_predictor import BasePredictor, replace_channels
-from .utransformer import UTransformer
-
 __all__ = [
-    "GroupVAEPredictor",
-    "FeatureGroupVAEPredictor",
-    "JointFieldCorrection",
+    "TongYun",
 ]
 
 LEVELS_13 = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
 PL_VARS = ["z", "t", "u", "v", "q", "gh", "wz", "r"]
-NUM_PL_VARS = len(PL_VARS)
-NUM_LEVELS = len(LEVELS_13)
 
-DEFAULT_LEVEL_GROUPS = [[0], [1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]]
-RESIDUAL_VARS_24H = [
-    # surface thermodynamics（强稳定）
-    "sst",
-    "t2m",
-    "d2m",
-    # near-surface slow evolution
-    "t1000",
-    "t925",
-    # moisture（只保留最稳定的两层）
-    "q1000",
-    "q925",
-    # stratosphere z（非常关键补充）
-    "z50",
-    "z100",
-    "z150",
-]
-RESIDUAL_Z_LEVELS_6H = (50, 100, 150, 200, 250, 300, 400, 500, 600, 700)
-RESIDUAL_T_LEVELS_6H = (50, 100, 300, 400, 500, 600, 700, 850, 925, 1000)
-RESIDUAL_VARS_6H = (
-    [f"z{level}" for level in RESIDUAL_Z_LEVELS_6H]
-    + [f"t{level}" for level in RESIDUAL_T_LEVELS_6H]
-    + [
-        # near-surface
-        "t2m",
-        "d2m",
-        # moisture
-        "q1000",
-        # other slow variables
-        "msl",
-        "sst",
-    ]
-)
-
-
-# 地表极其缓慢且强自相关的变量列表，作为独立的 Group 0（去高频噪声平滑）
-SLOW_SFCS = ["sst"]
 
 GROUP_VAR_MAP = {
     "residual_state": [f"{v}{level}" for v in ("z", "t") for level in LEVELS_13] + ["t2m", "t2m_min", "t2m_max", "d2m", "sst", "msl"],
@@ -120,94 +66,6 @@ def ensemble_schedule(max_members: int = 72, max_step: int = 65, freq: int = 6) 
         ensemble_sizes.append(min(max(n_t, 1), n_max))
 
     return ensemble_sizes
-
-
-def build_level_channel_map(
-    in_names: list[str],
-    level_groups: list[list[int]],
-    split_surface: bool = False,
-    plevels: list[int] = LEVELS_13,
-) -> tuple[list[list[int]], list[int]]:
-    """Build per-level and per-group channel index mappings.
-
-    Args:
-        in_names: list of input variable names
-        level_groups: grouping of level indices, e.g. [[0], [1..6], [7..12]]
-        split_surface: whether to split stable surface variables into a separate group
-        plevels: list of pressure levels available in the data
-
-    Returns:
-        group_slice_indices: list of channel indices for each group (for slicing input)
-        group_reassemble_map: permutation indices mapping each original channel index
-                              to its position in the concatenated grouped-channel order.
-    """
-    num_levels = len(plevels)
-    # Step 1: Build per-level channel indices
-    level_indices: list[list[int]] = [[] for _ in range(num_levels)]
-    surface_fast_indices: list[int] = []
-    surface_slow_indices: list[int] = []
-
-    pl_set = set()
-    for li, level in enumerate(plevels):
-        for var in PL_VARS:
-            name = f"{var}{level}"
-            if name in in_names:
-                idx = in_names.index(name)
-                level_indices[li].append(idx)
-                pl_set.add(idx)
-
-    for i, name in enumerate(in_names):
-        if i not in pl_set:
-            if split_surface and name in SLOW_SFCS:
-                surface_slow_indices.append(i)
-            else:
-                surface_fast_indices.append(i)
-
-    # 1000hPa和地表快变量（降水、风速、辐射等）合在一起（原来的 level_indices[0]）
-    level_indices[0] = level_indices[0] + surface_fast_indices
-
-    # Step 2: Build per-group slice indices (concatenated channels from all levels in group)
-    group_slice_indices: list[list[int]] = []
-
-    # 如果开启了 split_surface，我们将独立出来的慢变量层作为 Group 0，插在最前面。
-    if split_surface and len(surface_slow_indices) > 0:
-        group_slice_indices.append(surface_slow_indices)
-
-    for group in level_groups:
-        group_chans = []
-        for li in group:
-            group_chans.extend(level_indices[li])
-        group_slice_indices.append(group_chans)
-
-    # Step 3: Build reassemble map, mapping sequential group output channels back to full channel indices.
-    group_reassemble_map = _build_reassemble_map(group_slice_indices, len(in_names))
-
-    return group_slice_indices, group_reassemble_map
-
-
-def build_variable_channel_map(in_names: list[str]) -> tuple[list[list[int]], list[int]]:
-    """Build channel groups by variable prefix instead of by pressure level.
-
-    The groups are ordered as: z, t, uv, q, others.
-    Pressure-level channels must be named like z500/t850/u200/v200/q700; all
-    non-matching channels fall into the others group.
-    """
-    group_slice_indices: list[list[int]] = [[] for _ in range(5)]
-
-    for idx, name in enumerate(in_names):
-        if name.startswith("z") and name[1:].isdigit():
-            group_slice_indices[0].append(idx)
-        elif name.startswith("t") and name[1:].isdigit():
-            group_slice_indices[1].append(idx)
-        elif (name.startswith("u") or name.startswith("v")) and name[1:].isdigit():
-            group_slice_indices[2].append(idx)
-        elif name.startswith("q") and name[1:].isdigit():
-            group_slice_indices[3].append(idx)
-        else:
-            group_slice_indices[4].append(idx)
-
-    group_reassemble_map = _build_reassemble_map(group_slice_indices, len(in_names))
-    return group_slice_indices, group_reassemble_map
 
 
 def build_feature_group_channel_map(
@@ -350,18 +208,16 @@ class ConvHead(nn.Module):
 
 
 class LatentMixerPredictor(UTransformer):
-    """Global attention coupling across spatial positions and pressure level groups.
-    Uses UTransformer's layer construction and operates on flattened latent group tokens
-    (Z: B, N, G, D -> B, N, G*D) to allow full spatial self-attention on the
-    concatenated level features. The parent UTransformer handles layer/block building;
-    we only care about self.layers in forward().
+    """Shared latent dynamics across groups.
+
+    Concatenate grouped latents (B, N, G, D -> B, N, G*D), apply the configured
+    UTransformer blocks, and project back to the individual groups.
 
     Args:
         latent_dim: embedding dimension (matches VAE latent dimension)
-        num_groups: number of pressure level groups (G dimension)
+        num_groups: number of latent groups (G dimension)
         num_heads: attention heads in transformer blocks
         num_layers: number of transformer block layers
-        drop_mcmc: MC-Dropout rate
         attn_type: attention type ("v2", "rotary", etc.)
         norm_type: normalization type ("adaln", etc.)
         ffn_type: feed-forward type ("gegluffn", etc.)
@@ -380,7 +236,6 @@ class LatentMixerPredictor(UTransformer):
         latent_dim: list[int],
         num_heads: int = 4,
         num_layers: int = 2,
-        drop_mcmc: float = 0.0,
         attn_type: str = "v2",
         mask_type: str = "h",
         norm_type: str = "adaln",
@@ -411,7 +266,6 @@ class LatentMixerPredictor(UTransformer):
             down_times=0,  # no downsampling
             depths=[num_layers],  # critical: controls number of blocks
             num_heads=num_heads,  # critical: for attention
-            drop_mcmc=drop_mcmc,  # MC-Dropout rate
             attn_type=attn_type,  # critical: attention mechanism
             mask_type=mask_type,  # critical: masking mechanism
             head_type="none",  # no prediction head needed
@@ -422,7 +276,6 @@ class LatentMixerPredictor(UTransformer):
         )
         del self.patch_embed
         del self.head
-        self.drop_mcmc = drop_mcmc
         self.latent_dim = latent_dim
         self.group_norm_mode = group_norm_mode
         if self.group_norm_mode == "adaptive":
@@ -472,26 +325,9 @@ class LatentMixerPredictor(UTransformer):
         return outputs
 
 
-class JointFieldCorrection(nn.Module):
-    """Shared residual correction for reconstructed and forecast full fields."""
+class _TongYunBase(BasePredictor):
+    """Model Architecture Designed by XMetAI; see docs/tongyun/README.md."""
 
-    def __init__(self, out_chans: int, kernel_size: int = 3):
-        super().__init__()
-        if not isinstance(kernel_size, int) or kernel_size < 1 or kernel_size % 2 == 0:
-            raise ValueError("JointFieldCorrection requires a positive odd kernel_size")
-        self.proj = EarthConv2d(out_chans, out_chans, kernel_size=kernel_size, padding=kernel_size // 2)
-        nn.init.zeros_(self.proj.conv.weight)
-        nn.init.zeros_(self.proj.conv.bias)
-
-    def forward(self, field: torch.Tensor) -> torch.Tensor:
-        if field.ndim != 5:
-            raise ValueError(f"Expected field shape (B,T,C,H,W), got {tuple(field.shape)}.")
-        batch_size, frames, channels, height, width = field.shape
-        correction = self.proj(field.reshape(batch_size * frames, channels, height, width))
-        return field + correction.reshape_as(field)
-
-
-class _BaseGroupVAE(BasePredictor):
     def __init__(
         self,
         const_chans: int = 0,
@@ -524,12 +360,7 @@ class _BaseGroupVAE(BasePredictor):
         loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
         latent_dyn_weight: float = 0.0,
         amse_weight: float = 0.0,
-        spectral_loss_weight: float = 0.0,
-        spectral_loss_names: tuple[str, ...] = (),
-        spectral_image_size: tuple[int, int] | None = None,
-        spectral_loss_bands: tuple[tuple[int, int], ...] | None = None,
-        use_joint_correction: bool = False,
-        joint_kernel_size: int = 3,
+        amse_image_size: tuple[int, int] | None = None,
         rollout_max: int = 50,
         pretrain: bool = False,
         pretrain_mask_ratio: float = 0.15,
@@ -551,30 +382,16 @@ class _BaseGroupVAE(BasePredictor):
         self.amse_weight = float(amse_weight)
         if not math.isfinite(self.amse_weight) or self.amse_weight < 0:
             raise ValueError("amse_weight must be finite and nonnegative")
-        # Both spherical losses operate on the native output grid, not the encoder grid.
-        spectral_image_size = image_size if spectral_image_size is None else spectral_image_size
-        self.amse_loss = SphericalAMSELoss(spectral_image_size) if self.amse_weight > 0 else None
+        # AMSE operates on the native output grid, not the encoder grid.
+        amse_image_size = image_size if amse_image_size is None else amse_image_size
+        self.amse_loss = SphericalAMSELoss(amse_image_size) if self.amse_weight > 0 else None
         self.latent_dyn_weight = float(latent_dyn_weight)
-        self.spectral_loss_weight = float(spectral_loss_weight)
-        if not math.isfinite(self.spectral_loss_weight) or self.spectral_loss_weight < 0:
-            raise ValueError("spectral_loss_weight must be finite and nonnegative")
         self.compute_prior_vae = self.loss_weight[0] != 0
         self.compute_posterior_vae = self.loss_weight[1] != 0
         self.compute_pred_rec = self.loss_weight[2] != 0
         self.compute_latent_reg = self.loss_weight[3] != 0
         self.compute_latent_pred = self.compute_posterior_vae and self.loss_weight[4] != 0
         self.compute_latent_dyn = self.latent_dyn_weight != 0
-        self.compute_spectral_loss = self.spectral_loss_weight > 0
-        self.spectral_loss = None
-        if self.compute_spectral_loss:
-            if not spectral_loss_names or len(set(spectral_loss_names)) != len(spectral_loss_names):
-                raise ValueError("Enabled spectral loss requires nonempty, unique spectral_loss_names")
-            spectral_indices = [self.in_names.index(name) for name in spectral_loss_names]
-            if set(spectral_indices).intersection(self.logid):
-                raise ValueError("Spectral loss expects linearly normalized channels, not log-transformed channels")
-            self.register_buffer("spectral_channel_indices", torch.tensor(spectral_indices, dtype=torch.long), persistent=False)
-            self.spectral_loss = SphericalBandPowerLoss(spectral_image_size, bands=spectral_loss_bands)
-            self.logger.info(f"Spectral loss: weight={self.spectral_loss_weight}, channels={spectral_loss_names}, bands={self.spectral_loss.bands}")
         self.const_chans = const_chans
         self.rollout_max = rollout_max
         if self.in_frames < self.out_frames + 1:
@@ -638,7 +455,7 @@ class _BaseGroupVAE(BasePredictor):
             ffn_type=ffn_type,
             layer_type=layer_type,
         )
-        encoder_kwargs = dict(common_kwargs, const_chans=self.const_chans, down_times=down_times, depths=encoder_depths, drop_mcmc=drop_mcmc * 2)
+        encoder_kwargs = dict(common_kwargs, const_chans=self.const_chans, down_times=down_times, depths=encoder_depths, drop_mcmc=drop_mcmc)
         decoder_kwargs = dict(
             common_kwargs,
             out_frames=self.out_frames,
@@ -677,7 +494,6 @@ class _BaseGroupVAE(BasePredictor):
         self.patch_decoder_shortcut = patch_decoder_shortcut or sampled
         for module in (*self.vae_encoder_group, *self.posterior_encoder_group):
             module.local_shortcut = not self.patch_decoder_shortcut
-        self.joint_output_correction = JointFieldCorrection(self.out_chans, kernel_size=joint_kernel_size) if use_joint_correction else nn.Identity()
 
         self.latent_mixer = LatentMixerPredictor(
             image_size=tuple(self.vae_encoder_group[0].stage_sizes[-1]),
@@ -690,7 +506,6 @@ class _BaseGroupVAE(BasePredictor):
             norm_type=norm_type,
             layer_type=vt_layer_type,
             ffn_type=ffn_type,
-            drop_mcmc=drop_mcmc,
             use_projection=vt_use_proj,
             group_norm_mode=vt_group_norm_mode,
         )
@@ -728,7 +543,7 @@ class _BaseGroupVAE(BasePredictor):
         return self.compute_posterior_vae
 
     def _configure_pretrain_trainable(self) -> None:
-        """Train the posterior encoder, decoder and optional correction.
+        """Train the posterior encoder and decoder.
 
         `forward_pretrain_stage` does not use the prior encoder or latent mixer. Freezing
         the unused branches avoids DDP unused-parameter reduction errors while
@@ -736,10 +551,10 @@ class _BaseGroupVAE(BasePredictor):
         """
         for param in self.parameters():
             param.requires_grad = False
-        for module in (self.posterior_encoder_group, self.decoder_group, self.joint_output_correction):
+        for module in (self.posterior_encoder_group, self.decoder_group):
             for param in module.parameters():
                 param.requires_grad = True
-        self.logger.info("Pretrain mode: posterior_encoder_group, decoder_group and enabled joint_output_correction are trainable.")
+        self.logger.info("Pretrain mode: posterior_encoder_group and decoder_group are trainable.")
 
     def _apply_residual(self, pred: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
         if self.residual_vae_index.numel() == 0:
@@ -839,7 +654,7 @@ class _BaseGroupVAE(BasePredictor):
         reference_input: torch.Tensor,
         target_hw: tuple[int, int] | None = None,
     ) -> torch.Tensor:
-        """Reassemble, apply residual, then correct reconstruction or forecast.
+        """Reassemble group outputs and apply residual reconstruction.
 
         Args:
             decoded_groups: List of decoded outputs from _decode_all_groups
@@ -847,14 +662,13 @@ class _BaseGroupVAE(BasePredictor):
             target_hw: Optional target height/width for resizing
 
         Returns:
-            Full-field output with residual and optional correction applied (B, out_frames, C, H, W)
+            Full-field output with residual reconstruction applied (B, out_frames, C, H, W)
         """
         full_output = self._reassemble(decoded_groups, reference_input)
         if target_hw is None:
             target_hw = (int(reference_input.shape[-2]), int(reference_input.shape[-1]))
         full_output = self._resize_pred(full_output, target_hw)
-        output = self._apply_residual(full_output, reference_input[:, -1:])
-        return self.joint_output_correction(output)
+        return self._apply_residual(full_output, reference_input[:, -1:])
 
     @final
     def _predict_next(self, input: torch.Tensor, times: Any, t: int, const: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
@@ -1164,7 +978,6 @@ class _BaseGroupVAE(BasePredictor):
         loss_latent_reg = input.new_zeros(())
         loss_latent_dyn_consistency = input.new_zeros(())
         loss_amse = input.new_zeros(())
-        loss_spectral = input.new_zeros(())
         pinn_acc: dict[str, torch.Tensor] = {}
         precip_acc: dict[str, torch.Tensor] = {}
 
@@ -1228,10 +1041,6 @@ class _BaseGroupVAE(BasePredictor):
             output = self._assemble_prediction(group_outputs, input)
             if self.amse_weight > 0:
                 loss_amse += block_weight * self.amse_loss(output, target, channel_weights=self.channel_weights if "channel_weights" in self._buffers else None)
-            if self.compute_spectral_loss:
-                loss_spectral += block_weight * self.spectral_loss(
-                    output.index_select(2, self.spectral_channel_indices), target.index_select(2, self.spectral_channel_indices)
-                )
             if self.compute_latent_dyn:
                 loss_latent_dyn_consistency += block_weight * field_dynamics_consistency_loss(
                     output=output,
@@ -1280,8 +1089,6 @@ class _BaseGroupVAE(BasePredictor):
             loss_dict["loss_latent_dyn_consistency"] = self.latent_dyn_weight * loss_latent_dyn_consistency
         if self.amse_weight > 0:
             loss_dict["loss_amse"] = self.amse_weight * loss_amse
-        if self.compute_spectral_loss:
-            loss_dict["loss_spectral"] = self.spectral_loss_weight * loss_spectral
         loss_dict.update(pinn_acc)
         loss_dict.update(precip_acc)
         if rollout_segment_size is None:
@@ -1401,82 +1208,10 @@ class _BaseGroupVAE(BasePredictor):
 
 
 @MODELS.register()
-class GroupVAEPredictor(_BaseGroupVAE):
-    """Backward-compatible level/variable Group VAE predictor."""
+class TongYun(_TongYunBase):
+    """Model Architecture Designed by XMetAI.
 
-    def __init__(
-        self,
-        group_by: str = "level",
-        level_groups: list[list[int]] | None = None,
-        split_surface: bool = False,
-        plevels: list[int] | None = None,
-        vae_type: str = "index",
-        vae_residual_indices: list[str] | None = None,
-        **kwargs: Any,
-    ) -> None:
-        in_names = list(kwargs.get("in_names", []))
-        if len(in_names) == 0:
-            raise ValueError("GroupVAEPredictor requires in_names to build channel groups.")
-
-        if group_by == "level":
-            if level_groups is None:
-                level_groups = DEFAULT_LEVEL_GROUPS
-            if plevels is None:
-                plevels = LEVELS_13
-            group_slice_indices, _ = build_level_channel_map(in_names, level_groups, split_surface, plevels=plevels)
-        elif group_by == "variable":
-            group_slice_indices, _ = build_variable_channel_map(in_names)
-        else:
-            raise ValueError("group_by must be one of {'level', 'variable'}.")
-
-        residual_vae_indices = self._build_residual_indices(in_names, int(kwargs.get("freq", 6)), vae_type, vae_residual_indices)
-        super().__init__(
-            group_slice_indices=group_slice_indices,
-            residual_vae_indices=residual_vae_indices,
-            **kwargs,
-        )
-        self.logger.info(f"GroupVAEPredictor groups: {self._format_group_info(group_slice_indices)}")
-        self.logger.info(f"GroupVAEPredictor residual indices: {self.residual_vae_indices}")
-
-    @staticmethod
-    def _build_residual_indices(in_names: list[str], freq: int, vae_type: str, vae_residual_indices: list[str] | None) -> list[int]:
-        if vae_type == "absolute":
-            return []
-        if vae_type == "residual":
-            return list(range(len(in_names)))
-        if vae_type != "index":
-            raise ValueError("vae_type must be one of {'residual', 'absolute', 'index'}.")
-
-        if vae_residual_indices is None:
-            if freq == 24:
-                residual_channels = RESIDUAL_VARS_24H
-            elif freq == 6:
-                residual_channels = RESIDUAL_VARS_6H
-            else:
-                residual_channels = []
-        else:
-            residual_channels = vae_residual_indices
-        return [in_names.index(name) for name in residual_channels if name in in_names]
-
-    def _format_group_info(self, group_slice_indices: list[list[int]]) -> list[dict[str, Any]]:
-        return [
-            {
-                "index": gi,
-                "channels": len(group),
-                "indices": group,
-                "names": [self.in_names[idx] for idx in group],
-            }
-            for gi, group in enumerate(group_slice_indices)
-        ]
-
-
-@MODELS.register()
-class FeatureGroupVAEPredictor(_BaseGroupVAE):
-    """Feature-grouped VAE with per-group absolute/residual reconstruction.
-
-    Residual groups encode two frames as ``[x_tm1, x_t - x_tm1]`` and decode a
-    residual target that is added back to ``x_tm1``. Absolute groups encode
-    ``[x_tm1, x_t]`` and decode the absolute target directly.
+    See docs/tongyun/README.md for architecture and training details.
     """
 
     def __init__(
@@ -1491,37 +1226,21 @@ class FeatureGroupVAEPredictor(_BaseGroupVAE):
             group_recon_modes = GROUP_RECON_MODES
         in_names = list(kwargs.get("in_names", []))
         if len(in_names) == 0:
-            raise ValueError("FeatureGroupVAEPredictor requires in_names to build feature channel groups.")
+            raise ValueError("TongYun requires in_names to build feature channel groups.")
         group_slice_indices, _, group_names = build_feature_group_channel_map(in_names, group_var_map)
         group_modes = [group_recon_modes.get(group_name, "absolute") for group_name in group_names]
         invalid_modes = [mode for mode in group_modes if mode not in {"absolute", "residual"}]
         if len(invalid_modes) > 0:
             raise ValueError(f"group_recon_modes must use only 'absolute' or 'residual', got {invalid_modes}")
         residual_vae_indices = [idx for group_indices, mode in zip(group_slice_indices, group_modes) if mode == "residual" for idx in group_indices]
-
-        legacy_keys = (
-            "group_by",
-            "level_groups",
-            "split_surface",
-            "plevels",
-            "group_slice_indices",
-            "group_reassemble_map",
-            "group_names",
-            "group_modes",
-            "vae_type",
-            "residual_vae_indices",
-        )
-        provided_legacy_keys = [key for key in legacy_keys if key in kwargs]
-        if len(provided_legacy_keys) > 0:
-            raise ValueError(f"FeatureGroupVAEPredictor manages grouping and VAE mode internally; remove unsupported args: {provided_legacy_keys}")
         super().__init__(
             group_slice_indices=group_slice_indices,
             residual_vae_indices=residual_vae_indices,
             **kwargs,
         )
         self.group_modes = group_modes
-        self.logger.info(f"FeatureGroupVAEPredictor groups: {self._format_group_info(group_slice_indices, group_names, group_modes)}")
-        self.logger.info(f"FeatureGroupVAEPredictor residual indices: {self.residual_vae_indices}")
+        self.logger.info(f"TongYun groups: {self._format_group_info(group_slice_indices, group_names, group_modes)}")
+        self.logger.info(f"TongYun residual indices: {self.residual_vae_indices}")
 
     def _format_group_info(self, group_slice_indices: list[list[int]], group_names: list[str], group_modes: list[str]) -> list[dict[str, Any]]:
         return [
@@ -1538,7 +1257,7 @@ class FeatureGroupVAEPredictor(_BaseGroupVAE):
     def _prepare_group_input(self, x: torch.Tensor, gi: int) -> torch.Tensor:
         x_group = self._slice_group(x, gi)
         if x_group.shape[1] < 2:
-            raise ValueError(f"FeatureGroupVAEPredictor requires at least two input frames, got shape={tuple(x_group.shape)}")
+            raise ValueError(f"TongYun requires at least two input frames, got shape={tuple(x_group.shape)}")
 
         mode = self.group_modes[gi]
         if mode == "residual":

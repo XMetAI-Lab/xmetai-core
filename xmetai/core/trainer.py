@@ -12,7 +12,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 
-from xmetai.models import EMA
+from xmetai.core.ema import EMA
 from xmetai.utils import EventStorage, get_event_storage, get_rank, is_main_process
 
 __all__ = ["HookBase", "TrainerBase", "SimpleTrainer", "ExpandTrainer"]

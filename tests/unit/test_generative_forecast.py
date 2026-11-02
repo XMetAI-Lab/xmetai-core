@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from xmetai import MODELS
-from xmetai.models.diffusion_forecast import ConditionalGenerativeForecast, DiffusionForecast, FlowMatchingForecast, JiTForecast, ODEGenerativeForecast
+from xmetai.models.dit.dit import ConditionalGenerativeForecast, DiffusionForecast, FlowMatchingForecast, JiTForecast, ODEGenerativeForecast
 
 
 def _base_params():
@@ -44,7 +44,7 @@ def test_models_share_the_generative_forecast_contract():
     assert issubclass(FlowMatchingForecast, ODEGenerativeForecast)
     assert issubclass(JiTForecast, ODEGenerativeForecast)
     assert {model.__module__ for model in (ConditionalGenerativeForecast, ODEGenerativeForecast, DiffusionForecast, FlowMatchingForecast, JiTForecast)} == {
-        "xmetai.models.diffusion_forecast"
+        "xmetai.models.dit.dit"
     }
 
 

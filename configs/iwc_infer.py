@@ -20,6 +20,7 @@ from .iwc_base import (  # noqa: F401
     dataloader,
     in_chans,
     in_frames,
+    in_names,
     logid,
     maskid,
     optimizer,
@@ -51,6 +52,10 @@ model = L(MODELS.get("OnnxInferModel"))(
     onnx_path="iwc.onnx",
     save_dir=output_dir + "/pred/",
     in_chans=in_chans,
+    in_names=in_names,
+    physical_input_perturb=False,  # Once per member, outside the ONNX graph; requires global 0.25-degree Z/U/V fields.
+    initial_height_rms=5.0,  # Global area-weighted geopotential-height RMS in metres.
+    latitude_ascending=True,
     out_chans=out_chans,
     in_frames=in_frames,
     out_frames=1,

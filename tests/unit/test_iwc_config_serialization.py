@@ -7,8 +7,8 @@ import torch
 from omegaconf import OmegaConf
 
 from xmetai.config import LazyConfig
+from xmetai.core.base_predictor import BasePredictor
 from xmetai.core.checkpoint import FSDPCheckpointer
-from xmetai.models.base_predictor import BasePredictor
 
 
 def test_infer_evaluator_loop_does_not_export_detached_config(tmp_path):

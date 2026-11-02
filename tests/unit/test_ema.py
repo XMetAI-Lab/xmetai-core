@@ -11,8 +11,8 @@ from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from xmetai.core.defaults import create_fsdp2_model
+from xmetai.core.ema import EMA
 from xmetai.core.trainer import SimpleTrainer
-from xmetai.models.ema import EMA
 
 
 class TinyModel(torch.nn.Module):

@@ -17,19 +17,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
+from xmetai.core.base_predictor import BasePredictor
 from xmetai.layers.embed import TimestepEmbed
 from xmetai.layers.helpers import to_2tuple
 from xmetai.layers.puyun_blocks import ConvLayerNorm, PuYunBlock
 from xmetai.loss import charbonnier_loss
 from xmetai.registries import MODELS
 
-from .base_predictor import BasePredictor
-
 __all__ = ["PuYunModel"]
 
 
 class PuYunBackbone(nn.Module):
-    """Patch embedding, stacked LKA-FCN layers, and pixel-shuffle patch merging."""
+    """PuYun LKA-FCN backbone, adapted from https://arxiv.org/abs/2409.02123."""
 
     def __init__(
         self,
@@ -171,7 +170,7 @@ class PuYunBackbone(nn.Module):
 
 @MODELS.register()
 class PuYunModel(BasePredictor):
-    """Autoregressive PuYun predictor with the project's training/eval API."""
+    """PuYun (https://arxiv.org/abs/2409.02123) adapted to XMetAI training and evaluation."""
 
     def __init__(
         self,

@@ -20,8 +20,7 @@ from xmetai.layers import (
     TimestepEmbed,
     precompute_freqs_cis,
 )
-
-from .pred_head import PLSFHead
+from xmetai.layers.pred_head import PLSFHead
 
 __all__ = ["UTransformer"]
 

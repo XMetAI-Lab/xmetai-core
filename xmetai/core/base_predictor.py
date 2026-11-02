@@ -17,10 +17,9 @@ import torch
 import xarray as xr
 from torch import Tensor
 
+from xmetai.core.meta import Meta
 from xmetai.loss import ChannelRegistry, pinn_loss, precip_loss
 from xmetai.utils.events import get_event_storage, has_event_storage
-
-from .meta import Meta
 
 __all__ = ["BasePredictor"]
 
@@ -299,10 +298,10 @@ class BasePredictor(Meta):
             data = replace_channels(data, self.accumid, data[:, :, self.accumid] * 0)
         if len(self.maskid) > 0:
             mask = self.mask_shift if hasattr(self, "mask_shift") else self.mask
-            data = replace_channels(data, self.maskid, data[:, :, self.maskid] * mask)
+            data = replace_channels(data, self.maskid, data[:, :, self.maskid] * mask.to(data))
         if len(self.landid) > 0:
             mask = self.land_mask_shift if hasattr(self, "land_mask_shift") else self.land_mask
-            data = replace_channels(data, self.landid, data[:, :, self.landid] * mask)
+            data = replace_channels(data, self.landid, data[:, :, self.landid] * mask.to(data))
         if len(self.logid) > 0:
             data = replace_channels(data, self.logid, data[:, :, self.logid].clamp(min=0, max=7))
         return data

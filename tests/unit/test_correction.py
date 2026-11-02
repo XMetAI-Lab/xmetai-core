@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 
 from xmetai import MODELS
-from xmetai.models.correction import CorrectionModel
-from xmetai.models.onnx_infer import OnnxInferModel
+from xmetai.models.adapter.adapter import ForecastAdapter
+from xmetai.models.infer.onnx import OnnxInferModel
 
 
 class FakeBinding:
@@ -55,12 +55,12 @@ def _build_model(monkeypatch, correct_chans=(1, 3), test_frames=(1, 2), test_cha
         get_available_providers=lambda: ["CPUExecutionProvider"],
         InferenceSession=lambda *args, **kwargs: SingleBatchSession(),
     )
-    monkeypatch.setattr("xmetai.models.onnx_infer.ort", runtime)
+    monkeypatch.setattr("xmetai.models.infer.onnx.ort", runtime)
     monkeypatch.setattr(OnnxInferModel, "_build_session_options", lambda self: SimpleNamespace())
     channels = 4
     in_names = [f"c{index}" for index in range(channels)] if in_names is None else in_names
     test_chans = list(range(channels)) if test_chans is None else list(test_chans)
-    return CorrectionModel(
+    return ForecastAdapter(
         onnx_path="base.onnx",
         correct_chans=correct_chans,
         backbone_kwargs=dict(base_channels=8, ch_mults=(1, 2), layers_per_block=1, time_dim=16, dropout=0.0),
@@ -102,7 +102,7 @@ def _batch(future_steps=1):
 
 
 def test_model_is_registered():
-    assert MODELS.get("CorrectionModel") is CorrectionModel
+    assert MODELS.get("ForecastAdapter") is ForecastAdapter
 
 
 def test_zero_initialized_corrector_preserves_raw_forecast(monkeypatch):
@@ -267,3 +267,47 @@ def test_onnx_stream_supports_optional_targets(monkeypatch, defer_metrics, with_
         assert ("target" in result) == with_targets
         if with_targets:
             torch.testing.assert_close(result["target"], data["targets"][:, index : index + 1])
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("start_frames", [0, 2])
+def test_initial_perturbation_runs_once_per_member_in_physical_space(monkeypatch, streaming, enabled, start_frames):
+    model = _build_model(
+        monkeypatch, test_frames=(1, 2), start_frames=start_frames, physical_input_perturb=enabled, initial_height_rms=2.5, latitude_ascending=False
+    )
+    model.eval()
+    model.members = 3
+    model.stream_ensemble = streaming
+    model.mean.fill_(10)
+    model.std.fill_(2)
+    calls = []
+
+    def perturb(input, weight, names, height_rms, latitude_ascending):
+        assert height_rms == 2.5
+        assert not latitude_ascending
+        torch.testing.assert_close(input, torch.full_like(input, 10))
+        calls.append(input.clone())
+        return input + float((len(calls) - 1) % model.members + 1)
+
+    monkeypatch.setattr("xmetai.models.infer.onnx.physical_input_perturb", perturb)
+    batch = _batch(future_steps=2)
+    batch = {key: value.repeat(2, *([1] * (value.ndim - 1))) for key, value in batch.items()}
+    untouched = batch["inputs"].clone()
+    offset = 2.0 if enabled else 0.0
+    if streaming:
+        results = list(OnnxInferModel.stream_test(model, batch))
+        for lead, result in enumerate(results, start=1):
+            torch.testing.assert_close(result["output"], torch.full_like(result["output"], 10 + offset + lead))
+    else:
+        output = OnnxInferModel.test_cascade(model, model.process_data(batch))
+        for lead in (1, 2):
+            torch.testing.assert_close(output[:, lead - 1], torch.full_like(output[:, lead - 1], (offset + lead) / 2))
+    assert len(calls) == (6 if enabled else 0)
+    torch.testing.assert_close(batch["inputs"], untouched)
+
+
+@pytest.mark.parametrize("amplitude", [-1.0, float("nan"), float("inf")])
+def test_invalid_initial_perturbation_amplitude_fails_at_construction(monkeypatch, amplitude):
+    with pytest.raises(ValueError, match="initial_height_rms"):
+        _build_model(monkeypatch, initial_height_rms=amplitude)

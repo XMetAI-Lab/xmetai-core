@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from xmetai.models.pred_head import PLSFHead
+from xmetai.layers.pred_head import PLSFHead
 
 
 def test_resize_preserves_constant_fields_and_zero_innovations():
