@@ -1,3 +1,4 @@
+import logging
 from functools import lru_cache
 from typing import Optional, Tuple
 
@@ -5,6 +6,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "precompute_freqs_cis",
@@ -259,7 +262,10 @@ class RotaryAttention(nn.Module):
         self.dropout = dropout
         self.max_seq_len = max_seq_len
         self.is_causal = is_causal
-        self.flash = flash
+        # Choose once so activation checkpoint recomputation uses the same path.
+        self.flash = flash and torch.version.hip is None
+        if flash and not self.flash:
+            logger.info("Using manual RotaryAttention on HIP instead of SDPA")
 
     def forward(
         self,
@@ -317,6 +323,9 @@ class RotaryAttention(nn.Module):
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / np.sqrt(self.head_dim)
+            if self.is_causal:
+                causal_mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=scores.device).triu(1)
+                scores = scores.masked_fill(causal_mask, float("-inf"))
             if mask is not None:
                 scores = scores + mask
             scores = F.softmax(scores.float(), dim=-1).to(xq)

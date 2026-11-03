@@ -89,6 +89,31 @@ class TestAttention:
 class TestRotaryAttention:
     """Test Rotary Position Embedding (RoPE) attention."""
 
+    @pytest.mark.parametrize("is_causal", [False, True])
+    def test_hip_fallback_matches_sdpa_output_and_gradients(self, monkeypatch, is_causal):
+        from torch.utils.checkpoint import checkpoint
+
+        monkeypatch.setattr(torch.version, "hip", None)
+        reference = RotaryAttention(dim=16, n_heads=4, n_kv_heads=2, flash=True, is_causal=is_causal)
+        monkeypatch.setattr(torch.version, "hip", "6.3")
+        fallback = RotaryAttention(dim=16, n_heads=4, n_kv_heads=2, flash=True, is_causal=is_causal)
+        fallback.load_state_dict(reference.state_dict())
+        assert reference.flash
+        assert not fallback.flash
+        x = torch.randn(2, 8, 16, requires_grad=True)
+        y = x.detach().clone().requires_grad_()
+        cos, sin = precompute_freqs_cis(4, 8)
+        mask = torch.zeros(1, 8, 8)
+        mask[:, :, -1] = float("-inf")
+        expected = reference(x, cos, sin, mask=mask)
+        actual = checkpoint(fallback, y, cos, sin, mask, use_reentrant=False)
+        torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
+        expected.square().sum().backward()
+        actual.square().sum().backward()
+        torch.testing.assert_close(y.grad, x.grad, atol=1e-6, rtol=1e-5)
+        for param, ref_param in zip(fallback.parameters(), reference.parameters()):
+            torch.testing.assert_close(param.grad, ref_param.grad, atol=1e-6, rtol=1e-5)
+
     def test_rotary_attention_forward_shape(self, sample_input_2d, sample_freqs_cis):
         """Test rotary attention output shape."""
         B, L, C = sample_input_2d.shape
