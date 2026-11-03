@@ -45,6 +45,7 @@ Options:
   --master-addr, -a ADDR    Specify the master address for distributed training. Default: ${MASTER_ADDR}
   --nnodes, -n NUM          Specify the total number of nodes. Default: ${NNODES}
   --sleep TIME              Sleep for TIME seconds before starting. Default: ${SLEEP_TIME}
+  --miopen-disable-s2437    Disable the MIOpen S2437 convolution solver (optional DCU workaround)
   --verbose, -v             Enable verbose logging mode
   --help, -h                Show this help message and exit
 EOF
@@ -130,7 +131,7 @@ function setup_environment() {
     fi
 
     if [[ "$config_file_name" == *"esfm"* ]]; then # coupled atmosphere-land-ocean model
-        export DATA_DIR="${data_dir}/zarr_refresh_v3/s2s.19500101_20260417.c76.1p5.h24.v1:${data_dir}/zarr_refresh_v3/land.1950_2024.c8.1p5.h24.v1:${data_dir}/zarr_refresh_v3/oras5.1993_2024.c88.1p5.h24.v1"
+        export DATA_DIR="${DATA_DIR:-${data_dir}/zarr_refresh_v3/s2s.19500101_20260417.c76.1p5.h24.v1:${data_dir}/zarr_refresh_v3/land.1950_2024.c8.1p5.h24.v1:${data_dir}/zarr_refresh_v3/oras5.1993_2024.c88.1p5.h24.v1}"
         if grep -q "esfm_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/esfm_base.py"
         else
@@ -138,13 +139,13 @@ function setup_environment() {
         fi
     elif [[ "$config_file_name" == *"s2s"* ]]; then # for s2s model tests
         if [[ "$config_file_name" == *"p25"* && "$config_file_name" == *"cra"* ]]; then # CRA 0.25 deg
-            export DATA_DIR="${data_dir}/zarr_refresh_v3/cra.1979_2024.c87.p25.h24.v1/"
+            export DATA_DIR="${DATA_DIR:-${data_dir}/zarr_refresh_v3/cra.1979_2024.c87.p25.h24.v1/}"
         elif [[ "$config_file_name" == *"p25"* ]]; then # ERA 0.25 deg
-            export DATA_DIR="${data_dir}/zarr_refresh_v3/era5.1959_2025.c87.p25.h24.v1/"
+            export DATA_DIR="${DATA_DIR:-${data_dir}/zarr_refresh_v3/era5.1959_2025.c87.p25.h24.v1/}"
         elif [[ "$config_file_name" == *"cra"* ]]; then # CRA 1.5 deg
-            export DATA_DIR="${data_dir}/zarr_refresh_v3/cra.1979_2025.c87.1p5.h24.v1/"
+            export DATA_DIR="${DATA_DIR:-${data_dir}/zarr_refresh_v3/cra.1979_2025.c87.1p5.h24.v1/}"
         else # ERA 1.5 deg
-            export DATA_DIR="${data_dir}/zarr_refresh_v3/s2s.19500101_20260417.c76.1p5.h24.v1/"
+            export DATA_DIR="${DATA_DIR:-${data_dir}/zarr_refresh_v3/s2s.19500101_20260417.c76.1p5.h24.v1/}"
         fi
         # check if string s2s_base exist in ${CONFIG_FILE_TMP}
         if grep -q "s2s_base" "${CONFIG_FILE_TMP}"; then
@@ -154,9 +155,9 @@ function setup_environment() {
         fi
     elif [[ "$config_file_name" == *"ens"* || "$config_file_name" == *"iwc"* ]]; then
         if [[ "$config_file_name" == *"fdp"* || "$config_file_name" == *"cra"* ]]; then
-            export DATA_DIR="${data_dir}/zarr_refresh_v3/cra.19790101_20260714.c71.p25.h6.v1/"
+            export DATA_DIR="${DATA_DIR:-${data_dir}/zarr_refresh_v3/cra.19790101_20260714.c71.p25.h6.v1/}"
         else
-            export DATA_DIR="${data_dir}/zarr_refresh_v3/era5.1979_2024.c78.p25.h6.v1/"
+            export DATA_DIR="${DATA_DIR:-${data_dir}/zarr_refresh_v3/era5.1979_2024.c78.p25.h6.v1/}"
         fi
         if grep -q "iwc_base" "${CONFIG_FILE_TMP}"; then
             export BASE_CONFIG="${ROOT_DIR}/configs/iwc_base.py"
@@ -251,6 +252,10 @@ while [[ $# -gt 0 ]]; do
         --sleep)
             SLEEP_TIME="$2"
             shift 2
+            ;;
+        --miopen-disable-s2437)
+            export MIOPEN_DEBUG_HIPNN_CONV_S2437=0
+            shift
             ;;
         --verbose|-v)
             VERBOSE_MODE=1
