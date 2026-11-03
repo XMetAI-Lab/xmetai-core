@@ -89,8 +89,8 @@ class TestAttention:
 class TestRotaryAttention:
     """Test Rotary Position Embedding (RoPE) attention."""
 
-    @pytest.mark.parametrize("is_causal", [False, True])
-    def test_hip_fallback_matches_sdpa_output_and_gradients(self, monkeypatch, is_causal):
+    @pytest.mark.parametrize(("is_causal", "use_mask"), [(False, False), (False, True), (True, False)])
+    def test_hip_fallback_matches_sdpa_output_and_gradients(self, monkeypatch, is_causal, use_mask):
         from torch.utils.checkpoint import checkpoint
 
         monkeypatch.setattr(torch.version, "hip", None)
@@ -103,8 +103,11 @@ class TestRotaryAttention:
         x = torch.randn(2, 8, 16, requires_grad=True)
         y = x.detach().clone().requires_grad_()
         cos, sin = precompute_freqs_cis(4, 8)
-        mask = torch.zeros(1, 8, 8)
-        mask[:, :, -1] = float("-inf")
+        # Some supported PyTorch versions reject an explicit mask with is_causal=True.
+        mask = None
+        if use_mask:
+            mask = torch.zeros(1, 8, 8)
+            mask[:, :, -1] = float("-inf")
         expected = reference(x, cos, sin, mask=mask)
         actual = checkpoint(fallback, y, cos, sin, mask, use_reentrant=False)
         torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
