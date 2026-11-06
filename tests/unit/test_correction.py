@@ -138,6 +138,79 @@ def test_training_learns_target_minus_raw_forecast(monkeypatch):
     assert torch.count_nonzero(model.corrector.out.weight.grad) > 0
 
 
+@pytest.mark.parametrize("linear_loss_enable", [False, True])
+@pytest.mark.parametrize("use_latitude", [False, True])
+@pytest.mark.parametrize("segmented", [False, True])
+def test_optional_linear_loss_matches_observed_mm_weights(monkeypatch, linear_loss_enable, use_latitude, segmented):
+    model = _build_model(
+        monkeypatch,
+        correct_chans=(1,),
+        target_chans=(1,),
+        logid=(1,),
+        linear_loss_enable=linear_loss_enable,
+        linear_loss_a=2.0,
+        linear_loss_use_latitude=use_latitude,
+        precip_mm_scale=21.6,
+    )
+    model.mean[1].fill_(0.4)
+    model.std[1].fill_(1.7)
+    model.weight.copy_(torch.linspace(0.25, 2.0, 8).reshape(1, 8, 1))
+
+    class ConstantCorrection(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.bias = nn.Parameter(torch.tensor(0.25))
+
+        def forward(self, x, timesteps, return_dict=False):
+            return (self.bias.expand(x.shape[0], 1, *x.shape[-2:]),)
+
+    model.corrector = ConstantCorrection()
+    feedback = []
+    _install_incrementing_onnx(model, calls=feedback)
+    observed = torch.tensor([0.0, 0.05, 0.099, 0.1001, 1.0, 10.0, 50.0, 100000.0]).reshape(1, 1, 1, 8).expand(1, 1, 8, 8)
+    target_norm = (torch.log1p(observed / 21.6) - 0.4) / 1.7
+    data = _batch(future_steps=2)
+    data["inputs"][:, :, 1] = -0.4 / 1.7
+    data["targets"] = target_norm[:, None].expand(1, 2, 1, 8, 8)
+    if segmented:
+        losses, state, done = model(data, rollout_segment_size=1)
+        assert not done
+        losses["loss_rec"].backward()
+        next_losses, _, done = model(None, rollout_state=state, rollout_segment_size=1)
+        assert done
+        next_losses["loss_rec"].backward()
+        actual = losses["loss_rec"].detach() + next_losses["loss_rec"].detach()
+    else:
+        actual = model(data)["loss_rec"]
+        actual.backward()
+
+    weight = torch.ones_like(observed)
+    if linear_loss_enable:
+        weight = torch.where(observed < 0.1, 1.0, 1.0 + 2.0 * observed)
+        if use_latitude:
+            weight = weight * model.weight
+    bias = torch.tensor(0.25, requires_grad=True)
+    expected = sum(torch.sqrt((weight * (bias - (target_norm - (np.log1p(lead) - 0.4) / 1.7))).square() + 1e-6).mean() / 2 for lead in (1, 2))
+    expected.backward()
+
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(model.corrector.bias.grad, bias.grad)
+    torch.testing.assert_close(feedback[0], torch.zeros_like(feedback[0]))
+    torch.testing.assert_close(feedback[1], torch.ones_like(feedback[1]))
+
+
+@pytest.mark.parametrize("slope", [-1.0, float("nan"), float("inf")])
+def test_optional_linear_loss_rejects_invalid_slope(monkeypatch, slope):
+    with pytest.raises(ValueError, match="linear_loss_a must be finite and non-negative"):
+        _build_model(monkeypatch, correct_chans=(1,), logid=(1,), linear_loss_enable=True, linear_loss_a=slope)
+
+
+@pytest.mark.parametrize(("correct_chans", "logid"), [((1,), ()), ((1, 3), (1, 3))])
+def test_optional_linear_loss_requires_one_log_precipitation_channel(monkeypatch, correct_chans, logid):
+    with pytest.raises(ValueError, match="exactly one corrected log-space precipitation channel"):
+        _build_model(monkeypatch, correct_chans=correct_chans, logid=logid, linear_loss_enable=True)
+
+
 def test_training_adds_precipitation_losses_on_corrected_forecast(monkeypatch):
     model = _build_model(
         monkeypatch,

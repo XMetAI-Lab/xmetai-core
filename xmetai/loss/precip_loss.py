@@ -7,8 +7,22 @@ import torch
 import torch.nn.functional as F
 
 __all__ = [
+    "linear_precip_weight",
+    "precip_mm_from_normalized",
     "precip_loss",
 ]
+
+
+def precip_mm_from_normalized(target: torch.Tensor, mean: torch.Tensor, std: torch.Tensor, precip_mm_scale: float) -> torch.Tensor:
+    """Recover observed mm without an upper clamp on log precipitation."""
+    target = target.float()
+    log_tp = (target * std.to(target) + mean.to(target)).clamp_min(0.0)
+    return torch.expm1(log_tp) * precip_mm_scale
+
+
+def linear_precip_weight(obs_mm: torch.Tensor, slope: float) -> torch.Tensor:
+    """Weight 1 below 0.1 mm, otherwise 1 + slope * p, without a ceiling."""
+    return torch.where(obs_mm < 0.1, torch.ones_like(obs_mm), 1.0 + slope * obs_mm)
 
 
 def occurrence_loss(

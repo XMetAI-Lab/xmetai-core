@@ -1,5 +1,6 @@
 """Forecast adaptation through learned residual correction of frozen ONNX forecasts."""
 
+import math
 from typing import Any, Mapping, Sequence, cast
 
 import numpy as np
@@ -10,6 +11,7 @@ from torch import Tensor
 
 from xmetai.layers import DarknetConvUNet2D
 from xmetai.loss import charbonnier_loss, precip_loss
+from xmetai.loss.precip_loss import linear_precip_weight, precip_mm_from_normalized
 from xmetai.models.infer.onnx import OnnxInferModel
 from xmetai.registries import MODELS
 
@@ -24,6 +26,11 @@ class ForecastAdapter(OnnxInferModel):
     ``target - raw_forecast`` in the normalized training space. Corrected
     forecasts are post-processing outputs and are not fed back into the ONNX
     rollout.
+
+    ``linear_loss_enable`` optionally weights the residual error by observed
+    precipitation: 1 below 0.1 mm, otherwise ``1 + linear_loss_a * p`` with no
+    ceiling, optionally multiplied by latitude weights. It requires exactly
+    one corrected log-space precipitation channel. Disabled by default.
     """
 
     def __init__(
@@ -34,6 +41,9 @@ class ForecastAdapter(OnnxInferModel):
         rollout_alpha: float = 1.0,
         zero_init_output: bool = True,
         target_chans: Sequence[int] | None = None,
+        linear_loss_enable: bool = False,
+        linear_loss_a: float = 1.0,
+        linear_loss_use_latitude: bool = True,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -69,6 +79,31 @@ class ForecastAdapter(OnnxInferModel):
                 raise ValueError(f"precipitation loss channels must be included in correct_chans, missing {missing_precip_chans}")
             self.correct_precip_indices = tuple(self.correct_chans.index(channel) for channel in self.precip_indices)
 
+        self.linear_loss_enable = linear_loss_enable
+        if self.linear_loss_enable:
+            if len(self.correct_chans) != 1 or self.correct_chans[0] not in self.logid:
+                raise ValueError("linear_loss_enable=True requires exactly one corrected log-space precipitation channel")
+            if "mean" not in self._buffers or "std" not in self._buffers:
+                raise ValueError("linear_loss_enable=True requires registered 'mean' and 'std' buffers")
+            self.linear_loss_a = float(linear_loss_a)
+            if not math.isfinite(self.linear_loss_a) or self.linear_loss_a < 0.0:
+                raise ValueError(f"linear_loss_a must be finite and non-negative, got {self.linear_loss_a}")
+            channel = self.correct_chans[0]
+            mean_value = float(self.get_buffer("mean")[channel])
+            std_value = float(self.get_buffer("std")[channel])
+            if not math.isfinite(mean_value) or not math.isfinite(std_value) or std_value <= 0.0:
+                raise ValueError(f"Corrected precipitation channel requires finite mean and positive finite std, got mean={mean_value} and std={std_value}")
+            if not math.isfinite(self.precip_mm_scale):
+                raise ValueError(f"precip_mm_scale must be finite, got {self.precip_mm_scale}")
+            self.linear_loss_use_latitude = bool(linear_loss_use_latitude) and "weight" in self._buffers
+            if linear_loss_use_latitude and not self.linear_loss_use_latitude:
+                self.logger.warning("linear_loss_use_latitude=True but no 'weight' buffer is registered; latitude weighting is skipped.")
+            self.logger.info(
+                f"Linear residual loss: w(p)=1 for p<0.1 mm, otherwise 1+{self.linear_loss_a:g}*p; no upper cap; "
+                f"tp_mean={mean_value:.6g} tp_std={std_value:.6g} precip_mm_scale={self.precip_mm_scale:g}; "
+                f"latitude_weight={'on' if self.linear_loss_use_latitude else 'off'}"
+            )
+
         options = dict(backbone_kwargs)
         base_channels = int(options.pop("base_channels"))
         ch_mults = tuple(int(mult) for mult in options.pop("ch_mults"))
@@ -91,6 +126,16 @@ class ForecastAdapter(OnnxInferModel):
             nn.init.zeros_(self.corrector.out.weight)
             if self.corrector.out.bias is not None:
                 nn.init.zeros_(self.corrector.out.bias)
+
+    def residual_loss(self, correction: Tensor, residual_target: Tensor, target_norm: Tensor) -> Tensor:
+        if not self.linear_loss_enable:
+            return charbonnier_loss(correction, residual_target)
+        channel = self.correct_chans[0]
+        obs_mm = precip_mm_from_normalized(target_norm, self.get_buffer("mean")[channel], self.get_buffer("std")[channel], self.precip_mm_scale)
+        weight = linear_precip_weight(obs_mm, self.linear_loss_a)
+        if self.linear_loss_use_latitude:
+            weight = weight * self.get_buffer("weight")
+        return charbonnier_loss(correction, residual_target, weight=weight)
 
     def predict_correction(self, raw_forecast: Tensor, lead: int | Tensor) -> Tensor:
         """Predict residuals with a one-based lead (one step is ``freq`` hours)."""
@@ -170,7 +215,7 @@ class ForecastAdapter(OnnxInferModel):
                 target = targets[:, step : step + 1, self.correct_target_chans].to(device=physical_input.device, dtype=torch.float32, non_blocking=True)
                 raw_selected = raw_normalized[:, :, self.correct_chans]
                 residual_target = target[:, 0] - raw_selected[:, 0]
-                loss_rec = loss_rec + rolling_weights[step] * charbonnier_loss(correction, residual_target)
+                loss_rec = loss_rec + rolling_weights[step] * self.residual_loss(correction, residual_target, target[:, 0])
                 if self.precip_loss_enable:
                     corrected = raw_selected + correction[:, None].float()
                     for name, value in precip_loss(
