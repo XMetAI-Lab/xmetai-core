@@ -890,7 +890,7 @@ class _TongYunBase(BasePredictor):
             return self.forward_pretrain_stage(data)
 
         if rollout_state is None:
-            targets = data["targets"][:, : data.get("future_frames", self.out_frames)]
+            targets = data["targets"][:, : data.get("future_frames", self.out_frames)].to(dtype=self.dtype, device=self.device, non_blocking=True)
             model_data = data.copy()
             del model_data["targets"]
             data = self.process_data(model_data)

@@ -19,6 +19,8 @@ def physical_input_perturb(
     from the same tapered potential; no second taper is applied to the winds.
     The smooth taper suppresses the tropics and polar caps. This is a limited
     initial-condition baseline, not a full balanced analysis perturbation.
+    Perturbations are computed in float32 and applied in the input dtype;
+    the returned tensor preserves the input dtype and device.
     """
     if not math.isfinite(height_rms) or height_rms < 0:
         raise ValueError("height_rms must be finite and nonnegative (metres).")
@@ -77,7 +79,7 @@ def physical_input_perturb(
         dx = (phi.roll(-1, -1) - phi.roll(1, -1)) / (2 * dlon * 6371000 * cos)
         coriolis = torch.where(deg >= 20, 2 * 7.292115e-5 * lat.sin(), torch.ones_like(lat))[:, None]
         increments = (phi, -dy / coriolis, dx / coriolis)
-        result = input.float().clone()
+        result = input.clone()
         for channels, delta in zip(indices, increments):
-            result[:, :, channels] += delta.unsqueeze(1)
+            result[:, :, channels] += delta.unsqueeze(1).to(dtype=input.dtype)
     return result
