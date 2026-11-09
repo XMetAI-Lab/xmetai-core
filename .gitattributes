@@ -1,0 +1,2 @@
+.gitattributes text eol=lf
+scripts/stage1_env_check.sh text eol=lf
