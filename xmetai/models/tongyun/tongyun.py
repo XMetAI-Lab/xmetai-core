@@ -780,7 +780,7 @@ class _TongYunBase(BasePredictor):
         if not math.isfinite(self.gt_weighted_loss_weight) or self.gt_weighted_loss_weight < 0:
             raise ValueError("gt_weighted_loss_weight must be finite and nonnegative")
         self.gt_weighted_loss: GTWeightedLoss | None = None
-        if features is None:
+        if features is None or self.gt_weighted_loss_weight == 0.0:
             return
         # Select only configured features; unselected channels must not enter the mean.
         names = {channel for name, spec in features.items() for channel in spec.get("channels", (name,))}
