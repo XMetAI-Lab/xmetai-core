@@ -88,3 +88,42 @@ def test_s2s_config_uses_tongyun_without_legacy_weights_or_freezing(monkeypatch,
     assert "s2s_group_vae" not in str(config.train.init_checkpoint)
     assert config.model.in_frames == 2
     assert config.model.freq == 24
+
+
+def test_gt_weighted_loss_uses_selected_channels_and_backpropagates(monkeypatch):
+    from xmetai.models.tongyun import tongyun
+
+    calls = []
+
+    class RecordingLoss(torch.nn.Module):
+        def __init__(self, names, mean, std, features):
+            super().__init__()
+            assert names == ["z500"]
+            torch.testing.assert_close(mean, torch.zeros(1))
+            torch.testing.assert_close(std, torch.ones(1))
+
+        def forward(self, output, target, *, weight, channel_indices):
+            assert channel_indices == (1,)
+            loss = ((output[:, :, channel_indices] - target[:, :, channel_indices]).square() * weight).mean()
+            calls.append(loss)
+            return loss
+
+    monkeypatch.setattr(tongyun, "GTWeightedLoss", RecordingLoss)
+    model = _tiny_tongyun(gt_weighted_features={"z500": {}}, gt_weighted_loss_weight=0.7)
+    batch = {"inputs": torch.randn(1, 2, 3, 4, 4), "targets": torch.randn(1, 1, 3, 4, 4), "times": torch.tensor([0]), "future_frames": 1}
+    losses = model(batch)
+    torch.testing.assert_close(losses["loss_gt_weighted"], 0.7 * calls[0])
+    losses["loss_gt_weighted"].backward()
+    assert any(parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in model.parameters())
+
+
+@pytest.mark.parametrize("weight", [-1.0, float("inf"), float("nan")])
+def test_gt_weighted_loss_rejects_invalid_weight(weight):
+    with pytest.raises(ValueError, match="gt_weighted_loss_weight"):
+        _tiny_tongyun(gt_weighted_loss_weight=weight)
+
+
+def test_gt_weighted_loss_disabled_by_default():
+    model = _tiny_tongyun()
+    assert model.gt_weighted_loss is None
+    assert model.gt_weighted_loss_weight == 0.0

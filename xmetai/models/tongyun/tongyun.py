@@ -19,7 +19,7 @@ from einops import rearrange
 from xmetai.core.base_predictor import BasePredictor, replace_channels
 from xmetai.layers import AdaptiveLN, EarthConvTranspose2d, set_lora_step
 from xmetai.layers.utransformer import UTransformer
-from xmetai.loss import SphericalAMSELoss, charbonnier_loss, field_dynamics_consistency_loss
+from xmetai.loss import GTWeightedLoss, SphericalAMSELoss, charbonnier_loss, field_dynamics_consistency_loss
 from xmetai.registries import MODELS
 from xmetai.utils import get_event_storage
 from xmetai.utils.events import has_event_storage
@@ -359,6 +359,8 @@ class _TongYunBase(BasePredictor):
         alpha: float = 1.0,
         loss_weight: tuple[float, float, float, float, float] = (0.2, 0.2, 1.0, 0.01, 0.3),
         latent_dyn_weight: float = 0.0,
+        gt_weighted_features: dict | None = None,
+        gt_weighted_loss_weight: float = 0.0,
         amse_weight: float = 0.0,
         amse_image_size: tuple[int, int] | None = None,
         rollout_max: int = 50,
@@ -375,6 +377,7 @@ class _TongYunBase(BasePredictor):
         super().__init__(**kwargs)
         self.logger.name = __name__
 
+        self._init_gt_weighted_loss(gt_weighted_features, gt_weighted_loss_weight)
         self.alpha = alpha
         if len(loss_weight) != 5:
             raise ValueError("loss_weight must contain five floats: (vae_input, vae_target, pred_rec, latent_reg, latent_pred)")
@@ -772,6 +775,20 @@ class _TongYunBase(BasePredictor):
         Hp, Wp = pooled.shape[-2:]
         return pooled.view(B, T, C, Hp, Wp)
 
+    def _init_gt_weighted_loss(self, features: dict | None, loss_weight: float) -> None:
+        self.gt_weighted_loss_weight = float(loss_weight)
+        if not math.isfinite(self.gt_weighted_loss_weight) or self.gt_weighted_loss_weight < 0:
+            raise ValueError("gt_weighted_loss_weight must be finite and nonnegative")
+        self.gt_weighted_loss: GTWeightedLoss | None = None
+        if features is None:
+            return
+        # Select only configured features; unselected channels must not enter the mean.
+        names = {channel for name, spec in features.items() for channel in spec.get("channels", (name,))}
+        indices = [i for i, name in enumerate(self.in_names) if name in names]
+        selected_names = [self.in_names[i] for i in indices]
+        self.gt_weighted_loss = GTWeightedLoss(selected_names, self.mean.reshape(-1)[indices], self.std.reshape(-1)[indices], features)
+        self.gt_weighted_channel_indices = tuple(indices)
+
     def _pretrain_mcr_loss(
         self,
         h_states: list[torch.Tensor],
@@ -978,6 +995,8 @@ class _TongYunBase(BasePredictor):
         loss_latent_reg = input.new_zeros(())
         loss_latent_dyn_consistency = input.new_zeros(())
         loss_amse = input.new_zeros(())
+        compute_gt_weighted_loss = self.gt_weighted_loss is not None and self.gt_weighted_loss_weight > 0.0
+        loss_gt_weighted = input.new_zeros(())
         pinn_acc: dict[str, torch.Tensor] = {}
         precip_acc: dict[str, torch.Tensor] = {}
 
@@ -1039,6 +1058,8 @@ class _TongYunBase(BasePredictor):
 
             group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames, shortcuts=prior_shortcuts)
             output = self._assemble_prediction(group_outputs, input)
+            if compute_gt_weighted_loss:
+                loss_gt_weighted += block_weight * self.gt_weighted_loss(output, target, weight=self.weight, channel_indices=self.gt_weighted_channel_indices)
             if self.amse_weight > 0:
                 loss_amse += block_weight * self.amse_loss(output, target, channel_weights=self.channel_weights if "channel_weights" in self._buffers else None)
             if self.compute_latent_dyn:
@@ -1089,6 +1110,8 @@ class _TongYunBase(BasePredictor):
             loss_dict["loss_latent_dyn_consistency"] = self.latent_dyn_weight * loss_latent_dyn_consistency
         if self.amse_weight > 0:
             loss_dict["loss_amse"] = self.amse_weight * loss_amse
+        if compute_gt_weighted_loss:
+            loss_dict["loss_gt_weighted"] = self.gt_weighted_loss_weight * loss_gt_weighted
         loss_dict.update(pinn_acc)
         loss_dict.update(precip_acc)
         if rollout_segment_size is None:
