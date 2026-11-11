@@ -11,7 +11,7 @@
 
 ## 开发环境
 
-- Python：推荐 Python ≥ 3.9。
+- Python：要求 Python ≥ 3.10。
 - 建议使用虚拟环境或 Conda 管理依赖。
 
 本地开发安装（含格式化与 lint 工具）：

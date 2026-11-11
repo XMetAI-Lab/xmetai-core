@@ -15,7 +15,7 @@ Release version: **1.0.0**. See the [changelog](CHANGELOG.md).
 
 ## Installation
 
-Requires **Python 3.9+** and **PyTorch 2.9+**. GPU features require a compatible device and runtime. These are declared minimums, not a claim that every version combination has been tested.
+Requires **Python 3.10+** and **PyTorch 2.9+**. GPU features require a compatible device and runtime. These are declared minimums, not a claim that every version combination has been tested.
 
 From a source checkout, run:
 
