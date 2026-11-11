@@ -2,9 +2,20 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-XMetAI Core is a PyTorch framework for research, training, evaluation, and ONNX export of weather and climate prediction models, developed by XMetAI Lab.
+XMETAI Core is the core framework for meteorological AI model training and inference, developed by the Xiong’an Institute of Meteorological Artificial Intelligence (雄安气象人工智能研究院). It is built on PyTorch and supports model development, training, evaluation, and ONNX export.
 
 Release version: **1.0.0**. See the [changelog](CHANGELOG.md).
+
+## Related projects
+
+Exported ONNX models require GPU inference support. Use [xmetai-onnx-plugins](https://github.com/XMetAI-Lab/xmetai-onnx-plugins) to provide the custom GPU operators required by the corresponding models.
+
+| Project | Purpose |
+| --- | --- |
+| [xmetai-skills](https://github.com/XMetAI-Lab/xmetai-skills) | Skills for model development |
+| [xmetai-datakit](https://github.com/XMetAI-Lab/xmetai-datakit) | Data processing and evaluation |
+| [xmetai-inference](https://github.com/XMetAI-Lab/xmetai-inference/tree/main) | Dedicated inference workflows |
+| [xmetai-onnx-plugins](https://github.com/XMetAI-Lab/xmetai-onnx-plugins) | Custom GPU operators for exported ONNX models |
 
 ## Features
 
@@ -29,7 +40,7 @@ pip install -e '.[dev]'
 pip install -e '.[lightning,export,inference]'
 ```
 
-The `gpu` extra installs Mamba (`mamba-ssm`) for models that need it; it does not install GPU drivers. The `inference` extra installs `onnxruntime-gpu`; a CPU-only runtime can be installed separately as `onnxruntime`. `pyproject.toml` is the dependency source of truth.
+The `gpu` extra installs Mamba (`mamba-ssm`) for models that need it; it does not install GPU drivers. The `inference` extra installs `onnxruntime-gpu`; install the corresponding ONNX plugins for models that use custom GPU operators. `pyproject.toml` is the dependency source of truth.
 
 ## Data and configuration
 

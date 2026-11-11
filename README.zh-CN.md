@@ -2,9 +2,20 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-XMetAI Core 是由雄安气象人工智能创新研究院（XMetAI Lab）开发的 PyTorch 天气与气候预测框架，用于模型研究、训练、评估与 ONNX 导出。
+XMETAI Core 是气象人工智能模型训练推理核心框架，由雄安气象人工智能研究院研发。框架基于 PyTorch，支持模型开发、训练、评估与 ONNX 导出。
 
 发布版本：**1.0.0**。参见[变更记录](CHANGELOG.md)。
+
+## 配套项目
+
+导出的 ONNX 模型需要 GPU 推理支持，可使用 [xmetai-onnx-plugins](https://github.com/XMetAI-Lab/xmetai-onnx-plugins) 提供对应模型所需的自定义 GPU 算子。
+
+| 项目 | 用途 |
+| --- | --- |
+| [xmetai-skills](https://github.com/XMetAI-Lab/xmetai-skills) | 模型开发所用的技能 |
+| [xmetai-datakit](https://github.com/XMetAI-Lab/xmetai-datakit) | 数据处理与评估 |
+| [xmetai-inference](https://github.com/XMetAI-Lab/xmetai-inference/tree/main) | 独立推理流程 |
+| [xmetai-onnx-plugins](https://github.com/XMetAI-Lab/xmetai-onnx-plugins) | 导出 ONNX 模型所需的自定义 GPU 算子 |
 
 ## 核心特性
 
@@ -29,7 +40,7 @@ pip install -e '.[dev]'
 pip install -e '.[lightning,export,inference]'
 ```
 
-`gpu` 扩展为需要 Mamba 的模型安装 `mamba-ssm`，不会安装显卡驱动。`inference` 扩展安装 `onnxruntime-gpu`；仅 CPU 推理可单独安装 `onnxruntime`。依赖统一以 `pyproject.toml` 为准。
+`gpu` 扩展为需要 Mamba 的模型安装 `mamba-ssm`，不会安装显卡驱动。`inference` 扩展安装 `onnxruntime-gpu`；使用自定义 GPU 算子的模型还需要安装对应的 ONNX 插件。依赖统一以 `pyproject.toml` 为准。
 
 ## 数据与配置
 
