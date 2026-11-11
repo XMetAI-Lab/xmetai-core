@@ -15,7 +15,7 @@ XMetAI Core 是由雄安气象人工智能创新研究院（XMetAI Lab）开发�
 
 ## 安装
 
-要求 **Python 3.9+**、**PyTorch 2.7+**。GPU 功能需要兼容的设备与运行环境。这些是声明的最低版本，不表示所有版本组合均经过测试。
+要求 **Python 3.9+**、**PyTorch 2.9+**。GPU 功能需要兼容的设备与运行环境。这些是声明的最低版本，不表示所有版本组合均经过测试。
 
 在源码仓库中执行：
 
@@ -111,7 +111,7 @@ XMetAI Core 的部分模型组件使用了以下开源库：
 ```bibtex
 @software{xmetai-core,
   title   = {XMetAI Core: A Framework for Meteorological AI Model Training and Inference},
-  author  = {Dou Zesheng, Hu jiahui, Zhengjinfang, Shenzhewen, Zhao Han, Zhou Shuang, Liu Junjie},
+  author  = {Dou Zesheng and Hu jiahui and Zhengjinfang and Shenzhewen and Zhao Han and Zhou Shuang and Liu Junjie},
   url     = {https://github.com/XMetAI-Lab/xmetai-core},
   version = {1.0.0},
   year    = {2026}

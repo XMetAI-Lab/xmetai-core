@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies (Torch CPU + dev extras)
         run: |
           python -m pip install --upgrade pip
-          pip install "torch>=2.0" --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install "torch>=2.9.0" --extra-index-url https://download.pytorch.org/whl/cpu
           pip install -e '.[dev]'
       - name: Run tests
         run: |

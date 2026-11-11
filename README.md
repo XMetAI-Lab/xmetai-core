@@ -15,7 +15,7 @@ Release version: **1.0.0**. See the [changelog](CHANGELOG.md).
 
 ## Installation
 
-Requires **Python 3.9+** and **PyTorch 2.7+**. GPU features require a compatible device and runtime. These are declared minimums, not a claim that every version combination has been tested.
+Requires **Python 3.9+** and **PyTorch 2.9+**. GPU features require a compatible device and runtime. These are declared minimums, not a claim that every version combination has been tested.
 
 From a source checkout, run:
 
@@ -111,7 +111,7 @@ If you use XMetAI Core in your research, please cite this software:
 ```bibtex
 @software{xmetai-core,
   title   = {XMetAI Core: A Framework for Meteorological AI Model Training and Inference},
-  author  = {Dou Zesheng, Hu jiahui, Zhengjinfang, Shenzhewen, Zhao Han, Zhou Shuang, Liu Junjie},
+  author  = {Dou Zesheng and Hu jiahui and Zhengjinfang and Shenzhewen and Zhao Han and Zhou Shuang and Liu Junjie},
   url     = {https://github.com/XMetAI-Lab/xmetai-core},
   version = {1.0.0},
   year    = {2026}
