@@ -109,7 +109,7 @@ XMetAI Core 的部分模型组件使用了以下开源库：
 如果你的研究使用了 XMetAI Core，欢迎引用本软件：
 
 ```bibtex
-@software{xmetai2026core,
+@software{xmetai-core,
   title   = {XMetAI Core: A Framework for Meteorological AI Model Training and Inference},
   author  = {Dou Zesheng, Hu jiahui, Zhengjinfang, Shenzhewen, Zhao Han, Zhou Shuang, Liu Junjie},
   url     = {https://github.com/XMetAI-Lab/xmetai-core},

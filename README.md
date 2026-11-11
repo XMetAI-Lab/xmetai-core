@@ -109,7 +109,7 @@ These components require the corresponding upstream libraries and compatible GPU
 If you use XMetAI Core in your research, please cite this software:
 
 ```bibtex
-@software{xmetai2026core,
+@software{xmetai-core,
   title   = {XMetAI Core: A Framework for Meteorological AI Model Training and Inference},
   author  = {Dou Zesheng, Hu jiahui, Zhengjinfang, Shenzhewen, Zhao Han, Zhou Shuang, Liu Junjie},
   url     = {https://github.com/XMetAI-Lab/xmetai-core},
