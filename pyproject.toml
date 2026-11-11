@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "xmetai-core"
 dynamic = ["version"]
-description = "气象人工智能训练与推理基础框架"
+description = "XMETAI framework for Meteorological AI model training and inference"
 authors = [
   { name = "XMetAI Lab", email = "douzsh@gmail.com" }
 ]
@@ -54,7 +54,7 @@ lightning = [
   "typing-extensions>=4.4.0",
 ]
 export = [
-  "torch>=2.9.0",
+  "torch>=2.7.0",
   "onnx>=1.14.0",
   "onnxscript>=0.5.4",
 ]
@@ -86,7 +86,7 @@ dev = [
   "twine>=5.0",
 ]
 all = [
-  "torch>=2.9.0",
+  "torch>=2.7.0",
   "onnxscript>=0.5.4",
   "mamba-ssm>=2.2.0",
   "pytorch-lightning>=2.6.0",

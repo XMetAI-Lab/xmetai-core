@@ -102,6 +102,7 @@ model = L(MODELS.get("TongYun"))(
     vt_use_proj=True,
     vt_window_size=10,
     vt_attn_type="rotary_flash",
+    vt_group_norm_mode="norm",
     # Overall model settings
     alpha=0.9,
     loss_weight=loss_weight,

@@ -1,0 +1,3 @@
+include README.md README.zh-CN.md CHANGELOG.md CONTRIBUTING.md
+exclude RTK.md
+global-exclude *.bak
