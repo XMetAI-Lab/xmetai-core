@@ -11,7 +11,7 @@
 
 ## 开发环境
 
-- Python：推荐 Python ≥ 3.9。
+- Python：要求 Python ≥ 3.10。
 - 建议使用虚拟环境或 Conda 管理依赖。
 
 本地开发安装（含格式化与 lint 工具）：
@@ -41,7 +41,7 @@ conda run -n xmetai pre-commit install
 conda run -n xmetai pre-commit run --all-files
 ```
 
-注意：当前 pre-commit 钩子默认执行 Black 与 Ruff。类型检查（mypy）可选，如需启用可在 [.pre-commit-config.yaml](.pre-commit-config.yaml) 中移除 `files: ^$` 限制或在本地单独运行：
+当前 pre-commit 钩子执行基础文件检查、Black、Ruff 和 mypy；具体规则见 [.pre-commit-config.yaml](.pre-commit-config.yaml)。也可单独运行类型检查：
 
 ```bash
 mypy xmetai
@@ -123,7 +123,7 @@ git push origin feature/your-feature-name
 ## 变更建议
 
 - 配置：优先复用与扩展 [configs](configs) 现有 LazyConfig；公共超参请从 [xmetai/recipes](xmetai/recipes) 引用。
-- 模型：新架构需在 [xmetai/__init__.py](xmetai/__init__.py) 注册，并保持推理兼容（ONNX 导出在工具中使用）。
+- 模型：新架构需使用 `@MODELS.register()` 注册，并在对应模型家族的 `__init__.py` 导出，并保持推理兼容（ONNX 导出在工具中使用）。
 - 数据：遵循 Zarr 规范与伴随 `mean/std/weight.npy` 的约定；批量推理脚本依赖此布局。
 
 ## 许可证

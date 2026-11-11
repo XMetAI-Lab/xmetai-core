@@ -1,279 +1,130 @@
-# 雄安气象人工智能创新研究院-核心框架
+# XMetAI Core
 
-## 项目概述
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-这是一个基于深度学习的天气预报模型研究项目，专注于气象人工智能模型的训练开发。项目包含多种先进的神经网络架构，支持从天气预报与气候预测(Weather, Sub-season)。
+XMETAI Core is the core framework for meteorological AI model training and inference, developed by the Xiong’an Institute of Meteorological Artificial Intelligence (雄安气象人工智能研究院). It is built on PyTorch and supports model development, training, evaluation, and ONNX export.
 
-### 核心特性
+Release version: **1.0.0**. See the [changelog](CHANGELOG.md).
 
-- 🌍 **多种模型架构**： ViT,Diffusion(扩散模型)
-- 🚀 **分布式训练**：支持单机多卡和多机多卡分布式训练
-- 📊 **灵活配置系统**：基于LazyConfig的配置管理(基于[Detectron2](https://github.com/facebookresearch/detectron2)开发)
-- 📈 **全面的评估指标**：MSE、TCC等多种评估指标
+## Related projects
 
----
+Exported ONNX models require GPU inference support. Use [xmetai-onnx-plugins](https://github.com/XMetAI-Lab/xmetai-onnx-plugins) to provide the custom GPU operators required by the corresponding models.
 
-## 项目结构
+| Project | Purpose |
+| --- | --- |
+| [xmetai-skills](https://github.com/XMetAI-Lab/xmetai-skills) | Skills for model development |
+| [xmetai-datakit](https://github.com/XMetAI-Lab/xmetai-datakit) | Data processing and evaluation |
+| [xmetai-inference](https://github.com/XMetAI-Lab/xmetai-inference/tree/main) | Dedicated inference workflows |
+| [xmetai-onnx-plugins](https://github.com/XMetAI-Lab/xmetai-onnx-plugins) | Custom GPU operators for exported ONNX models |
 
-```
-├── xmetai/                       # 核心库（模型、数据、训练、配置等）
-│   ├── cli/                      # 可安装的训练命令入口
-│   └── recipes/                  # 可复用 LazyConfig 训练配方
-├── configs/                      # 训练/推理配置（LazyConfig）
-├── tools/                        # 数据处理与可视化工具
-├── scripts/                      # 辅助脚本（train.bash、run_tests.sh 等）
-├── tests/                        # 单元与集成测试
-├── README.md                     # 项目说明
-└── CONTRIBUTING.md               # 贡献指南
-```
+## Features
 
----
+- LazyConfig configuration and reusable training recipes.
+- Single- and multi-GPU training, with distributed settings defined by the selected recipe.
+- Deterministic and ensemble forecasting, probabilistic losses, and weather evaluation metrics.
+- Optional Lightning training, ONNX export, and ONNX Runtime inference.
 
-## 快速开始
+## Installation
 
-### 环境配置
+Requires **Python 3.10+** and **PyTorch 2.9+**. GPU features require a compatible device and runtime. These are declared minimums, not a claim that every version combination has been tested.
+
+From a source checkout, run:
 
 ```bash
-# 安装开发依赖（含 lint/test 工具）
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+# Development tools
 pip install -e '.[dev]'
-```
-
-按需安装 Lightning、ONNX 导出或 GPU 推理依赖：
-
-```bash
+# Install only the optional features you need
 pip install -e '.[lightning,export,inference]'
 ```
 
-安装后也可以直接使用 Python CLI：
+The `gpu` extra installs Mamba (`mamba-ssm`) for models that need it; it does not install GPU drivers. The `inference` extra installs `onnxruntime-gpu`; install the corresponding ONNX plugins for models that use custom GPU operators. `pyproject.toml` is the dependency source of truth.
+
+## Data and configuration
+
+Training requires separately prepared data and statistics; datasets and trained weights are not bundled. Existing weather recipes use Zarr data with companion `mean.npy`, `std.npy`, and `weight.npy` files. Review the selected dataset implementation and configure data paths, variable order, units, resolution, time steps, and static fields before running. Do not assume all recipes use the same layout.
+
+`configs/s2s_vit.py` is a tutorial entry point; `configs/s2s_tongyun.py` is the TongYun S2S recipe. Configurations may switch stages when checkpoints exist: inspect the recipe and output directory before resuming.
+
+## Training, evaluation, and export
+
+Run from the repository root after configuring data paths:
 
 ```bash
+bash scripts/train.bash --stage train -m configs/s2s_vit.py --gpu 1 --batch 1
+bash scripts/train.bash --stage eval -m configs/s2s_vit.py --members 8
+bash scripts/train.bash --stage export -m configs/s2s_vit.py
+bash scripts/train.bash --help
+```
+
+Export requires the `export` extra and an export-capable model. Checkpoint loading and output paths follow the selected configuration. The wrapper generates `configs/tmp_config.py`; do not edit that file manually. For direct CLI usage:
+
+```bash
+xmetai-train --help
 xmetai-train --config-file configs/s2s_vit.py
+# Requires the lightning extra
 xmetai-train-lightning --config-file configs/s2s_vit.py
 ```
 
-### 数据准备
+Repository configurations, scripts, and documentation are accessed from a source checkout; the wheel installs the `xmetai` library and CLI entry points.
 
-当前支持的数据集为Zarr格式，包含ERA5的1.5°逐天数据，以及0.25°逐6小时数据。数据目录结构如下：
+## Models and repository layout
 
-```
-data/
-├── s2s.1950-2024.c76/     # 1.5°逐天数据
-│   ├── mean.npy             # 数据均值
-│   ├── std.npy              # 数据标准差
-│   └── weight.npy           # 纬度权重
-├── land.1950-2024.c8/     # 1.5°逐天陆地数据
-│   ├── mean.npy             # 数据均值
-│   ├── std.npy              # 数据标准差
-│   └── weight.npy           # 纬度权重
-├── ens.1979-2024.c78/     # 0.25°逐6小时数据
-│   ├── mean.npy             # 数据均值
-│   ├── std.npy              # 数据标准差
-│   └── weight.npy           # 纬度权重
-└── ...
-```
-
-数据文件应包含以下变量：
-- **大气变量**：z(位势高度), t(温度), u(纬向风), v(经向风), q(比湿)
-- **地表变量**：sst(海表温度), tp(总降水), ssr(地表净太阳辐射)等
-
-如需获取数据集请与作者联系。
-
----
-
-## 模型简介
-
-模型按家族组织在 `xmetai/models/` 下，每个子目录导出公共模型类并通过注册装饰器接入框架。配置仍集中保存在 `configs/`。
-
-| 目录 | 模型与用途 |
+| Path | Purpose |
 | --- | --- |
-| `tongyun/` | [TongYun](docs/tongyun/README.md)：Model Architecture Designed by XMetAI；S2S 配置为 `configs/s2s_tongyun.py` |
-| `puyun/` | [PuYun](https://arxiv.org/abs/2409.02123) 大核卷积自回归预测器 |
-| `tianquan/` | [TianQuan-S2S](https://arxiv.org/abs/2504.09940) 气候态条件预测器 |
-| `afno/` | [AFNO](https://arxiv.org/abs/2111.13587) 频域预测器；天气应用参见 [FourCastNet](https://arxiv.org/abs/2202.11214) |
-| `dit/` | 条件扩散、Flow Matching 和 JiT 生成式预测器 |
-| `adapter/` | `ForecastAdapter`：冻结 ONNX 预报模型的残差订正适配器 |
-| `infer/` | ONNX 推理与集合评测 |
-| `tutorials/` | ViT/ViTEns 教学模型，示例配置为 `configs/s2s_vit.py` |
+| `xmetai/models/tongyun/` | [TongYun](docs/tongyun/README.md) grouped latent forecasting |
+| `xmetai/models/puyun/` | PuYun autoregressive prediction |
+| `xmetai/models/tianquan/` | TianQuan-S2S climatology-conditioned prediction |
+| `xmetai/models/afno/` | AFNO spectral prediction |
+| `xmetai/models/dit/` | Diffusion and flow matching predictors |
+| `xmetai/models/adapter/` | Forecast correction adapters |
+| `xmetai/models/infer/` | ONNX inference and ensemble evaluation |
+| `xmetai/models/tutorials/` | ViT/ViTEns tutorial models |
+| `xmetai/core/`, `xmetai/layers/` | Shared predictor contracts and network components |
+| `xmetai/recipes/`, `configs/` | Reusable recipes and task configurations |
+| `scripts/`, `tools/`, `tests/` | Launchers, data utilities, and tests |
 
-公共预测契约位于 `xmetai/core/`，可复用网络组件位于 `xmetai/layers/`。上述论文模型均适配了本框架的训练与评测接口。
+Available losses include Charbonnier, CRPS variants, and KL divergence; metrics include RMSE and TCC. Availability and behavior depend on the model and recipe.
 
----
-
-## 训练/评估/导出指南
-
-### 训练工作流
-
-#### 1. 训练模型
-
-##### 单GPU训练
-```bash
-bash scripts/train.bash \
-    --stage train \
-    --model configs/s2s_vit.py \
-    --lr 0.0005 \
-    --gpu 1 \
-    --batch 1 \
-    --depth-list "6,6,12,12"
-```
-
-##### 多机多卡训练
-```bash
-bash scripts/train.bash \
-    --stage train \
-    --model configs/s2s_vit.py \
-    --gpu 4 \
-    --nnodes 4 \
-    --batch 2 \
-    --master-addr 10.0.0.1 \
-    --lr 0.0005
-```
-
-#### 2. 模型评估
-
-##### 多GPU评估
-```bash
-./scripts/train.bash \
-    --stage eval \
-    --model configs/s2s_vit.py \
-    --gpu 4 \
-    --members 10 \
-    --save
-```
-
-#### 3. 导出ONNX模型
+## Development and validation
 
 ```bash
-# 导出为ONNX格式
-./scripts/train.bash \
-    --stage export \
-    --model configs/s2s_vit.py
-
-# 导出输出位置: ./output/6_6_12_12-s2s_vit-0.0005/model.onnx
+pip install -e '.[dev]'
+pre-commit run --all-files
+pytest tests -q
 ```
 
-### 参数说明
+Some checks require optional dependencies, GPU hardware, or external data. Report passed, skipped, and unverified checks separately; test counts and coverage should come from the current run.
 
-```bash
---stage              # 运行阶段: train(训练)/eval(评估)/export(导出)/ltrain(Lightning训练)/leval(Lightning评估)
---model, -m          # 模型配置文件路径
---lr, -l             # 学习率 (默认: 0.0005)
---depth-list, -d     # 模型深度配置,逗号分隔 (默认: "6,6,12,12")
---gpu, -g            # GPU数量 (默认: 1)
---batch, -b          # 每GPU批大小 (默认: 1)
---members            # 集合成员数(评估用) (默认: 8)
---save               # 保存成员平均结果
---nnodes, -n         # 节点总数 (默认: 1)
---master-addr, -a    # 主节点地址 (默认: 127.0.0.1)
---verbose, -v        # 详细日志
---help, -h           # 显示帮助信息
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution rules. Use a PR title such as `fix: describe the change [codex]` for Codex contributions.
+
+## License and contact
+
+Licensed under **GPL-3.0-or-later**; see [LICENSE](LICENSE). Data, weights, and third-party assets may have separate terms.
+
+XMetAI Team: douzsh@gmail.com.
+
+## Acknowledgements
+
+XMetAI Core uses the following libraries for selected model components:
+
+- [Flash Linear Attention (FLA)](https://github.com/fla-org/flash-linear-attention): Gated DeltaNet-2 layers and efficient linear attention kernels, used by `xmetai/layers/gated_deltanet2.py`.
+- [Mamba](https://github.com/state-spaces/mamba): selective state space models and scan kernels, used by `xmetai/layers/mamba_vision.py`.
+
+These components require the corresponding upstream libraries and compatible GPU environments. FLA-based recipes need an FLA version exposing `fla.layers.GatedDeltaNet2`; Mamba variants require their corresponding upstream implementations. Please follow each upstream project's installation instructions, license, and citation guidance.
+
+## Citation
+
+If you use XMetAI Core in your research, please cite this software:
+
+```bibtex
+@software{xmetai-core,
+  title   = {XMetAI Core: A Framework for Meteorological AI Model Training and Inference},
+  author  = {Dou Zesheng and Hu jiahui and Zhengjinfang and Shenzhewen and Zhao Han and Zhou Shuang and Liu Junjie},
+  url     = {https://github.com/XMetAI-Lab/xmetai-core},
+  version = {1.0.0},
+  year    = {2026}
+}
 ```
-
----
-
-## 损失函数和指标
-
-### 支持的损失函数
-
-| 损失函数 | 描述 | 用途 |
-|---------|------|------|
-| `Charbonnier` | 鲁棒L1损失 | 主要预报损失 |
-| `CRPS` | 连续秩概率评分 | 集合预报评估 |
-| `KL散度` | Kullback-Leibler散度 | 潜变量约束 |
-
-### 评估指标
-
-| 指标 | 描述 |
-|-----|------|
-| `RMSE` | 均方根误差 |
-| `TCC` | 时间相关系数 |
-
----
-
-## 🧪 测试和代码质量
-
-本项目包含全面的测试套件，涵盖**50+ 个测试**，分为**单元测试**和**集成测试**两个部分。
-
-### 📊 测试统计
-
-```
-✅ 50+ 测试用例
-📦 单元测试: 37 个（5 个文件）
-🔗 集成测试: 13 个（端到端工作流）
-🔄 支持 CPU/GPU 双路径
-📈 核心模块覆盖率: 69%-99%
-```
-
-### 🚀 快速开始
-
-使用便捷脚本 `scripts/run_tests.sh`：
-
-```bash
-# GPU 测试（默认，包含覆盖率检查）
-bash scripts/run_tests.sh gpu
-
-# CPU 测试（跳过 GPU 标记的测试）
-bash scripts/run_tests.sh cpu
-
-# 核心单元测试子集
-bash scripts/run_tests.sh unit
-
-# 完整覆盖率报告（生成 htmlcov/）
-bash scripts/run_tests.sh coverage
-
-# 所有测试
-bash scripts/run_tests.sh all
-```
-### 📂 测试目录结构
-
-```
-tests/                      # 测试根目录
-├── unit/                   # 单元测试 (37 个测试)
-│   ├── test_layers_basic.py      # 11 个测试 - 基础层
-│   ├── test_layers_vision.py     # 14 个测试 - 视觉层
-│   ├── test_models.py            # 13 个测试 - 模型架构
-│   ├── test_loss_metrics.py     # 14 个测试 - 损失和指标
-│   └── test_data.py              # 8 个测试 - 数据加载
-├── integration/            # 集成测试 (13 个测试)
-│   └── test_integration.py       # 端到端工作流
-├── conftest.py             # 共享 fixtures 和配置
-└── runner.py               # Python 测试运行器
-```
----
-
-## 相关文献
-
-该项目基于以下研究工作：
-
-- **FuXi**: 伏羲模型
-  - 论文: [FuXi: A Large-Scale Climate Foundation Model for Medium-Range Weather Forecasting](https://arxiv.org/abs/2306.12873)
-
-- **SwinTransformer**: 窗口注意力机制
-  - 论文: [Swin Transformer: Hierarchical Vision Transformer using Shifted Windows](https://arxiv.org/abs/2103.14030)
-
-- **Mamba**: 状态空间模型
-  - 论文: [Mamba: Linear-Time Sequence Modeling with Selective State Spaces](https://arxiv.org/abs/2312.00752)
-  - 论文: [Vision Mamba: Efficient Visual Representation Learning with Bidirectional State Space Model](https://arxiv.org/abs/2401.09417)
-
----
-
-## 贡献指南
-
-欢迎贡献！请遵循以下步骤：
-
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m 'feat: Add amazing feature'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 开启 Pull Request
-
----
-
-## 联系方式
-
-- **项目负责人**: XMetAI Team
-- **邮箱**: douzsh@gmail.com
-
----
-
-**最后更新**: 2026年01月
-**版本**: 0.1.0

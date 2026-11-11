@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "xmetai-core"
 dynamic = ["version"]
-description = "气象人工智能训练与推理基础框架"
+description = "XMETAI framework for Meteorological AI model training and inference"
 authors = [
   { name = "XMetAI Lab", email = "douzsh@gmail.com" }
 ]
@@ -18,10 +18,10 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Operating System :: OS Independent"
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 
 dependencies = [
-  "torch>=2.7.0",
+  "torch>=2.9.0",
   "numpy>=1.24.0",
   "einops>=0.7.0",
   "packaging>=21.0",
