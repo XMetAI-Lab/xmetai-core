@@ -913,11 +913,10 @@ class _TongYunBase(BasePredictor):
             loss_segments, _ = self.build_loss_steps_and_weights(sampling_units, self.alpha, self.rollout_max)
             loss_block_indices = {block_index for block_index in range(num_rollout_blocks) if block_index // sampling_size in loss_segments}
             # Segment boundaries control backward scheduling, not lead-time weights.
-            rolling_weights = input.new_zeros(num_rollout_blocks, dtype=torch.float32)
-            selected_blocks = sorted(loss_block_indices)
-            exponents = torch.tensor(selected_blocks, dtype=torch.float64, device=input.device)
-            selected_weights = torch.softmax(exponents * math.log(self.alpha), dim=0) if self.alpha > 0 else (exponents == 0).double()
-            rolling_weights[selected_blocks] = selected_weights.float()
+            _, rolling_weights = self.build_loss_steps_and_weights(num_rollout_blocks, self.alpha, -1)
+            rolling_weights *= rolling_weights.new_tensor([block_index in loss_block_indices for block_index in range(num_rollout_blocks)])
+            selected_mass = rolling_weights.sum()
+            rolling_weights /= torch.where(selected_mass > 0, selected_mass, torch.ones_like(selected_mass))
             state = {
                 "targets": targets,
                 "input": input,
