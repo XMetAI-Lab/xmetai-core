@@ -17,7 +17,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from xmetai.core.base_predictor import BasePredictor, replace_channels
-from xmetai.layers import AdaptiveLN, EarthConvTranspose2d, set_lora_step
+from xmetai.layers import AdaptiveLN, EarthConvTranspose2d
 from xmetai.layers.utransformer import UTransformer
 from xmetai.loss import GTWeightedLoss, SphericalAMSELoss, charbonnier_loss, field_dynamics_consistency_loss
 from xmetai.registries import MODELS
@@ -458,7 +458,7 @@ class _TongYunBase(BasePredictor):
             ffn_type=ffn_type,
             layer_type=layer_type,
         )
-        encoder_kwargs = dict(common_kwargs, const_chans=self.const_chans, down_times=down_times, depths=encoder_depths, drop_mcmc=drop_mcmc)
+        encoder_kwargs = dict(common_kwargs, const_chans=self.const_chans, down_times=down_times, depths=encoder_depths)
         decoder_kwargs = dict(
             common_kwargs,
             out_frames=self.out_frames,
@@ -476,7 +476,7 @@ class _TongYunBase(BasePredictor):
             group_chans = len(group)
             group_embed_dim = self.embed_dims[gi]
 
-            vae_encoder = GroupEncoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, **encoder_kwargs)
+            vae_encoder = GroupEncoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, drop_mcmc=drop_mcmc, **encoder_kwargs)
             vae_encoder_list.append(vae_encoder)
 
             posterior_encoder = GroupEncoder(embed_dim=group_embed_dim, in_chans=group_chans, out_chans=group_chans, **encoder_kwargs)
@@ -595,12 +595,6 @@ class _TongYunBase(BasePredictor):
     ) -> torch.Tensor | tuple[torch.Tensor, _GroupShortcut]:
         return (self.vae_encoder_group[gi] if is_prior else self.posterior_encoder_group[gi])(x_group, timestamp, const=const)
 
-    def _set_decoder_lora_step(self, lora_step: int | None) -> None:
-        if lora_step is None:
-            return
-        for decoder in self.decoder_group:
-            set_lora_step(decoder, int(lora_step))
-
     def _is_group_frozen(self, gi: int, is_prior: bool = True) -> bool:
         """Check if a group encoder is frozen (has no trainable parameters)."""
         encoder = self.vae_encoder_group[gi] if is_prior else self.posterior_encoder_group[gi]
@@ -636,18 +630,12 @@ class _TongYunBase(BasePredictor):
         h_states: list[torch.Tensor],
         timestamp: dict,
         const: torch.Tensor | None = None,
-        lora_step: int | None = None,
         shortcuts: list[_GroupShortcut] | None = None,
     ) -> list[torch.Tensor]:
         """Decode groups with their matching encoder shortcuts."""
-        self._set_decoder_lora_step(lora_step)
         outputs_by_group = []
         for gi, (decoder, h_state) in enumerate(zip(self.decoder_group, h_states, strict=True)):
             shortcut = None if shortcuts is None else shortcuts[gi]
-            if not any(p.requires_grad for p in decoder.parameters()):
-                h_state = h_state.detach()
-                if shortcut is not None:
-                    shortcut = {index: value.detach() for index, value in shortcut.items()} if isinstance(shortcut, dict) else shortcut.detach()
             outputs_by_group.append(decoder(h_state, timestamp=timestamp, const=const, patch_shortcut=shortcut))
         return outputs_by_group
 
@@ -683,7 +671,7 @@ class _TongYunBase(BasePredictor):
         if self.patch_decoder_shortcut:
             h_states, shortcuts = h_states
         z_coupled = self.latent_mixer(h_states, timestamp_target)
-        group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames, shortcuts=shortcuts)
+        group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, shortcuts=shortcuts)
         output = self._assemble_prediction(group_outputs, input)
         next_input = torch.cat([input, output], dim=1)[:, -self.in_frames :]
         return output, next_input
@@ -795,7 +783,6 @@ class _TongYunBase(BasePredictor):
         reference_input: torch.Tensor,
         timestamp: dict,
         const: torch.Tensor | None = None,
-        lora_step: int | None = None,
         pool_size: int = 4,
         small: float = 0.04,
         large: float = 0.08,
@@ -817,9 +804,9 @@ class _TongYunBase(BasePredictor):
             h1_states.append(h1)
             h2_states.append(h2)
 
-        outputs0 = self._decode_all_groups(h_states, timestamp, const=const, lora_step=lora_step, shortcuts=shortcuts)
-        outputs1 = self._decode_all_groups(h1_states, timestamp, const=const, lora_step=lora_step, shortcuts=shortcuts)
-        outputs2 = self._decode_all_groups(h2_states, timestamp, const=const, lora_step=lora_step, shortcuts=shortcuts)
+        outputs0 = self._decode_all_groups(h_states, timestamp, const=const, shortcuts=shortcuts)
+        outputs1 = self._decode_all_groups(h1_states, timestamp, const=const, shortcuts=shortcuts)
+        outputs2 = self._decode_all_groups(h2_states, timestamp, const=const, shortcuts=shortcuts)
 
         x0 = self._assemble_prediction(outputs0, reference_input)
         x1 = self._assemble_prediction(outputs1, reference_input)
@@ -868,12 +855,11 @@ class _TongYunBase(BasePredictor):
             recon_base,
             timestamp,
             const=const,
-            lora_step=self.start_frames,
             pool_size=8 if input.shape[-2] >= 256 else 4,
             shortcuts=clean_shortcuts,
         )
         recon_clean = recon_clean[:, -self.out_frames :]
-        rec_aug_by_group = self._decode_all_groups(h_aug_by_group, timestamp, const=const, lora_step=self.start_frames, shortcuts=aug_shortcuts)
+        rec_aug_by_group = self._decode_all_groups(h_aug_by_group, timestamp, const=const, shortcuts=aug_shortcuts)
         recon_aug = self._assemble_prediction(rec_aug_by_group, recon_base)[:, -self.out_frames :]
 
         # Prepare weight for loss computation
@@ -922,13 +908,12 @@ class _TongYunBase(BasePredictor):
                 raise ValueError(f"rollout_segment_size must be positive, got {segment_size}.")
 
             num_segments = (num_rollout_blocks + segment_size - 1) // segment_size
-            loss_steps, rolling_weights = self.build_loss_steps_and_weights(future_step, self.alpha, self.rollout_max)
-            loss_step_set = set(loss_steps)
-            loss_block_indices = {
-                block_index
-                for block_index in range(num_rollout_blocks)
-                if not loss_step_set.isdisjoint(range(block_index * self.forecast_stride, block_index * self.forecast_stride + self.out_frames))
-            }
+            loss_segments, _ = self.build_loss_steps_and_weights(num_segments, self.alpha, self.rollout_max)
+            loss_block_indices = {block_index for block_index in range(num_rollout_blocks) if block_index // segment_size in loss_segments}
+            # Segment boundaries control backward scheduling, not lead-time weights.
+            _, rolling_weights = self.build_loss_steps_and_weights(num_rollout_blocks, self.alpha, -1)
+            rolling_weights *= rolling_weights.new_tensor([block_index in loss_block_indices for block_index in range(num_rollout_blocks)])
+            rolling_weights /= rolling_weights.sum().clamp_min(torch.finfo(rolling_weights.dtype).eps)
             state = {
                 "targets": targets,
                 "input": input,
@@ -1004,17 +989,7 @@ class _TongYunBase(BasePredictor):
             t = self.start_frames + k
             target = targets[:, k : k + self.out_frames].to(input, non_blocking=True)
             k += self.forecast_stride
-            if block_index not in loss_block_indices:
-                with torch.no_grad():
-                    input = self.reset_input(input.detach())
-                    true_input = self.reset_input(true_input)
-                    _, input = self._predict_next(input, times, t, const=const)
-                    input = input.detach()
-                    true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
-                continue
-
-            block_start = block_index * self.forecast_stride
-            block_weight = rolling_weights[block_start : block_start + self.out_frames].mean()
+            block_weight = rolling_weights[block_index]
             input = self.reset_input(input)
             true_input = self.reset_input(true_input)
             timestamp = self.get_timestamp(input, times, t)
@@ -1030,7 +1005,7 @@ class _TongYunBase(BasePredictor):
                     loss_latent_reg += block_weight * h_prior.square().mean() / self.num_groups
 
             if self.compute_prior_vae:
-                vae_input_groups = self._decode_all_groups(h_prior_states, timestamp, const=const, lora_step=t, shortcuts=prior_shortcuts)
+                vae_input_groups = self._decode_all_groups(h_prior_states, timestamp, const=const, shortcuts=prior_shortcuts)
                 vae_input_base = true_input[:, -self.out_frames - 1 : -1]
                 vae_input_recon = self._assemble_prediction(vae_input_groups, vae_input_base)
                 vae_input_target = true_input[:, -self.out_frames :]
@@ -1043,9 +1018,7 @@ class _TongYunBase(BasePredictor):
                 posterior_shortcuts = None
                 if self.patch_decoder_shortcut:
                     h_posterior_states, posterior_shortcuts = h_posterior_states
-                vae_target_groups = self._decode_all_groups(
-                    h_posterior_states, timestamp_target, const=const, lora_step=t + self.out_frames, shortcuts=posterior_shortcuts
-                )
+                vae_target_groups = self._decode_all_groups(h_posterior_states, timestamp_target, const=const, shortcuts=posterior_shortcuts)
                 vae_target_base = new_target[:, -self.out_frames - 1 : -1]
                 vae_target_recon = self._assemble_prediction(vae_target_groups, vae_target_base)
                 loss_vae_target += block_weight * charbonnier_loss(vae_target_recon, target, weight=self.weight)
@@ -1056,7 +1029,7 @@ class _TongYunBase(BasePredictor):
                     for predicted, posterior in zip(z_coupled, h_posterior_states):
                         loss_latent_pred_rec += block_weight * charbonnier_loss(predicted, posterior.detach())
 
-            group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, lora_step=t + self.out_frames, shortcuts=prior_shortcuts)
+            group_outputs = self._decode_all_groups(z_coupled, timestamp_target, const=const, shortcuts=prior_shortcuts)
             output = self._assemble_prediction(group_outputs, input)
             if compute_gt_weighted_loss:
                 loss_gt_weighted += block_weight * self.gt_weighted_loss(output, target, weight=self.weight, channel_indices=self.gt_weighted_channel_indices)
@@ -1155,7 +1128,7 @@ class _TongYunBase(BasePredictor):
                     shortcuts = None
                     if self.patch_decoder_shortcut:
                         h_states, shortcuts = h_states
-                    group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const, lora_step=t, shortcuts=shortcuts)
+                    group_outputs = self._decode_all_groups(h_states, timestamp_target, const=const, shortcuts=shortcuts)
                     target_base = target_input[:, -self.out_frames - 1 : -1]
                     output = self._assemble_prediction(group_outputs, target_base)
                     new_input = torch.cat([new_input[:, :-1], output[:, -1:]], dim=1)
