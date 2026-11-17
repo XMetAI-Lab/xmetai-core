@@ -15,6 +15,7 @@ from xmetai.layers import (
     GraphCastEncoder,
     GraphCastLayer,
     MambaVisionLayer,
+    MCDropout,
     SwinLayer,
 )
 from xmetai.layers.darknet_unet import DarknetBlock, DarknetConv
@@ -23,6 +24,7 @@ from xmetai.layers.swin import SwinBlock
 
 # Model hooks may refine these defaults. An explicit mods list overrides them.
 ac_mods: tuple[type[torch.nn.Module], ...] = (
+    MCDropout,
     MambaVisionLayer,
     DarknetBlock,
     DarknetConv,

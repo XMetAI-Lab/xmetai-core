@@ -136,14 +136,14 @@ def test_rollout_field_dynamics_loss_is_disabled_by_default() -> None:
     assert "loss_latent_dyn_consistency" not in losses
 
 
-def test_rollout_sampling_uses_physical_blocks_without_mutating_batch() -> None:
+def test_rollout_sampling_selects_whole_segments_without_mutating_batch() -> None:
     torch.manual_seed(0)
     model = _build_tiny_group_vae(latent_dyn_weight=0.0, alpha=0.5, rollout_max=2).train()
     batch = _build_batch()
     original_targets = batch["targets"]
 
     _, state, done = model(batch, rollout_segment_size=3)
-    expected_steps, expected_weights = model.build_loss_steps_and_weights(3, model.alpha, model.rollout_max)
+    expected_steps, expected_weights = model.build_loss_steps_and_weights(3, model.alpha, -1)
 
     assert done
     assert state["loss_block_indices"] == set(expected_steps)
@@ -156,7 +156,9 @@ def test_segmented_rollout_stops_after_last_selected_block() -> None:
 
     _, state, done = model(_build_batch(in_frames=3, future_frames=5), rollout_segment_size=1)
 
-    assert state["loss_block_indices"] == {0}
+    assert state["loss_block_indices"] == {0, 1}
+    assert not done
+    _, state, done = model(None, rollout_state=state, rollout_segment_size=1)
     assert done
 
 
@@ -391,3 +393,38 @@ def test_amse_uses_native_grid(amse_image_size):
     loss.backward()
     assert torch.isfinite(output.grad).all()
     assert output.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("segment_size,expected", [(None, {0, 6}), (3, {0, 1, 2, 6})])
+def test_sampled_rollout_weights_and_gradient_skipping(segment_size, expected):
+    model = _build_tiny_group_vae(0.0, alpha=0.5, rollout_max=2, drop_mcmc=0.0).train()
+    grad_modes = []
+    handle = model.vae_encoder_group[0].register_forward_pre_hook(lambda module, args: grad_modes.append(torch.is_grad_enabled()))
+    batch = _build_batch(future_frames=7)
+    try:
+        state, done = None, False
+        while not done:
+            result = model(batch if state is None else None, rollout_state=state, rollout_segment_size=segment_size)
+            if segment_size is None:
+                losses, done = result, True
+            else:
+                losses, state, done = result
+            sum(losses.values()).backward()
+    finally:
+        handle.remove()
+    assert grad_modes == [i in expected for i in range(7)]
+    if state is not None:
+        weights = 0.5 ** torch.arange(7, dtype=torch.float32)
+        weights[[i for i in range(7) if i not in expected]] = 0
+        weights /= weights.sum()
+        torch.testing.assert_close(state["rolling_weights"], weights)
+
+
+def test_last_segment_tiny_weight_has_unit_mass():
+    model = _build_tiny_group_vae(0.0, alpha=0.5, rollout_max=1).train()
+    losses, state, done = model(_build_batch(future_frames=24), rollout_segment_size=1)
+    assert done
+    assert state["loss_block_indices"] == {23}
+    torch.testing.assert_close(state["rolling_weights"].sum(), torch.tensor(1.0))
+    assert state["rolling_weights"][23] == 1
+    sum(losses.values()).backward()

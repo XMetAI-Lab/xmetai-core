@@ -56,9 +56,13 @@ def apply_model_activation_checkpointing(model: torch.nn.Module, ac: DictConfig)
             module, checkpoint_impl=CheckpointImpl.REENTRANT if reentrant else CheckpointImpl.NO_REENTRANT, preserve_rng_state=ac.preserve_rng_state
         )
 
-    apply_activation_checkpointing(
-        model, checkpoint_wrapper_fn=wrap, check_fn=lambda module: isinstance(module, mods) and any(param.requires_grad for param in module.parameters())
-    )
+    def should_checkpoint(module: torch.nn.Module) -> bool:
+        if not isinstance(module, mods):
+            return False
+        parameters = tuple(module.parameters())
+        return not parameters or any(param.requires_grad for param in parameters)
+
+    apply_activation_checkpointing(model, checkpoint_wrapper_fn=wrap, check_fn=should_checkpoint)
 
 
 def create_fsdp_model(model, **kwargs):

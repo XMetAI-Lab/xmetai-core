@@ -11,6 +11,7 @@ from xmetai.cli.train import build_model
 from xmetai.config import LazyConfig
 from xmetai.core.defaults import apply_model_activation_checkpointing, create_fsdp2_model
 from xmetai.core.meta import Meta
+from xmetai.layers import MCDropout
 from xmetai.layers.gated_deltanet2 import GatedDeltaNet2HybridLayer
 from xmetai.recipes import recipe_path
 
@@ -278,3 +279,20 @@ def test_parallel_defaults_and_explicit_overrides(monkeypatch, model_defaults, o
 
 def test_base_model_inherits_recipe_defaults():
     assert Meta(device="cpu").parallelize() == (None, None)
+
+
+def test_ac_wraps_parameterless_dropout_and_preserves_frozen_policy():
+    model = torch.nn.Sequential(MCDropout(), torch.nn.Linear(4, 4))
+    model[1].requires_grad_(False)
+    reference = copy.deepcopy(model)
+    apply_model_activation_checkpointing(model, policy([MCDropout, torch.nn.Linear]))
+    assert isinstance(model[0], CheckpointWrapper)
+    assert not isinstance(model[1], CheckpointWrapper)
+    results = []
+    for candidate in (reference, model):
+        x = torch.ones(2, 4, requires_grad=True)
+        torch.manual_seed(42)
+        output = candidate[1](candidate[0](x, dropout=0.5))
+        output.square().sum().backward()
+        results.append((output.detach(), x.grad, torch.rand(3)))
+    torch.testing.assert_close(results[0], results[1], rtol=0, atol=0)
