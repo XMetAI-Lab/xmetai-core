@@ -908,12 +908,16 @@ class _TongYunBase(BasePredictor):
                 raise ValueError(f"rollout_segment_size must be positive, got {segment_size}.")
 
             num_segments = (num_rollout_blocks + segment_size - 1) // segment_size
-            loss_segments, _ = self.build_loss_steps_and_weights(num_segments, self.alpha, self.rollout_max)
-            loss_block_indices = {block_index for block_index in range(num_rollout_blocks) if block_index // segment_size in loss_segments}
+            sampling_size = 1 if rollout_segment_size is None else segment_size
+            sampling_units = (num_rollout_blocks + sampling_size - 1) // sampling_size
+            loss_segments, _ = self.build_loss_steps_and_weights(sampling_units, self.alpha, self.rollout_max)
+            loss_block_indices = {block_index for block_index in range(num_rollout_blocks) if block_index // sampling_size in loss_segments}
             # Segment boundaries control backward scheduling, not lead-time weights.
-            _, rolling_weights = self.build_loss_steps_and_weights(num_rollout_blocks, self.alpha, -1)
-            rolling_weights *= rolling_weights.new_tensor([block_index in loss_block_indices for block_index in range(num_rollout_blocks)])
-            rolling_weights /= rolling_weights.sum().clamp_min(torch.finfo(rolling_weights.dtype).eps)
+            rolling_weights = input.new_zeros(num_rollout_blocks, dtype=torch.float32)
+            selected_blocks = sorted(loss_block_indices)
+            exponents = torch.tensor(selected_blocks, dtype=torch.float64, device=input.device)
+            selected_weights = torch.softmax(exponents * math.log(self.alpha), dim=0) if self.alpha > 0 else (exponents == 0).double()
+            rolling_weights[selected_blocks] = selected_weights.float()
             state = {
                 "targets": targets,
                 "input": input,
@@ -989,6 +993,15 @@ class _TongYunBase(BasePredictor):
             t = self.start_frames + k
             target = targets[:, k : k + self.out_frames].to(input, non_blocking=True)
             k += self.forecast_stride
+            if block_index not in loss_block_indices:
+                with torch.no_grad():
+                    input = self.reset_input(input.detach())
+                    true_input = self.reset_input(true_input)
+                    _, input = self._predict_next(input, times, t, const=const)
+                    input = input.detach()
+                    true_input = torch.cat([true_input, target], dim=1)[:, -self.in_frames :]
+                continue
+
             block_weight = rolling_weights[block_index]
             input = self.reset_input(input)
             true_input = self.reset_input(true_input)
