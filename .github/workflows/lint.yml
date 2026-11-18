@@ -13,16 +13,8 @@ on:
       - '.pre-commit-config.yaml'
       - 'pyproject.toml'
   pull_request:
+    # Required on main, including for pull requests that only change documentation.
     types: [opened, synchronize, reopened]
-    paths:
-      - '**/*.py'
-      - 'xmetai/**'
-      - 'configs/**'
-      - 'tools/**'
-      - 'scripts/**'
-      - 'tests/**'
-      - '.pre-commit-config.yaml'
-      - 'pyproject.toml'
 
 jobs:
   pre-commit:
