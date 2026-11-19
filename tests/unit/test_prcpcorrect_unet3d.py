@@ -570,25 +570,32 @@ def partial_observation_stores(tmp_path):
 
     fengq_path = tmp_path / "fengq.zarr"
     cmpas_path = tmp_path / "cmpas.zarr"
-    fengq = zarr.open_group(str(fengq_path), mode="w", zarr_format=2)
-    cmpas = zarr.open_group(str(cmpas_path), mode="w", zarr_format=2)
+    zarr_v3 = int(zarr.__version__.split(".", 1)[0]) >= 3
+    store_options = {"zarr_format": 2} if zarr_v3 else {"zarr_version": 2}
+    fengq = zarr.open_group(str(fengq_path), mode="w", **store_options)
+    cmpas = zarr.open_group(str(cmpas_path), mode="w", **store_options)
+
+    def create_array(group, name, **kwargs):
+        create = group.create_array if zarr_v3 else group.create_dataset
+        return create(name, **kwargs)
+
     times = np.array(["2024-07-02T08", "2024-07-10T08", "2024-07-20T08"], dtype="datetime64[ns]")
     valid_times = times[:, None] + _DTIMES.astype("timedelta64[h]")
     fengq.attrs.update(schema=_FENGQ_SCHEMA, normalization="none", time_zone="Beijing time")
     cmpas.attrs.update(time_zone="Beijing time")
-    inputs = fengq.create_array("input", shape=(3, 12, 30, 64, 40), chunks=(1, 12, 30, 64, 40), dtype="f4", fill_value=0)
+    inputs = create_array(fengq, "input", shape=(3, 12, 30, 64, 40), chunks=(1, 12, 30, 64, 40), dtype="f4", fill_value=0)
     inputs.attrs["_ARRAY_DIMENSIONS"] = ["time", "dtime", "pl", "lat", "lon"]
     for name, values in {"time": times, "valid_time": valid_times, "dtime": _DTIMES, "pl": np.array(_FENGQ_CHANNELS)}.items():
-        fengq.create_array(name, data=values)
+        create_array(fengq, name, data=values)
     for group in (fengq, cmpas):
-        group.create_array("lat", data=_LATITUDES)
-        group.create_array("lon", data=_LONGITUDES)
-    cmpas.create_array("valid_time", data=valid_times[:2].reshape(-1))
-    cmpas.create_array("channel", data=np.array(["tp"]))
-    targets = cmpas.create_array("data", shape=(24, 1, 64, 40), chunks=(12, 1, 64, 40), dtype="f4", fill_value=0)
+        create_array(group, "lat", data=_LATITUDES)
+        create_array(group, "lon", data=_LONGITUDES)
+    create_array(cmpas, "valid_time", data=valid_times[:2].reshape(-1))
+    create_array(cmpas, "channel", data=np.array(["tp"]))
+    targets = create_array(cmpas, "data", shape=(24, 1, 64, 40), chunks=(12, 1, 64, 40), dtype="f4", fill_value=0)
     targets[:12] = 2
     targets[12:] = 10
-    mask = cmpas.create_array("valid_mask", shape=targets.shape, chunks=targets.chunks, dtype="bool", fill_value=True)
+    mask = create_array(cmpas, "valid_mask", shape=targets.shape, chunks=targets.chunks, dtype="bool", fill_value=True)
     for array in (targets, mask):
         array.attrs["_ARRAY_DIMENSIONS"] = ["valid_time", "channel", "lat", "lon"]
     return dict(fengq_zarr_path=str(fengq_path), cmpas_zarr_path=str(cmpas_path), input_min=np.zeros((30, 1, 1)), input_max=np.ones((30, 1, 1)))
