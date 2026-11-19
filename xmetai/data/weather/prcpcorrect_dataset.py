@@ -90,10 +90,11 @@ class PrcpCorrectionUNet3DDataset(Dataset):
         self.fengq_group = zarr.open_group(fengq_zarr_path, mode="r")
         self.cmpas_group = zarr.open_group(cmpas_zarr_path, mode="r") if cmpas_zarr_path is not None else None
 
-        self.init_times, self.target_indices = self._validate_stores()
+        self.init_times, valid_times, latitude, longitude = self._validate_fengq()
         self.sample_indices = self._resolve_samples(self.init_times, split_csv, start_time, end_time)
         if not self.sample_indices:
             raise ValueError("PrcpCorrectionUNet3DDataset selected no samples.")
+        self.target_indices = self._validate_cmpas(valid_times[self.sample_indices], latitude, longitude)
 
         if self.cmpas_group is None:
             LOGGER.info("Loaded %d FENGQ15 inference samples from %s without targets", len(self.sample_indices), fengq_zarr_path)
@@ -151,11 +152,10 @@ class PrcpCorrectionUNet3DDataset(Dataset):
             raise ValueError("FENGQ15 valid_time must equal time plus dtime.")
         return init_times, valid_times, latitude, longitude
 
-    def _validate_stores(self) -> tuple[np.ndarray, Optional[np.ndarray]]:
-        init_times, fengq_valid_times, fengq_lat, fengq_lon = self._validate_fengq()
+    def _validate_cmpas(self, fengq_valid_times: np.ndarray, fengq_lat: np.ndarray, fengq_lon: np.ndarray) -> Optional[np.ndarray]:
         if self.cmpas_group is None:
             self.cmpas_data = None
-            return init_times, None
+            return None
 
         if self.cmpas_group.attrs.get("time_zone") != "Beijing time":
             raise ValueError("CMPAS time coordinates must use Beijing time.")
@@ -196,7 +196,7 @@ class PrcpCorrectionUNet3DDataset(Dataset):
         except KeyError as error:
             missing_time = pd.Timestamp(int(error.args[0]), unit="ns")
             raise ValueError(f"CMPAS is missing target time {missing_time}.") from None
-        return init_times, indices
+        return indices
 
     @staticmethod
     def _resolve_samples(
@@ -246,8 +246,8 @@ class PrcpCorrectionUNet3DDataset(Dataset):
         }
         if self.target_indices is not None:
             assert self.cmpas_data is not None
-            targets = np.stack([np.asarray(self.cmpas_data[index], dtype=np.float32) for index in self.target_indices[sample_index]])
-            valid = np.stack([np.asarray(self.cmpas_mask[index]) for index in self.target_indices[sample_index]])
+            targets = np.stack([np.asarray(self.cmpas_data[index], dtype=np.float32) for index in self.target_indices[idx]])
+            valid = np.stack([np.asarray(self.cmpas_mask[index]) for index in self.target_indices[idx]])
             if not np.isfinite(targets).all():
                 raise ValueError(f"Sample {sample_index} ({init_time}) contains NaN or Inf in CMPAS targets.")
             if np.any(targets < 0.0):

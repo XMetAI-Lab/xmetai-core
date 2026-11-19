@@ -8,10 +8,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+import zarr
 
-import xmetai.models.prcpcorrect_unet3d.prcpcorrect_unet3d as model_module
+import xmetai.metrics.prcpcorrect as metric_module
 from xmetai.config import LazyConfig, instantiate
-from xmetai.models.prcpcorrect_unet3d import PrcpCorrectionUNet3D, PrcpMaskedCSI, PrcpMaskedRMSE
+from xmetai.data.weather.prcpcorrect_dataset import PrcpCorrectionUNet3DDataset
+from xmetai.metrics.prcpcorrect import PrcpMaskedCSI, PrcpMaskedRMSE
+from xmetai.models.adapter.prcpcorrect_unet3d import PrcpCorrectionUNet3D
 
 
 def test_training_config_instantiates_w1448(tmp_path, monkeypatch):
@@ -245,12 +248,12 @@ def test_csi_gathers_unequal_rank_counts_including_empty_rank(monkeypatch):
         metrics.append(metric)
     metric, other_rank = metrics
     local_counts = metric.counts["corrected"].copy()
-    monkeypatch.setattr(model_module.comm, "gather", lambda local, **kw: [local, other_rank.counts, {}])
+    monkeypatch.setattr(metric_module.comm, "gather", lambda local, **kw: [local, other_rank.counts, {}])
     result = metric.evaluate()
     assert result["CSI10"]["corrected/tp"] == pytest.approx([10 / 15])
     assert metric.evaluate() == result
     assert np.array_equal(metric.counts["corrected"], local_counts)
-    monkeypatch.setattr(model_module.comm, "is_main_process", lambda: False)
+    monkeypatch.setattr(metric_module.comm, "is_main_process", lambda: False)
     assert metric.evaluate() is None
 
 
@@ -495,3 +498,126 @@ def test_joint_event_can_be_disabled_without_changing_base_losses_or_checkpoint(
 def test_joint_event_rejects_invalid_configuration(name, value):
     with pytest.raises(ValueError, match=name):
         _event_model(**{name: value})
+
+
+@pytest.mark.parametrize("statistic", ["input_min", "input_max"])
+@pytest.mark.parametrize("loader", ["module", "native", "parent"])
+def test_checkpoint_statistics_mismatch_is_rejected_before_loading(statistic, loader):
+    from xmetai.core.checkpoint import FSDPCheckpointer
+
+    model = _event_model()
+    before = {key: value.clone() for key, value in model.state_dict().items()}
+    checkpoint = {key: value.clone() for key, value in before.items()}
+    checkpoint[statistic] += 0.25
+    checkpoint["net.head.bias"] += 7
+    with pytest.raises(ValueError, match=statistic + ".*normalization"):
+        if loader == "native":
+            FSDPCheckpointer(model)._load_model({"model": {"module." + key: value for key, value in checkpoint.items()}})
+        elif loader == "parent":
+            torch.nn.ModuleDict({"correction": model}).load_state_dict({"correction." + key: value for key, value in checkpoint.items()})
+        else:
+            model.load_state_dict(checkpoint, strict=False)
+    assert all(torch.equal(value, model.state_dict()[key]) for key, value in before.items())
+
+
+def test_native_checkpoint_accepts_matching_statistics_and_preserves_state_keys():
+    from xmetai.core.checkpoint import FSDPCheckpointer
+
+    source = _event_model()
+    model = _event_model()
+    with torch.no_grad():
+        source.net.head.bias.fill_(0.75)
+    checkpoint = source.state_dict()
+    incompatible = FSDPCheckpointer(model)._load_model({"model": checkpoint})
+    assert not incompatible.missing_keys and not incompatible.unexpected_keys and not incompatible.incorrect_shapes
+    assert all(torch.equal(value, model.state_dict()[key]) for key, value in checkpoint.items())
+
+
+def test_bf16_keeps_fp32_targets_for_losses_and_csi():
+    class ZeroResidual(torch.nn.Module):
+        def forward(self, inputs):
+            assert inputs.dtype == torch.bfloat16
+            return torch.zeros_like(inputs)
+
+    model = _event_model(precision="bf16")
+    model.net = ZeroResidual()
+    target = torch.tensor([9.99, 24.99, 49.9, 50.0]).reshape(1, 1, 1, 1, 4)
+    valid = torch.ones_like(target, dtype=torch.bool)
+    data = {"inputs": torch.zeros_like(target), "targets": target, "valid_mask": valid}
+    losses = model(data)
+    reference = _event_model()
+    expected = {
+        "loss_log_smooth_l1": reference._smooth_l1_spatial_sum(torch.zeros_like(target), torch.log1p(target), valid),
+        **reference._balanced_physical_losses(torch.zeros_like(target), target, valid),
+        **reference._joint_event_losses(torch.zeros_like(target), target, valid),
+    }
+    assert losses.keys() == expected.keys()
+    for key in losses:
+        torch.testing.assert_close(losses[key], expected[key], rtol=0, atol=0)
+    model.eval()
+    outputs = model(data)
+    assert outputs["target"].dtype == torch.float32
+    assert torch.equal(outputs["target"], target)
+    metric = PrcpMaskedCSI(test_names=["tp"], test_times=[6])
+    metric.reset()
+    metric.process(data, outputs)
+    assert metric.counts["corrected"][:, 1].tolist() == [4, 4, 4, 3, 2, 1]
+
+
+@pytest.fixture
+def partial_observation_stores(tmp_path):
+    from xmetai.data.weather.prcpcorrect_dataset import _DTIMES, _FENGQ_CHANNELS, _FENGQ_SCHEMA, _LATITUDES, _LONGITUDES
+
+    fengq_path = tmp_path / "fengq.zarr"
+    cmpas_path = tmp_path / "cmpas.zarr"
+    fengq = zarr.open_group(str(fengq_path), mode="w", zarr_format=2)
+    cmpas = zarr.open_group(str(cmpas_path), mode="w", zarr_format=2)
+    times = np.array(["2024-07-02T08", "2024-07-10T08", "2024-07-20T08"], dtype="datetime64[ns]")
+    valid_times = times[:, None] + _DTIMES.astype("timedelta64[h]")
+    fengq.attrs.update(schema=_FENGQ_SCHEMA, normalization="none", time_zone="Beijing time")
+    cmpas.attrs.update(time_zone="Beijing time")
+    inputs = fengq.create_array("input", shape=(3, 12, 30, 64, 40), chunks=(1, 12, 30, 64, 40), dtype="f4", fill_value=0)
+    inputs.attrs["_ARRAY_DIMENSIONS"] = ["time", "dtime", "pl", "lat", "lon"]
+    for name, values in {"time": times, "valid_time": valid_times, "dtime": _DTIMES, "pl": np.array(_FENGQ_CHANNELS)}.items():
+        fengq.create_array(name, data=values)
+    for group in (fengq, cmpas):
+        group.create_array("lat", data=_LATITUDES)
+        group.create_array("lon", data=_LONGITUDES)
+    cmpas.create_array("valid_time", data=valid_times[:2].reshape(-1))
+    cmpas.create_array("channel", data=np.array(["tp"]))
+    targets = cmpas.create_array("data", shape=(24, 1, 64, 40), chunks=(12, 1, 64, 40), dtype="f4", fill_value=0)
+    targets[:12] = 2
+    targets[12:] = 10
+    mask = cmpas.create_array("valid_mask", shape=targets.shape, chunks=targets.chunks, dtype="bool", fill_value=True)
+    for array in (targets, mask):
+        array.attrs["_ARRAY_DIMENSIONS"] = ["valid_time", "channel", "lat", "lon"]
+    return dict(fengq_zarr_path=str(fengq_path), cmpas_zarr_path=str(cmpas_path), input_min=np.zeros((30, 1, 1)), input_max=np.ones((30, 1, 1)))
+
+
+def test_dataset_checks_coverage_only_for_selected_time_range(partial_observation_stores):
+    dataset = PrcpCorrectionUNet3DDataset(**partial_observation_stores, start_time="2024-07-10 08:00:00", end_time="2024-07-10 08:00:00")
+    assert dataset.sample_indices == [1]
+    assert torch.all(dataset[0]["targets"] == 10)
+    assert dataset[0]["valid_mask"].all()
+
+
+def test_dataset_csv_preserves_selected_target_order(partial_observation_stores, tmp_path):
+    split = tmp_path / "split.csv"
+    split.write_text("2024-07-10 08:00:00\n2024-07-02 08:00:00\n", encoding="utf-8")
+    dataset = PrcpCorrectionUNet3DDataset(**partial_observation_stores, split_csv=str(split))
+    assert dataset.sample_indices == [1, 0]
+    assert torch.all(dataset[0]["targets"] == 10)
+    assert torch.all(dataset[1]["targets"] == 2)
+
+
+def test_dataset_rejects_missing_selected_targets(partial_observation_stores):
+    with pytest.raises(ValueError, match="CMPAS is missing target time 2024-07-20 14:00:00"):
+        PrcpCorrectionUNet3DDataset(**partial_observation_stores, start_time="2024-07-20 08:00:00")
+
+
+def test_dataset_inference_does_not_require_observation_coverage(partial_observation_stores):
+    partial_observation_stores["cmpas_zarr_path"] = None
+    dataset = PrcpCorrectionUNet3DDataset(**partial_observation_stores, start_time="2024-07-20 08:00:00")
+    assert dataset.sample_indices == [2]
+    assert dataset.target_indices is None
+    assert set(dataset[0]) == {"inputs", "times"}

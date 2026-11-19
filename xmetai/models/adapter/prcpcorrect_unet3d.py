@@ -1,4 +1,4 @@
-"""UNet3D model for six-hour FENGQ15 precipitation correction."""
+"""UNet3D adapter for six-hour FENGQ15 precipitation correction."""
 
 from __future__ import annotations
 
@@ -7,66 +7,13 @@ from typing import Any, Union
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 from xmetai.core.meta import Meta
-from xmetai.metrics.mse import MSE
-from xmetai.registries import METRICS, MODELS
-from xmetai.utils import comm
-
-__all__ = ["UNet3D", "PrcpCorrectionUNet3D", "PrcpMaskedRMSE", "PrcpMaskedCSI"]
+from xmetai.layers.unet3d import UNet3D
+from xmetai.registries import MODELS
 
 ScaleValue = Union[str, os.PathLike, np.ndarray, torch.Tensor]
-
-
-class UNet3D(nn.Module):
-    """Compact residual UNet using spatial-only down/up-sampling."""
-
-    def __init__(self, in_channels: int, out_channels: int, base_channels: int = 128):
-        super().__init__()
-        self.encoder1 = nn.Conv3d(in_channels, base_channels, 3, padding=1)
-        self.encoder2 = nn.Conv3d(base_channels, base_channels * 2, 3, padding=1)
-        self.encoder3 = nn.Conv3d(base_channels * 2, base_channels * 4, 3, padding=1)
-
-        self.decoder1 = nn.Conv3d(base_channels * 4, base_channels * 2, 3, padding=1)
-        self.decoder2 = nn.Conv3d(base_channels * 2, base_channels, 3, padding=1)
-        self.fullres_decoder = nn.Conv3d(base_channels * 2, base_channels, 3, padding=1)
-        self.head = nn.Conv3d(base_channels, out_channels, 1)
-        self._init_weights()
-        nn.init.zeros_(self.head.weight)
-        if self.head.bias is not None:
-            nn.init.zeros_(self.head.bias)
-
-    def _init_weights(self) -> None:
-        for module in self.modules():
-            if isinstance(module, nn.Conv3d):
-                nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-    @staticmethod
-    def _pool(x: torch.Tensor) -> torch.Tensor:
-        return F.max_pool3d(x, kernel_size=(1, 2, 2), stride=(1, 2, 2))
-
-    @staticmethod
-    def _upsample(x: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
-        return F.interpolate(x, size=reference.shape[-3:], mode="trilinear", align_corners=False)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.permute(0, 2, 1, 3, 4).contiguous()
-
-        fullres_skip = F.relu(self.encoder1(x))
-        skip1 = self._pool(fullres_skip)
-        skip2 = F.relu(self._pool(self.encoder2(skip1)))
-        x = F.relu(self._pool(self.encoder3(skip2)))
-
-        x = F.relu(self._upsample(self.decoder1(x), skip2)) + skip2
-        x = F.relu(self._upsample(self.decoder2(x), skip1)) + skip1
-        x = self._upsample(x, fullres_skip)
-        x = F.relu(self.fullres_decoder(torch.cat((x, fullres_skip), dim=1)))
-        x = self.head(x)
-        return x.permute(0, 2, 1, 3, 4).contiguous()
 
 
 @MODELS.register()
@@ -134,6 +81,14 @@ class PrcpCorrectionUNet3D(Meta):
         self.register_buffer("input_max", max_tensor)
         self.register_buffer("precipitation_scale", torch.tensor(precipitation_scale, dtype=torch.float32))
         self.net = UNet3D(self.in_channels, 1, base_channels=base_channels)
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        # Datasets keep the configured normalization even when model buffers load.
+        for name in ("input_min", "input_max"):
+            key = prefix + name
+            if key in state_dict and not torch.equal(state_dict[key].detach().cpu(), getattr(self, name).detach().cpu()):
+                raise ValueError(f"Checkpoint {key} does not match the configured normalization statistics.")
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
     @staticmethod
     def _load_scale(value: ScaleValue, channels: int, name: str) -> torch.Tensor:
@@ -226,7 +181,7 @@ class PrcpCorrectionUNet3D(Meta):
         prediction, log_prediction, baseline = self._reconstruct(inputs, residual)
 
         if self.training:
-            targets = self._to_model(data["targets"]).float()
+            targets = data["targets"].to(device=self.device, dtype=torch.float32, non_blocking=True)
             valid = data["valid_mask"].to(device=self.device, non_blocking=True)
             if valid.dtype != torch.bool or valid.shape != targets.shape:
                 raise ValueError("valid_mask must be boolean with the same shape as targets.")
@@ -243,89 +198,6 @@ class PrcpCorrectionUNet3D(Meta):
             "output_by_mode": {"corrected": prediction, "baseline": baseline},
         }
         if "targets" in data:
-            result["target"] = self._to_model(data["targets"])
+            result["target"] = data["targets"].to(device=self.device, dtype=torch.float32, non_blocking=True)
             result["weight"] = data["valid_mask"].to(device=self.device, non_blocking=True)
         return result
-
-
-@METRICS.register()
-class PrcpMaskedRMSE(MSE):
-    """Native MSE output format, using per-case valid-cell RMSE for each lead."""
-
-    def _process_output(self, output, target, weight, prefix="", frame_start=0):
-        if not torch.is_tensor(weight) or weight.dtype != torch.bool or weight.shape != target.shape or output.shape != target.shape:
-            raise ValueError("PrcpMaskedRMSE requires a boolean valid mask matching output and target.")
-        test_times = self.test_times[frame_start : frame_start + output.shape[1]]
-        if len(test_times) != output.shape[1]:
-            raise ValueError("PrcpMaskedRMSE forecast leads do not match test_times.")
-        for i, t in enumerate(test_times):
-            for j, name in enumerate(self.test_names):
-                valid = weight[:, i, j]
-                count = valid.sum(dim=(-2, -1))
-                if torch.any(count == 0):
-                    raise ValueError("Every evaluated lead must contain valid observation cells.")
-                error = torch.where(valid, output[:, i, j].double() - target[:, i, j].double(), 0.0)
-                rmse = (error.square().sum(dim=(-2, -1)) / count).sqrt()
-                if not torch.isfinite(rmse).all():
-                    raise ValueError("Non-finite precipitation prediction at valid observation cells.")
-                key = (f"{prefix}/" if prefix else "") + self.get_key(name, t)
-                self.rmse.setdefault(key, []).extend(rmse.tolist())
-
-
-@METRICS.register()
-class PrcpMaskedCSI(MSE):
-    """Pool valid-cell contingency counts over all cases, leads and ranks."""
-
-    thresholds = (0.1, 1, 5, 10, 25, 50)
-
-    def __init__(self, test_names, test_times):
-        super().__init__(test_names=test_names, test_times=test_times)
-        if list(test_names) != ["tp"]:
-            raise ValueError("PrcpMaskedCSI requires the single precipitation channel tp.")
-
-    def reset(self):
-        self.counts = {}
-
-    def _process_output(self, output, target, weight, prefix="", frame_start=0):
-        if not torch.is_tensor(weight) or weight.dtype != torch.bool or weight.shape != target.shape or output.shape != target.shape:
-            raise ValueError("PrcpMaskedCSI requires a boolean valid mask matching output and target.")
-        if target.ndim != 5 or target.shape[2] != 1 or frame_start < 0 or frame_start + target.shape[1] > len(self.test_times):
-            raise ValueError("PrcpMaskedCSI requires matching precipitation forecast leads.")
-        if not torch.isfinite(output[weight]).all() or not torch.isfinite(target[weight]).all():
-            raise ValueError("Non-finite precipitation at valid observation cells.")
-        counts = self.counts.setdefault(prefix, np.zeros((len(self.thresholds), 3), dtype=np.int64))
-        for i, threshold in enumerate(self.thresholds):
-            predicted = (output >= threshold) & weight
-            observed = (target >= threshold) & weight
-            hits = (predicted & observed).sum()
-            counts[i] += torch.stack((hits, observed.sum() - hits, predicted.sum() - hits)).cpu().numpy()
-
-    def evaluate(self):
-        shards = comm.gather(self.counts, dst=0)
-        if not comm.is_main_process():
-            return None
-        counts = {}
-        for shard in shards:
-            for mode, values in shard.items():
-                counts[mode] = counts.get(mode, 0) + values
-        results = {}
-        scores_by_mode = {}
-        for i, threshold in enumerate(self.thresholds):
-            table = {}
-            for mode, values in sorted(counts.items()):
-                hits, misses, false_alarms = map(int, values[i])
-                union = hits + misses + false_alarms
-                score = hits / union if union else float("nan")
-                table[f"{mode}/tp" if mode else "tp"] = [score]
-                scores_by_mode.setdefault(mode, []).append(score)
-            results[f"CSI{threshold:g}"] = table
-        results["CSImean6"] = {}
-        for mode, scores in sorted(scores_by_mode.items()):
-            # An unavailable threshold invalidates the fixed six-threshold mean.
-            # Do not use nanmean, which would silently change its weights.
-            mean_score = float(np.mean(scores))
-            results["CSImean6"][f"{mode}/tp" if mode else "tp"] = [mean_score]
-            if mode == "corrected":
-                # The native BestCheckpointer minimizes the configured scalar.
-                results["Selection"] = {"csi_mean6_error": [1.0 - mean_score]}
-        return results
