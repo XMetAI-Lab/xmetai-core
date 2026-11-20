@@ -42,7 +42,7 @@ class TrainingSampler(Sampler):
     This note is true for all samplers in detectron2.
     """
 
-    def __init__(self, size: int, shuffle: bool = True, seed: Optional[int] = None):
+    def __init__(self, size: int, shuffle: bool = True, seed: Optional[int] = None, *, shared_indices: bool = False):
         """
         Args:
             size (int): the total number of data of the underlying dataset to sample from
@@ -50,6 +50,7 @@ class TrainingSampler(Sampler):
             seed (int): the initial seed of the shuffle. Must be the same
                 across all workers. If None, will use a random seed shared
                 among workers (require synchronization among all workers).
+            shared_indices (bool): use rank 0's index stream on all ranks.
         """
         if not isinstance(size, int):
             raise TypeError(f"TrainingSampler(size=) expects an int. Got type {type(size)}.")
@@ -61,11 +62,12 @@ class TrainingSampler(Sampler):
             seed = comm.shared_random_seed()
         self._seed = int(seed)
 
+        self.shared_indices = shared_indices
         self._rank = comm.get_rank()
         self._world_size = comm.get_world_size()
 
     def __iter__(self):
-        start = self._rank
+        start = 0 if self.shared_indices else self._rank
         yield from itertools.islice(self._infinite_indices(), start, None, self._world_size)
 
     def _infinite_indices(self):
