@@ -576,8 +576,9 @@ class ExpandTrainer(SimpleTrainer):
         dataset = getattr(self.data_loader, "dataset", None)
         runtime_frames = getattr(dataset, "runtime_train_fcst_frames", None)
         if runtime_frames is not None:
-            # Cover the default queue of up to 8 workers with 2 batches each.
-            read_ahead = 16
+            # Cover at least the loader's full prefetch queue.
+            prefetch_batches = getattr(self.data_loader, "num_workers", 0) * (getattr(self.data_loader, "prefetch_factor", None) or 0)
+            read_ahead = max(16, prefetch_batches)
             runtime_frames.value = self._forecast_frames_at(self.iter + read_ahead, self.teacher_forcing)
             future_step = min(future_step, dataset.max_train_fcst_frames)
         data = next(self._data_loader_iter)
