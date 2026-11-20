@@ -44,6 +44,7 @@ model_name = "ViTModel"
 
 if load_from_pretrain:
     train.ens_train = True
+    dataloader.train.shared_indices = True
     model_name = "ViTModelEns"
     # Enable cascaded training for M-Step rollout logic.
     train.teacher_forcing.teach_start = 1

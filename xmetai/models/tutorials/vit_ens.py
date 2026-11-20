@@ -135,19 +135,14 @@ class ViTModelEns(ViTModel):
             return (h,)
         return args
 
-    def forward(self, data):
-        if not self.training:
-            return self.test(data)
-        # Pre-compute exponential rolling weights explicitly for the base AR loop
-        targets = data.get("targets", None)
-        if targets is not None:
-            future_frames = targets.size(1)
-            self.rolling_weights = get_exponential_weights(steps=future_frames, alpha=self.alpha).to(targets.device)
-            # base class inherently divides final acc_loss by future_frames.
-            # We compensate this during step computation.
-            self.future_frames = future_frames
-        # Complete dependency on the base autoregressive loop
-        return super().forward(data)
+    def process_data(self, data):
+        batch = super().process_data(data)
+        if self.training and "targets" in batch:
+            targets = batch["targets"]
+            # Use the same target window as the autoregressive loop.
+            self.future_frames = targets.size(1)
+            self.rolling_weights = get_exponential_weights(steps=self.future_frames, alpha=self.alpha).to(targets.device)
+        return batch
 
     def compute_step_loss(self, output, target, step):
         # Base class calculates unweighted charbonnier and PINN losses

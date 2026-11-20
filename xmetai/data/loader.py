@@ -62,12 +62,16 @@ def build_train_loader(
     num_workers=0,
     pin_memory=True,
     do_augment=False,
+    shared_indices=False,
 ):
+    """Shared indices require deterministic dataset reads and collation."""
     world_size = get_world_size()
     batch_size = total_batch_size // world_size
 
+    if shared_indices and (sampler is not None or do_augment):
+        raise ValueError("shared_indices requires the default training sampler and disables random batch augmentation.")
     if sampler is None:
-        sampler = TrainingSampler(len(dataset))
+        sampler = TrainingSampler(len(dataset), shared_indices=shared_indices)
 
     return torchdata.DataLoader(
         dataset,

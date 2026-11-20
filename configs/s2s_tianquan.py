@@ -212,6 +212,7 @@ dataloader.test = L(build_test_loader)(
 # 动态修改 Dataset 配置以适应连续预测 (仅在预训练微调时激活)
 if load_from_pretrain:
     dataloader.train.dataset.fcst_frames = train.teacher_forcing.teach_steps
+    dataloader.train.shared_indices = True
 
 if export_onnx:
     train.export_kwargs.save_name = os.path.join(output_dir, "s2s_tianquan.onnx")

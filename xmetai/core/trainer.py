@@ -5,7 +5,7 @@ import logging
 import time
 import weakref
 from contextlib import contextmanager
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Dict, List, Mapping, Optional
 
 import numpy as np
 import torch
@@ -16,70 +16,6 @@ from xmetai.core.ema import EMA
 from xmetai.utils import EventStorage, get_event_storage, get_rank, is_main_process
 
 __all__ = ["HookBase", "TrainerBase", "SimpleTrainer", "ExpandTrainer"]
-
-
-def _to_device_tensor(value: Any, device: torch.device) -> torch.Tensor:
-    if torch.is_tensor(value):
-        return value.to(device, non_blocking=True)
-    if isinstance(value, np.ndarray):
-        return torch.from_numpy(value).to(device, non_blocking=True)
-    return torch.as_tensor(value, device=device)
-
-
-def _broadcast_batch_from_rank0(
-    batch: Optional[Dict[str, Any]],
-    *,
-    src: int = 0,
-) -> Dict[str, torch.Tensor]:
-    """Broadcast a training batch from ``src`` using NCCL tensor broadcasts.
-
-    Only lightweight key/shape/dtype metadata uses ``broadcast_object_list``.
-    Tensor payloads are broadcast in place to avoid pickling large weather batches.
-    """
-    if not dist.is_initialized():
-        if batch is None:
-            raise ValueError("src rank must provide batch when distributed is not initialized")
-        device = torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else torch.device("cpu")
-        return {k: _to_device_tensor(v, device) for k, v in batch.items()}
-
-    rank = dist.get_rank()
-    backend = dist.get_backend()
-    if backend == "nccl":
-        if not torch.cuda.is_available():
-            raise RuntimeError("NCCL backend requires CUDA for ensemble batch broadcast")
-        device = torch.device("cuda", torch.cuda.current_device())
-    else:
-        device = torch.device("cpu")
-    if rank == src:
-        if batch is None:
-            raise ValueError("src rank must provide batch")
-        batch_tensors = {k: _to_device_tensor(v, device) for k, v in batch.items()}
-        keys = sorted(batch_tensors.keys())
-        meta = {k: (batch_tensors[k].shape, batch_tensors[k].dtype) for k in keys}
-    else:
-        batch_tensors = {}
-        keys = None
-        meta = None
-
-    keys_payload: list[Optional[list[str]]] = [keys]
-    meta_payload: list[Optional[dict[str, tuple[Any, Any]]]] = [meta]
-    dist.broadcast_object_list(keys_payload, src=src)
-    dist.broadcast_object_list(meta_payload, src=src)
-    keys = keys_payload[0]
-    meta = meta_payload[0]
-    if keys is None or meta is None:
-        raise RuntimeError("failed to receive ensemble batch metadata from src rank")
-
-    synced: Dict[str, torch.Tensor] = {}
-    for key in keys:
-        shape, dtype = meta[key]
-        if rank == src:
-            tensor = batch_tensors[key]
-        else:
-            tensor = torch.empty(shape, dtype=dtype, device=device)
-        dist.broadcast(tensor, src=src)
-        synced[key] = tensor
-    return synced
 
 
 class HookBase:
@@ -591,7 +527,7 @@ class ExpandTrainer(SimpleTrainer):
             )
         self.future_step = 1
         self.ens_train = ens_train
-        if ens_train:
+        if self.ens_train:
             self.logger.info("Using ensemble training mode.")
 
     def _backward_rollout_segments(self, data):
@@ -628,23 +564,28 @@ class ExpandTrainer(SimpleTrainer):
             self.model.set_requires_gradient_sync(is_last_backward, recurse=True)
             self.model.set_is_last_backward(is_last_backward)
 
+    @staticmethod
+    def _forecast_frames_at(iteration, teacher_forcing):
+        current_step = iteration // teacher_forcing["teach_iters"] + teacher_forcing["teach_start"]
+        return max(1, min(current_step, teacher_forcing.get("teach_steps", current_step)))
+
     def run_step(self):
         assert self.model.training, "[SimpleTrainer] model was changed to eval mode!"
         start = time.perf_counter()
-        current_step = self.iter // self.teacher_forcing["teach_iters"] + self.teacher_forcing["teach_start"]
-        future_step = max(1, min(current_step, self.teacher_forcing.get("teach_steps", current_step)))
-        # Must update before fetching so DataLoader workers read only this horizon.
-        runtime_train_fcst_frames = getattr(getattr(self.data_loader, "dataset", None), "runtime_train_fcst_frames", None)
-        if runtime_train_fcst_frames is not None:
-            with runtime_train_fcst_frames.get_lock():
-                runtime_train_fcst_frames.value = future_step
-        if self.ens_train:
-            raw_batch = next(self._data_loader_iter) if get_rank() == 0 else None
-            data = _broadcast_batch_from_rank0(raw_batch)
-        else:
-            data = next(self._data_loader_iter)
-        # expand the data to the next step, we set future_frames for data here.
-        future_step = max(1, min(future_step, data["targets"].shape[1]))
+        future_step = self._forecast_frames_at(self.iter, self.teacher_forcing)
+        dataset = getattr(self.data_loader, "dataset", None)
+        runtime_frames = getattr(dataset, "runtime_train_fcst_frames", None)
+        if runtime_frames is not None:
+            # Cover at least the loader's full prefetch queue.
+            prefetch_batches = getattr(self.data_loader, "num_workers", 0) * (getattr(self.data_loader, "prefetch_factor", None) or 0)
+            read_ahead = max(16, prefetch_batches)
+            runtime_frames.value = self._forecast_frames_at(self.iter + read_ahead, self.teacher_forcing)
+            future_step = min(future_step, dataset.max_train_fcst_frames)
+        data = next(self._data_loader_iter)
+        target_frames = data["targets"].shape[1]
+        if runtime_frames is not None and target_frames < future_step:
+            raise RuntimeError(f"Expected {future_step} target frames, got {target_frames} at iteration {self.iter}.")
+        future_step = max(1, min(future_step, target_frames))
         if self.future_step != future_step:
             self.logger.info(f"Expanding data to future step {future_step} from current step {self.future_step}")
             self.future_step = future_step
