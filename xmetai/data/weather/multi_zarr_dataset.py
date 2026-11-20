@@ -190,6 +190,14 @@ class MultiZarrDataset(Dataset):
                 sample["target_valid_mask"] = target_valid_mask
         return sample
 
+    def __getitems__(self, indices: list[int]) -> list[dict[str, torch.Tensor | None]]:
+        # The trainer may update the horizon while a worker is reading this batch.
+        runtime_frames = self.runtime_train_fcst_frames
+        if runtime_frames is None:
+            return [self[index] for index in indices]
+        forecast_frames = runtime_frames.value
+        return [self.prepare_data(index, forecast_frames=forecast_frames) for index in indices]
+
     def __getitem__(self, idx):
         while True:
             data = self.prepare_data(idx)
@@ -198,12 +206,13 @@ class MultiZarrDataset(Dataset):
                 continue
             return data
 
-    def prepare_data(self, i):
+    def prepare_data(self, i: int, *, forecast_frames: int | None = None) -> dict[str, torch.Tensor | None]:
         idx = self.inds[i]
         total_frames = self.total_frames
         if self.training:
-            train_fcst_frames = self.max_train_fcst_frames if self.runtime_train_fcst_frames is None else int(self.runtime_train_fcst_frames.value)
-            total_frames = self.hist_frames + self.start_frames + train_fcst_frames
+            if forecast_frames is None:
+                forecast_frames = self.max_train_fcst_frames if self.runtime_train_fcst_frames is None else int(self.runtime_train_fcst_frames.value)
+            total_frames = self.hist_frames + self.start_frames + min(forecast_frames, self.max_train_fcst_frames)
         inds = np.arange(idx, idx + total_frames)
         init_time = pd.to_datetime(self.id_to_time[idx])
         # convert time to tensor

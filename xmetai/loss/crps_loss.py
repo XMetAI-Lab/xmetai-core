@@ -35,10 +35,24 @@ def all_gather_grad(x, group=None):
     return xs
 
 
-def crps_loss(output: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """Sorted empirical CRPS, gathering one member per rank (BxTxCxHxW).
+class _AllToAll(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, tensor, input_splits, output_splits):
+        ctx.input_splits = input_splits
+        ctx.output_splits = output_splits
+        result = tensor.new_empty((sum(output_splits), *tensor.shape[1:]))
+        dist.all_to_all_single(result, tensor.contiguous(), output_split_sizes=output_splits, input_split_sizes=input_splits)
+        return result
 
-    All ranks must share the observation. A single member reduces to MAE.
+    @staticmethod
+    def backward(ctx, grad_output):
+        return _AllToAll.apply(grad_output, ctx.output_splits, ctx.input_splits), None, None
+
+
+def crps_loss(output: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Sorted empirical CRPS, with one member per rank (BxTxCxHxW).
+
+    All ranks must share the observation and weights. A single member reduces to MAE.
     Weights broadcast over fields; reduction is mean(score * weight), not
     normalization by the sum of weights. All public scores use this convention.
     """
@@ -73,8 +87,8 @@ def multiscale_afcrps_loss(
     Filtering requires a global regular lat-lon grid containing both poles and
     even longitudes without a duplicate endpoint. This separable grid-space
     Gaussian approximates, rather than implements, the MIR spherical filter.
-    Dtype/autocast are preserved. One gather and a non-reentrant checkpoint
-    avoid retaining multiscale activations, recomputing all fields in backward.
+    Dtype/autocast are preserved. Distributed training exchanges channel shards
+    before scoring. A non-reentrant checkpoint recomputes the bands in backward.
     Input and weight conventions match :func:`crps_loss`.
     """
     return _distributed_crps(output, target, weight, alpha, filter_scales)
@@ -94,6 +108,13 @@ def _distributed_crps(
         raise ValueError("filter_scales must contain distinct scales.")
     if scales and (output.ndim < 2 or output.shape[-2] < 2 or output.shape[-1] < 2 or output.shape[-1] % 2):
         raise ValueError("Filtering requires a global grid with H >= 2 and even W >= 2.")
+
+    members = dist.get_world_size() if dist.is_initialized() else 1
+    # The gather path also supports inputs without a channel axis and
+    # differentiable observations or weights.
+    if output.ndim >= 3 and 1 < members <= output.shape[-3] and not target.requires_grad and (weight is None or not weight.requires_grad):
+        return _sharded_crps(output, target, weight, alpha, scales, members)
+
     outputs = all_gather_grad(output)  # (num_gpus, B, T, C, H, W)
 
     if dist.is_initialized() and outputs.shape[0] != dist.get_world_size():
@@ -103,6 +124,35 @@ def _distributed_crps(
     if members < 2 and alpha != 0.0:
         return (output * 0.0).sum()
 
+    return _score_members(outputs, target, weight, alpha, scales)
+
+
+def _sharded_crps(output: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor], alpha: float, scales: list[float], members: int) -> torch.Tensor:
+    """Score a channel shard containing all members and return their gradients."""
+    rank = dist.get_rank()
+    channels = output.shape[-3]
+    base, extra = divmod(channels, members)
+    channel_splits = [base + (index < extra) for index in range(members)]
+    local_channels = channel_splits[rank]
+    first_channel = sum(channel_splits[:rank])
+
+    packed = output.movedim(-3, 0)
+    received = _AllToAll.apply(packed, channel_splits, [local_channels] * members)
+    outputs = received.unflatten(0, (members, local_channels)).movedim(1, -3)
+    target = target.broadcast_to(output.shape).narrow(-3, first_channel, local_channels)
+    weight = weight.broadcast_to(output.shape).narrow(-3, first_channel, local_channels) if weight is not None else None
+    local_loss = _score_members(outputs, target, weight, alpha, scales)
+
+    # Shards may contain different numbers of channels. Reduce the value
+    # separately so every rank returns the same loss with a local gradient.
+    contribution = local_loss.to(torch.promote_types(local_loss.dtype, torch.float32)) * (local_channels / channels)
+    global_loss = contribution.detach().clone()
+    dist.all_reduce(global_loss)
+    # Compensate for the distributed parameter-gradient average, as in gather.
+    return (global_loss + (contribution - contribution.detach()) * members).to(local_loss.dtype)
+
+
+def _score_members(outputs: torch.Tensor, target: torch.Tensor, weight: Optional[torch.Tensor], alpha: float, scales: list[float]) -> torch.Tensor:
     if not scales:
         return _afcrps_from_members(outputs, target, weight, alpha)
 

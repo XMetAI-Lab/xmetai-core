@@ -54,6 +54,7 @@ logging.basicConfig(level=logging.INFO)
 model_name = "ViTModel"
 if load_from_pretrain:  # check if original model exists, start stage 2: ensemble
     train.ens_train = True
+    dataloader.train.shared_indices = True
     train.init_checkpoint = f"{output_dir}/../model_best.pth"
     model_name = "ViTModelEns"
     output_dir += "/../ens/"
